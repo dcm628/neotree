@@ -1,0 +1,25 @@
+# Build output
+build/
+out/
+generated/
+
+# Pico SDK
+.pico-sdk/
+
+# VS Code
+.vscode/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Ninja
+build.ninja
+.ninja_deps
+.ninja_log
+
+# OS cruft
+.DS_Store
+Thumbs.db
