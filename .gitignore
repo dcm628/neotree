@@ -1,18 +1,13 @@
-# Build output
+# ---- Build output ----
 build/
 out/
 generated/
-
-# Pico SDK
-.pico-sdk/
-
-# VS Code
-.vscode/
 
 # CMake
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
+compile_commands.json
 Makefile
 
 # Ninja
@@ -20,6 +15,32 @@ build.ninja
 .ninja_deps
 .ninja_log
 
-# OS cruft
+# Compiled firmware / object artifacts
+*.o
+*.obj
+*.a
+*.elf
+*.elf.map
+*.bin
+*.hex
+*.uf2
+*.dis
+*.map
+
+# ---- Raspberry Pi Pico SDK (installed separately, not vendored) ----
+.pico-sdk/
+pico-sdk/
+
+# ---- Editor / IDE ----
+.vscode/
+.idea/
+*.code-workspace
+
+# ---- OS cruft ----
 .DS_Store
 Thumbs.db
+desktop.ini
+# ---- Claude / Cowork session outputs (not part of the project) ----
+Claude outputs/
+CMakeLists-1.txt
+

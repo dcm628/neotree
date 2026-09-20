@@ -1099,13 +1099,13 @@ uint32_t target_loop_rate = 60;
 volatile uint64_t initial_abs_time_check = 0;
 uint64_t initial_startup_delay = 1'500'00;
 volatile uint64_t latest_abs_time_check = 0;
-volatile uint64_t led_loop_counter = 0;
+uint64_t led_loop_counter = 0;
 const uint32_t loop_duration_micros = 1'000'000 / target_loop_rate;
 
 int main() {
     //set_sys_clock_48();
     stdio_init_all();
-    //multicore_launch_core1(main_core1);
+    multicore_launch_core1(main_core1);
 
     printf("WS2812 Smoke Test, using pin %d", WS2812_PIN_STRING_1);
 
