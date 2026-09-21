@@ -1075,23 +1075,49 @@ void process_msg()
 void main_core1()
 {
     // code for second core
-    if (cyw43_arch_init()) {
-        printf("Wi-Fi init failed");
-    }
+    // cyw43_arch_init() talks to the onboard CYW43 WiFi/BT chip, which on
+    // this board is unreliable - confirmed (via added diagnostics) to
+    // sometimes hang indefinitely and never return at all. Since it blocks
+    // at the very top of this function, before the serial-reading loop
+    // below, a hang here means core1 never reads serial for the rest of
+    // the session - which is exactly the bug this was all chasing. WiFi
+    // isn't used for anything today (lwIP/sta-mode are already commented
+    // out below), so skip the call entirely rather than depend on a chip
+    // that doesn't reliably come up.
+    bool wifi_ok = false;
     //cyw43_arch_enable_sta_mode();
 
 /*     if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 30000)) {
         printf("failed to connect\n");
     }
  */
+    // Watchdog heartbeat for core1 itself, mirroring the core0 one, so we
+    // can see whether this loop is actually cycling (and how fast) once
+    // past init, independent of whether any serial data ever arrives.
+    uint64_t last_core1_heartbeat_us = 0;
+    const uint64_t core1_heartbeat_interval_us = 5'000'000;
+    uint64_t core1_loop_count = 0;
     while (true) {
-        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+        core1_loop_count++;
+        uint64_t now_us = time_us_64();
+        if (now_us > (last_core1_heartbeat_us + core1_heartbeat_interval_us))
+        {
+            last_core1_heartbeat_us = now_us;
+            printf("core1 alive: loop_count=%u buf_copy_lock=%d\n", (uint32_t)core1_loop_count, (int)buf_copy_lock);
+        }
+        if (wifi_ok)
+        {
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+        }
         // serial time - doing with LED on
         if (buf_copy_lock == 0)
         {
             serial_read_buffer();
         }
-        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+        if (wifi_ok)
+        {
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+        }
     }
 }
 
@@ -1101,6 +1127,12 @@ uint64_t initial_startup_delay = 1'500'00;
 volatile uint64_t latest_abs_time_check = 0;
 uint64_t led_loop_counter = 0;
 const uint32_t loop_duration_micros = 1'000'000 / target_loop_rate;
+
+// Watchdog heartbeat - prints uptime over serial every 5s regardless of
+// whether any command has been received, so liveness of the main core0
+// loop can be confirmed independent of the serial link.
+volatile uint64_t last_uptime_print_us = 0;
+const uint64_t uptime_print_interval_us = 5'000'000;   // 5 seconds
 
 int main() {
     //set_sys_clock_48();
@@ -1129,6 +1161,11 @@ int main() {
     while(1)
     {
         latest_abs_time_check = get_absolute_time();
+        if (latest_abs_time_check > (last_uptime_print_us + uptime_print_interval_us))
+        {
+            last_uptime_print_us = latest_abs_time_check;
+            printf("uptime s: %u\n", (uint32_t)(latest_abs_time_check / 1'000'000));
+        }
         if (buf_copy_lock == 2)
         {
             process_msg();
