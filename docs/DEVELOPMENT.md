@@ -27,14 +27,18 @@ Desktop development environment is **set up and verified**:
   Ninja, and picotool. This supersedes the manual/command-line toolchain option
   in Phase 3 below; no separately-cloned `pico-sdk` is needed.
 - ✅ **Clean build verified** — produces `neo_tree.uf2` (plus `.elf/.bin/.hex`).
-- ✅ **Remote-flash prerequisite already met:** `pico_enable_stdio_usb` is
-  already `1` in `firmware/CMakeLists.txt`, so `picotool load -f` can reset the
-  Pico into BOOTSEL over USB (Phase 4.3). No firmware change needed there.
+- ✅ **Remote-SSH into the Pi for Python (Phase 2)** — working, key-based, via
+  the `treepi` alias.
+- ✅ **Remote deploy pipeline (Phase 4) — done, one command:** `tools/deploy.ps1`
+  builds on the desktop, ships the `.uf2` to the Pi, and flashes + verifies it
+  runs, with no physical access to either machine. Built differently than
+  originally planned below — see the note at the top of Phase 4 for why.
 - ℹ️ **Board target:** currently `pico_w` (RP2040); project is migrating to
   `pico2_w` (RP2350). Migration deferred.
 
-Still to do: Remote-SSH into the Pi for Python (Phase 2), and the remote deploy
-pipeline / deploy script (Phase 4). The phased plan below remains the roadmap.
+Still to do: camera calibration / 3D coordinate mapping, coordinate-driven
+volumetric rendering, the control interface, and the RP2040→RP2350 migration.
+The phased plan below remains the roadmap for what's done.
 
 ---
 
@@ -200,46 +204,64 @@ Goal: build the firmware on the good desktop instead of the weak laptop.
 5. **One-time sanity flash by hand** (BOOTSEL + drag the .uf2, or `picotool` over
    USB) to prove the desktop build runs on the tree before automating deploy.
 
-### Phase 4 — Remote deploy pipeline (desktop build → Pi flashes Pico)
+### Phase 4 — Remote deploy pipeline (desktop build → Pi flashes Pico) — ✅ done
 
 Goal: after editing firmware on the desktop, one command builds and flashes the
-Pico with no physical access.
+Pico with no physical access. **Implemented as `tools/deploy.ps1` +
+`tools/pi_flash.py`, built and verified 2026-09-21.**
 
-1. **Install picotool on the Pi:** build it from source or install the package;
-   confirm it reports RP2350 support (`picotool version`).
-2. **udev rules on the Pi** so picotool can access the Pico without `sudo` (add
-   the RP2xxx rules and your user to the right group). Otherwise every flash
-   needs root.
-3. **Enable reset-to-BOOTSEL in the firmware — planned ✅.** For fully remote
-   flashing, picotool must be able to reboot a *running* Pico into BOOTSEL over
-   USB. Build the firmware with USB stdio / the picotool reset interface enabled
-   (`pico_enable_stdio_usb(<target> 1)`, or the standalone
-   `pico_stdio_usb`/reset-interface option), which exposes the reset interface
-   picotool uses. Then `picotool load -f` forces the reboot itself — no BOOTSEL
-   button, no unplugging. Dan will add these build flags to the firmware.
-   Caveat to keep in mind: this reset interface shares the Pico's native USB with
-   the CDC serial channel used for mapping — see Phase 4.4 on releasing the port
-   before a flash.
-4. **Mind the shared USB port.** The same USB connection does double duty (CDC
-   serial for mapping commands *and* flashing). The deploy step must **release
-   the serial port first** — if the mapping Python (or any `screen`/`minicom`)
-   holds the port open, `picotool` can't reset the device. The deploy script
-   should ensure nothing else has the port open before flashing.
-5. **Deploy script** (`/tools/deploy.ps1` on the desktop, or a small Makefile
-   target). Sequence:
+**Built differently than originally planned below (kept for history).** The
+picotool-based plan (steps 1–2 as first written) turned out not to be
+viable: `picotool` isn't packaged for the Pi's Raspberry Pi OS repos or
+Debian's, and building it from source pulls in a full pico-sdk checkout plus
+libusb-dev just for one command. Instead, the deploy script uses a feature
+pico-sdk's `stdio_usb` already enables by default: the **"1200-baud touch"**
+reset-to-BOOTSEL — the same convention classic Arduino bootloaders use.
+Opening the Pico's existing CDC serial port at 1200 baud and closing it
+immediately (`pico/stdio_usb/reset_interface.c`,
+`PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE`, default `1`, magic rate `1200`)
+triggers the exact same reset-to-BOOTSEL that `picotool load -f` would have.
+No picotool, no libusb, no udev rules, no sudo — just pyserial, which the
+mapping venv already has. Once in BOOTSEL mode, Raspberry Pi OS's desktop
+session auto-mounts the Pico as a plain `RPI-RP2` USB drive, and a normal
+file copy onto it (no special tooling) triggers the actual flash, exactly
+like the manual BOOTSEL-drag-and-drop everyone already knows.
+
+1. ~~Install picotool on the Pi~~ — not needed; see above.
+2. ~~udev rules on the Pi~~ — not needed; the mount-and-copy approach uses
+   nothing but the desktop session's normal auto-mount handling.
+3. **Reset-to-BOOTSEL in the firmware** — no firmware change was needed at
+   all; `pico_enable_stdio_usb(neo_tree 1)` already enables the baud-rate
+   reset trick by default. (The vendor-interface/picotool reset path is also
+   enabled by default alongside it, so `picotool load -f` would still work
+   too if picotool ever gets installed some other way — the two mechanisms
+   aren't exclusive.)
+4. **Mind the shared USB port — still applies.** `tools/pi_flash.py` checks
+   with `fuser /dev/ttyACM0` before doing anything and refuses to proceed
+   (with a clear message) if something else has the port open — a mapping
+   script, `screen`/`minicom`, or a VSCode serial monitor left running.
+5. **Deploy script — `tools/deploy.ps1`** (desktop) + **`tools/pi_flash.py`**
+   (Pi, invoked over SSH). Sequence:
+   ```powershell
+   # on desktop:
+   .\tools\deploy.ps1
    ```
-   # on desktop, after a successful build:
-   scp build/firmware.uf2  tree-pi:/tmp/firmware.uf2
-   ssh tree-pi "picotool load -f -x /tmp/firmware.uf2"
-   #   -f : force the running Pico into BOOTSEL first
-   #   -x : execute (reboot into the new firmware) after loading
+   which does, end to end:
    ```
-   Wrap it so `.\deploy.ps1` = build + copy + flash + run.
-6. **VSCode task buttons:** add `tasks.json` entries in `/firmware` for "Build"
-   and "Build + Deploy" so it's one click. Optionally a task that opens the Pico's
-   serial output back over SSH to watch logs after flashing.
-7. **Test the full loop:** change a line, hit Build + Deploy, watch it take effect
-   on the tree. That closed loop is the whole objective of this workflow.
+   ninja (build/)                                   # desktop
+   scp build/neo_tree.uf2  treepi:/tmp/neo_tree.uf2  # desktop -> Pi
+   ssh treepi python3 tools/pi_flash.py /tmp/neo_tree.uf2
+   #   on the Pi: 1200-baud touch -> BOOTSEL -> wait for RPI-RP2 mount
+   #   -> copy .uf2 onto it -> wait for reboot back to /dev/ttyACM0
+   #   -> live NOOP round-trip over the real protocol to confirm it's
+   #      actually running the new firmware, not just that a file copied
+   ```
+6. **VSCode task buttons** — not done yet; `tools/deploy.ps1` runs fine
+   standalone from a terminal, a `tasks.json` entry is a nice-to-have on top.
+7. **Test the full loop — done.** Verified live against real hardware: build
+   → deploy → the Pico visibly drives the actual LED strings correctly
+   (single-LED walk, confirmed by eye through the mapping capture script's
+   camera feed).
 
 ### Phase 5 — Quality of life & hardening
 
