@@ -44,3 +44,12 @@ desktop.ini
 Claude outputs/
 CMakeLists-1.txt
 
+
+# ---- Python (mapping) ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- Mapping capture output (raw scan images kept out of git) ----
+mapping/captures/
