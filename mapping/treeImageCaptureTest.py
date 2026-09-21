@@ -4,6 +4,14 @@ import warnings
 # Set environment variable to suppress warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore:.*iCCP.*:UserWarning"
 
+# cv2.imshow() needs a live X/XWayland display. A terminal on the Pi's own
+# desktop already has this (DISPLAY=:0), but a plain SSH session (e.g. a
+# VSCode Remote-SSH terminal) does not, which makes the Qt platform plugin
+# fail with "could not connect to display". Default to the Pi's own local
+# session; only set if DISPLAY isn't already present so this is a no-op when
+# it's already correct (running locally, or via ssh -X/-Y forwarding).
+os.environ.setdefault("DISPLAY", ":0")
+
 import cv2
 import numpy as np
 import time
