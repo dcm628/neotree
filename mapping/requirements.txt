@@ -1,0 +1,10 @@
+# Python dependencies for the neotree LED mapping pipeline (runs on the Raspberry Pi).
+# Create a venv and install with:  pip install -r requirements.txt
+#
+# Note: on Raspberry Pi OS, OpenCV can alternatively be installed via apt
+# (`sudo apt install -y python3-opencv`) if the pip wheel gives trouble; in that
+# case create the venv with `--system-site-packages` so it can see the apt build.
+
+numpy
+opencv-python
+pyserial
