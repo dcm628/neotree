@@ -1140,6 +1140,11 @@ int main() {
     multicore_launch_core1(main_core1);
 
     printf("WS2812 Smoke Test, using pin %d", WS2812_PIN_STRING_1);
+    // Deploy-pipeline proof marker - a fresh, one-off token picked at the
+    // time this change was written, not derived from anything already on
+    // the board, so seeing it over serial after a deploy proves this exact
+    // build is what's actually running.
+    printf("\nDEPLOY MARKER: 081f4c04\n");
 
     // todo get free sm
     PIO pio = pio0;
@@ -1164,7 +1169,7 @@ int main() {
         if (latest_abs_time_check > (last_uptime_print_us + uptime_print_interval_us))
         {
             last_uptime_print_us = latest_abs_time_check;
-            printf("uptime s: %u\n", (uint32_t)(latest_abs_time_check / 1'000'000));
+            printf("uptime s: %u marker: 081f4c04\n", (uint32_t)(latest_abs_time_check / 1'000'000));
         }
         if (buf_copy_lock == 2)
         {
