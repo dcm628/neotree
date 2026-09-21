@@ -39,6 +39,14 @@ def set_camera_settings(captures, width=1920, height=1080, exposure=-5):
     :return: None
     """
     for cap in captures:
+        # Request MJPEG (compressed) instead of the default raw format.
+        # With 4 UVC webcams sharing a USB bus, raw YUYV at any reasonable
+        # resolution blows the isochronous bandwidth budget (seen as kernel
+        # "Not enough bandwidth for altsetting" errors and cameras dropping
+        # off the bus). MJPEG needs a fraction of the bandwidth. Must be set
+        # before width/height so the driver negotiates the resolution against
+        # the right format.
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
@@ -48,7 +56,10 @@ def set_camera_settings(captures, width=1920, height=1080, exposure=-5):
         actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
         actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
         actual_exposure = cap.get(cv2.CAP_PROP_EXPOSURE)
-        print(f"Camera {idx}: Width={actual_width}, Height={actual_height}, Exposure={actual_exposure}")
+        actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+        actual_fourcc_str = "".join(chr((actual_fourcc >> (8 * i)) & 0xFF) for i in range(4))
+        print(f"Camera {idx}: Width={actual_width}, Height={actual_height}, "
+              f"Exposure={actual_exposure}, FOURCC={actual_fourcc_str}")
 
 def capture_frame(cap):
     """
