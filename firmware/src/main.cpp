@@ -8,6 +8,7 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
+#include "hardware/sync.h"
 #include "ws2812.pio.h"
 #include "pico/multicore.h"
 #include "pico/cyw43_arch.h"
@@ -41,6 +42,25 @@ static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
 
 void write_string(uint8_t sm_to_update)
 {
+    // WS2812 is timing-critical: a gap of ~50us+ between bits mid-string is
+    // read by the LEDs as a reset/latch, corrupting everything downstream
+    // of the gap until the next full refresh - looks exactly like a string
+    // randomly flickering. At 800kHz that's 30us/pixel, so pushing one
+    // string (up to 300 LEDs here) takes up to ~9ms - long enough that a
+    // USB interrupt landing mid-loop (now firing far more often thanks to
+    // the continuous COLOR_GROUP_RGB_UPDATE traffic from randomize_leds.py)
+    // can plausibly stall the CPU long enough to trigger exactly that.
+    // Masking interrupts for this window doesn't drop incoming USB data -
+    // the RP2040 has a 4KB hardware DPRAM buffer the USB controller fills
+    // independently of firmware/interrupt servicing (usb_dpram.h,
+    // USB_DPRAM_MAX) - it just delays *processing* of what's already
+    // sitting there by up to this long, which is fine against the ~150ms
+    // gaps between messages this project actually sends. Scoped per-string
+    // (called 4x from write_my_tree()) rather than around the whole
+    // 4-string refresh, so the worst case is ~9ms instead of ~30ms and USB
+    // gets a brief gap to actually drain between strings.
+    uint32_t interrupts = save_and_disable_interrupts();
+
     // Sequential writes to the pio of all N led objects, very ugly, don't care.
     if (sm_to_update == 0)
     {
@@ -1054,6 +1074,8 @@ void write_string(uint8_t sm_to_update)
     put_pixel(sm_to_update, led_999.get_grb_word());
     put_pixel(sm_to_update, led_1000.get_grb_word());
     }
+
+    restore_interrupts(interrupts);
 };
 
 volatile uint32_t string_write_index=0;
