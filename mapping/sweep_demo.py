@@ -26,6 +26,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--axis', required=True, choices=['z', 'radius', 'omega'])
+    parser.add_argument('--range-min', type=int, default=None,
+                         help="override the swept range's start (default: 0, the synthetic-axis-sweep "
+                              "convention). Use real min/max mm (or degrees for omega) for real mapped data.")
+    parser.add_argument('--range-max', type=int, default=None,
+                         help="override the swept range's end (default: AXIS_RANGE, i.e. 999)")
     parser.add_argument('--width', type=int, default=30, help="window width along the axis")
     parser.add_argument('--step', type=int, default=10, help="how far the window moves per frame")
     parser.add_argument('--delay', type=float, default=0.1, help="seconds between frames")
@@ -40,16 +45,18 @@ def main():
     time.sleep(0.3)
     neoser.ser.read(neoser.ser.in_waiting or 1)
     r, g, b = args.color
+    range_min = 0 if args.range_min is None else args.range_min
+    range_max = AXIS_RANGE if args.range_max is None else args.range_max
 
-    print(f"Sweeping axis='{args.axis}' width={args.width} step={args.step} "
-          f"delay={args.delay}s x{args.loops} loop(s) - Ctrl+C to stop")
+    print(f"Sweeping axis='{args.axis}' range=[{range_min},{range_max}] width={args.width} "
+          f"step={args.step} delay={args.delay}s x{args.loops} loop(s) - Ctrl+C to stop")
     frame_count = 0
     t0 = time.time()
     try:
         for loop in range(args.loops):
-            pos = 0
-            while pos < AXIS_RANGE:
-                lo, hi = pos, min(pos + args.width, AXIS_RANGE - 1)
+            pos = range_min
+            while pos < range_max:
+                lo, hi = pos, min(pos + args.width, range_max - 1)
                 if args.axis == 'z':
                     neoser.write_tree_set_volume_cylindrical(
                         neoser.ser, lo, hi, 0, 65535, 0, 65535, r, g, b, True, verbose=False)
