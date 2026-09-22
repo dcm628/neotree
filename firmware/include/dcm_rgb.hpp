@@ -33,6 +33,29 @@ struct all_led_update_t
     dcm_rgb_data rgb_update;
 }__packed;
 
+// COLOR_GROUP_RGB_UPDATE payload - update several LEDs (each its own position
+// and color) in a single serial message instead of one round-trip per LED.
+// max_group_update_entries is bounded by SERIAL_BUFFER_SIZE (main.cpp): the
+// whole message (type + count + entries) has to fit in one read of the
+// fixed-size serial receive buffer, since serial_read_buffer() just greedily
+// drains whatever's immediately available in one pass rather than reassembling
+// a message across multiple reads.
+const size_t max_group_update_entries = 50;
+
+struct group_led_entry_t
+{
+    uint16_t led_string_position;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+}__packed;
+
+struct group_led_update_t
+{
+    uint8_t count;   // number of valid entries below (<= max_group_update_entries)
+    group_led_entry_t entries[max_group_update_entries];
+}__packed;
+
 struct single_led_pos_cylindrical_update_t
 {
     uint16_t led_string_position;
@@ -79,6 +102,7 @@ class RGB_LED_3D
         void static update_ALL();
         void static update_ALL(struct all_led_update_t* msg_in);
         void static update_single(struct single_led_update_t* msg_in);
+        void static update_group(struct group_led_update_t* msg_in);
         void static initialize_from_config();
 };
 

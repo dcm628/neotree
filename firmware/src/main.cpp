@@ -1086,7 +1086,12 @@ void write_my_tree()
 }
 
 uint8_t sleep_val = 25;
-#define SERIAL_BUFFER_SIZE 40
+// Was 40 - too small to hold a COLOR_GROUP_RGB_UPDATE message (up to
+// max_group_update_entries LEDs at 5 bytes each, see dcm_rgb.hpp). Every
+// message type shares this one fixed-size buffer, so bumping it just gives
+// the smaller messages more headroom - trivial extra RAM (2 buffers x a
+// few hundred bytes) on an RP2040.
+#define SERIAL_BUFFER_SIZE 256
 uint8_t serial_buf[SERIAL_BUFFER_SIZE] = {};    // 
 uint8_t serial_buf_copy[SERIAL_BUFFER_SIZE] = {};    // 
 uint8_t buf_copy_lock = 0;  // 0 = unlocked, 1 = locked, 2 = ready to read
@@ -1165,6 +1170,11 @@ struct read_pos_config_request_frame
     uint8_t s_msg_type;
     read_pos_config_request_t s_msg;
 }__packed;
+struct group_led_update_frame
+{
+    uint8_t s_msg_type;
+    group_led_update_t s_msg;
+}__packed;
 
 union single_led_update_msg
 {
@@ -1196,6 +1206,11 @@ union read_pos_config_request_msg
     uint8_t buf[SERIAL_BUFFER_SIZE];
     read_pos_config_request_frame msg;
 };
+union group_led_update_msg
+{
+    uint8_t buf[SERIAL_BUFFER_SIZE];
+    group_led_update_frame msg;
+};
 
 void process_msg()
 {
@@ -1225,6 +1240,7 @@ void process_msg()
     single_led_pos_cartesian_update_msg temp_single_led_pos_cartesian_update_msg;
     config_reload_msg temp_config_reload_msg;
     read_pos_config_request_msg temp_read_pos_config_msg;
+    group_led_update_msg temp_group_led_update_msg;
     switch (new_msg)
     {
     case serial_msg_type::NOOP:
@@ -1239,7 +1255,10 @@ void process_msg()
         msg_process_counter++;
         break;
     case serial_msg_type::COLOR_GROUP_RGB_UPDATE:
-        // don't do shit yet
+        memcpy(temp_group_led_update_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
+        RGB_LED_3D::update_group(&(temp_group_led_update_msg.msg.s_msg));
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
         break;
     case serial_msg_type::ALL_LED_UPDATE:
         memcpy(temp_all_led_update_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works

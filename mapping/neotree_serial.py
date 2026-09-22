@@ -69,6 +69,33 @@ def write_tree_single_led(ser, msg_type, led_position, r, g, b):
     # Write the packed data to the serial port
     ser.write(packed_data)
     print(f"Sent data: {packed_data}")
+MAX_GROUP_UPDATE_ENTRIES = 50  # must match max_group_update_entries in firmware/include/dcm_rgb.hpp
+
+def write_tree_group_leds(ser, msg_type, led_updates):
+    """
+    Update several LEDs (each its own position and color) in a single serial
+    message (COLOR_GROUP_RGB_UPDATE) instead of one round-trip per LED.
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :param msg_type: The message type (uint8_t) - COLOR_GROUP_RGB_UPDATE is 2.
+    :param led_updates: List of (led_position, r, g, b) tuples, at most
+        MAX_GROUP_UPDATE_ENTRIES long (the firmware's serial receive buffer
+        is fixed-size and has to hold the whole message in one read).
+    :return: None
+    """
+    count = len(led_updates)
+    if count > MAX_GROUP_UPDATE_ENTRIES:
+        raise ValueError(
+            f"write_tree_group_leds: {count} entries exceeds the firmware's "
+            f"MAX_GROUP_UPDATE_ENTRIES ({MAX_GROUP_UPDATE_ENTRIES}) - split into "
+            f"multiple calls."
+        )
+    packed_data = struct.pack('<BB', msg_type, count)
+    for led_position, r, g, b in led_updates:
+        packed_data += struct.pack('<HBBB', led_position, r, g, b)
+    ser.write(packed_data)
+    print(f"Sent group update: {count} LEDs ({len(packed_data)} bytes)")
+
 def write_tree_all_led(ser, msg_type, r, g, b):
     """
     Packs the provided data into a single byte string and writes it to the serial port.

@@ -2142,6 +2142,37 @@ void RGB_LED_3D::update_single(struct single_led_update_t* msg_in)
     }
 }
 
+void RGB_LED_3D::update_group(struct group_led_update_t* msg_in)
+{
+    uint8_t n = msg_in->count;
+    if (n > max_group_update_entries)
+    {
+        // Defensive clamp - a well-formed sender never sends more than
+        // max_group_update_entries (that's the whole point of the field),
+        // but don't walk off the end of the fixed-size entries array if it
+        // somehow does.
+        n = max_group_update_entries;
+    }
+    for (uint8_t i = 0; i < n; i++)
+    {
+        uint16_t pos = msg_in->entries[i].led_string_position;
+        if (pos < string_vec.size())
+        {
+            dcm_rgb_data color;
+            color.bytes.red = msg_in->entries[i].r;
+            color.bytes.green = msg_in->entries[i].g;
+            color.bytes.blue = msg_in->entries[i].b;
+            color.bytes.garbo = 0;
+            string_vec.at(pos)->set_secondary_RGB(color);
+        }
+        else
+        {
+            printf("group update: out of bounds, gahh: %u\n", pos);
+        }
+    }
+    printf("group update: %u LEDs\n", n);
+}
+
 void RGB_LED_3D::initialize_from_config()
 {
     uint32_t loop_index = 0;
