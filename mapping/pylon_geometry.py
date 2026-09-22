@@ -61,6 +61,38 @@ def focal_length_px(width_px, height_px, diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG
     return (diag_px / 2.0) / math.tan(math.radians(diagonal_fov_deg) / 2.0)
 
 
+def _undistort(right, up, k1):
+    """
+    Simple one-parameter radial undistortion: scales the normalized
+    (right, up) coordinates by (1 - k1*r^2). Approximate (real lens
+    distortion isn't exactly this form), but cheap and, per
+    fit_camera_tilt.py's self-calibration against real LED data, captures
+    most of what's there - a weak-to-moderate correlation (r=0.365) had
+    been observed between ray residual and distance from image center
+    before this was added; fitting k1 jointly with the top-camera
+    rotation dropped RMS ray residual a further 64.6% beyond rotation
+    alone (11.0mm -> 6.6mm on sweep 2).
+    """
+    r2 = right * right + up * up
+    scale = 1.0 - k1 * r2
+    return right * scale, up * scale
+
+
+def _distort(right, up, k1, iterations=10):
+    """Numerically inverts _undistort via fixed-point iteration, so
+    project() stays an exact inverse of ray_direction() (needed for the
+    self-test) without solving the distortion polynomial in closed form."""
+    if k1 == 0.0:
+        return right, up
+    obs_right, obs_up = right, up
+    for _ in range(iterations):
+        r2 = obs_right * obs_right + obs_up * obs_up
+        scale = 1.0 - k1 * r2
+        obs_right = right / scale
+        obs_up = up / scale
+    return obs_right, obs_up
+
+
 @dataclass
 class CameraModel:
     """A single camera's intrinsics + its pose within a pylon's local frame."""
@@ -71,6 +103,7 @@ class CameraModel:
     principal_x: float = None
     principal_y: float = None
     rotation: np.ndarray = None  # (3,3) - orientation relative to the parallel-cameras assumption, identity if None
+    k1: float = 0.0  # simple radial undistortion coefficient, see ray_direction/project
 
     def __post_init__(self):
         if self.principal_x is None:
@@ -101,6 +134,7 @@ class CameraModel:
         """
         right = (v - self.principal_y) / self.focal_px
         up = (u - self.principal_x) / self.focal_px
+        right, up = _undistort(right, up, self.k1)
         d = np.array([right, 1.0, up], dtype=float)
         d = self.rotation @ d
         return d / np.linalg.norm(d)
@@ -113,34 +147,49 @@ class CameraModel:
             return None  # behind the camera
         right = p[0] / p[1]
         up = p[2] / p[1]
+        right, up = _distort(right, up, self.k1)
         v = right * self.focal_px + self.principal_y
         u = up * self.focal_px + self.principal_x
         return u, v
 
 
-# Small rotation correction for the top camera, fitted by
-# fit_camera_tilt.py via self-calibration (minimizing ray residual across
-# sweep 2's 119 real LED point correspondences) rather than hand-derived -
-# confirms the user's suspicion that the cameras aren't parallel, though
-# the dominant fitted component (~2.5deg) is a yaw (rotation around the
-# vertical/Z axis) rather than the pitch that seemed likely from the
-# earlier delta_v-vs-position correlation. Dropped RMS ray residual from
-# 46.2mm to 11.5mm (93.8% reduction in sum-squared error) on sweep 2.
+# Top-camera rotation, fitted by fit_camera_tilt.py via self-calibration
+# (minimizing ray residual across sweep 2's 119 real LED point
+# correspondences) rather than hand-derived - confirms the user's
+# suspicion that the cameras aren't parallel. Dropped RMS ray residual
+# from 46.2mm to ~11mm (93.8% reduction in sum-squared error) and,
+# checked against the independently-known real tree height (~2130mm),
+# brought the reconstructed z-span to 2028mm - within ~5% of reality.
 # Still a coarse single-sweep fit, not a real multi-pose stereo
 # calibration - worth re-fitting if the rig is touched or a bigger/better
 # dataset becomes available.
+#
+# fit_camera_tilt.py can also jointly fit a shared radial distortion
+# coefficient (k1) on top of this rotation - tried and NOT adopted: it
+# dropped RMS residual further (11mm -> 6.6mm) but shrank the
+# reconstructed z-span to 1079mm, less than half the real tree height,
+# while leaving the existing outlier LEDs' residuals completely
+# unchanged. Residual improving while the independent real-world check
+# gets much worse, concentrated entirely on already-good points, is the
+# signature of overfitting a 4-parameter fit to only 119 points via an
+# unregularized grid search - not a genuine correction. k1 defaults to 0
+# (CameraModel and _undistort/_distort still support it, for whenever a
+# properly validated value - more data, cross-validation, or real
+# calibration - is available).
 TOP_CAMERA_RVEC = np.array([-0.0018518518518518518, 0.005555555555555556, 0.043621399176954734])
+SHARED_K1 = 0.0
 
 
 def make_pylon_cameras(width_px, height_px, spacing_mm=PYLON_CAMERA_SPACING_MM,
-                        diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG, top_rotation_rvec=TOP_CAMERA_RVEC):
+                        diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG, top_rotation_rvec=TOP_CAMERA_RVEC,
+                        k1=SHARED_K1):
     """Build the (bottom, top) CameraModel pair for one pylon."""
     f = focal_length_px(width_px, height_px, diagonal_fov_deg)
-    bottom = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, 0.0))
+    bottom = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, 0.0), k1=k1)
     top_rotation = None
     if top_rotation_rvec is not None:
         top_rotation, _ = cv2.Rodrigues(np.asarray(top_rotation_rvec, dtype=float))
-    top = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, spacing_mm), rotation=top_rotation)
+    top = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, spacing_mm), rotation=top_rotation, k1=k1)
     return bottom, top
 
 

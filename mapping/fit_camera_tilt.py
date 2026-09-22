@@ -1,13 +1,24 @@
 """
-Fits a small rotation correction for the top camera (relative to the
-parallel-cameras assumption in pylon_geometry.py) by minimizing total ray
+Fits a small rotation correction for the top camera plus a shared radial
+lens-distortion coefficient (relative to the parallel-cameras, no-
+distortion assumption in pylon_geometry.py) by minimizing total ray
 residual across a sweep's real LED point correspondences - self-
 calibration using the LEDs themselves as calibration targets, since we
 don't have a checkerboard calibration set up.
 
-Coarse-to-fine grid search over a 3-parameter rotation vector (Rodrigues
-form, via cv2.Rodrigues) - no scipy available on the Pi, and 3 parameters
-over a small smooth objective doesn't need gradients.
+Rotation alone (fit previously) cannot correct for a systematic bias that
+affects both cameras' rays the same correlated way (e.g. lens distortion)
+- that still intersects with low residual, just at the wrong point, so it
+survives a residual-based outlier filter undetected. A weak-to-moderate
+correlation (r=0.365) between ray residual and distance from image center
+was observed on sweep 2, consistent with uncorrected distortion - this
+fits a simple one-parameter radial model (k1, applied to both cameras
+identically since they're the same lens) jointly with the rotation to see
+how much it helps beyond the rotation alone.
+
+Coarse-to-fine grid search over a 4-parameter vector [rx, ry, rz, k1]
+(Rodrigues rotation + shared distortion) - no scipy available on the Pi,
+and 4 parameters over a small smooth objective doesn't need gradients.
 
 Usage (venv active):
     python3 fit_camera_tilt.py --sweep-id 2 --pylon-id A
@@ -21,16 +32,27 @@ import pylon_geometry as geom
 import sweep_db
 
 
-def total_residual(rvec, cameras_pixels, bottom_model, top_origin, top_focal, top_principal):
-    R, _ = cv2.Rodrigues(np.array(rvec, dtype=float))
+def distorted_ray_components(u, v, focal, principal, k1):
+    """Normalized (right, up) for pixel (u, v), with a simple radial
+    undistortion correction applied (see pylon_geometry note on why this
+    is only an approximate inverse, fine for a small k1)."""
+    right = (v - principal[1]) / focal
+    up = (u - principal[0]) / focal
+    r2 = right * right + up * up
+    scale = 1.0 - k1 * r2
+    return right * scale, up * scale
+
+
+def total_residual(params, cameras_pixels, bottom_model, top_origin, focal, bottom_principal, top_principal):
+    rx, ry, rz, k1 = params
+    R, _ = cv2.Rodrigues(np.array([rx, ry, rz], dtype=float))
     total = 0.0
     for bu, bv, tu, tv in cameras_pixels:
-        d_bottom = bottom_model.ray_direction(bu, bv)
-        # top camera's "ideal" (parallel-assumption) ray direction, then rotated
-        right = (tv - top_principal[1]) / top_focal
-        up = (tu - top_principal[0]) / top_focal
-        d_top_ideal = np.array([right, 1.0, up])
-        d_top_ideal = d_top_ideal / np.linalg.norm(d_top_ideal)
+        br, bup = distorted_ray_components(bu, bv, focal, bottom_principal, k1)
+        d_bottom = np.array([br, 1.0, bup]); d_bottom /= np.linalg.norm(d_bottom)
+
+        tr, tup = distorted_ray_components(tu, tv, focal, top_principal, k1)
+        d_top_ideal = np.array([tr, 1.0, tup]); d_top_ideal /= np.linalg.norm(d_top_ideal)
         d_top = R @ d_top_ideal
 
         origins = [bottom_model.origin, top_origin]
@@ -41,34 +63,33 @@ def total_residual(rvec, cameras_pixels, bottom_model, top_origin, top_focal, to
             A += M; b += M @ o
         pt, *_ = np.linalg.lstsq(A, b, rcond=None)
         for o, d in zip(origins, directions):
-            v = pt - o
-            perp = v - np.dot(v, d) * d
+            v_ = pt - o
+            perp = v_ - np.dot(v_, d) * d
             total += np.dot(perp, perp)
     return total
 
 
-def grid_search(cameras_pixels, bottom_model, top_origin, top_focal, top_principal,
-                 center, half_range, steps, depth):
-    best_rvec = center
-    best_score = total_residual(center, cameras_pixels, bottom_model, top_origin, top_focal, top_principal)
+def grid_search(cameras_pixels, bottom_model, top_origin, focal, bottom_principal, top_principal,
+                 center, half_ranges, steps, depth):
+    n = len(center)
+    best = list(center)
+    best_score = total_residual(best, cameras_pixels, bottom_model, top_origin, focal, bottom_principal, top_principal)
+    ranges = list(half_ranges)
     for _ in range(depth):
         improved = False
-        candidates = []
-        for i in range(3):
+        for i in range(n):
             for frac in np.linspace(-1, 1, steps):
-                cand = list(best_rvec)
-                cand[i] = best_rvec[i] + frac * half_range
-                candidates.append(cand)
-        for cand in candidates:
-            score = total_residual(cand, cameras_pixels, bottom_model, top_origin, top_focal, top_principal)
-            if score < best_score:
-                best_score = score
-                best_rvec = cand
-                improved = True
-        half_range /= 3.0
+                cand = list(best)
+                cand[i] = best[i] + frac * ranges[i]
+                score = total_residual(cand, cameras_pixels, bottom_model, top_origin, focal, bottom_principal, top_principal)
+                if score < best_score:
+                    best_score = score
+                    best = cand
+                    improved = True
+        ranges = [r / 3.0 for r in ranges]
         if not improved:
             continue
-    return best_rvec, best_score
+    return best, best_score
 
 
 def main():
@@ -98,25 +119,34 @@ def main():
     ''', (sweep_id, args.pylon_id)).fetchall()
     conn.close()
 
-    bottom_model, top_model = geom.make_pylon_cameras(width, height, spacing_mm=args.spacing_mm)
+    bottom_model, top_model = geom.make_pylon_cameras(width, height, spacing_mm=args.spacing_mm,
+                                                        top_rotation_rvec=None)
     top_origin = top_model.origin
-    top_focal = top_model.focal_px
+    focal = top_model.focal_px
+    bottom_principal = (bottom_model.principal_x, bottom_model.principal_y)
     top_principal = (top_model.principal_x, top_model.principal_y)
 
-    baseline_score = total_residual([0, 0, 0], rows, bottom_model, top_origin, top_focal, top_principal)
-    print(f"n={len(rows)} points, sweep {sweep_id} pylon {args.pylon_id}")
-    print(f"baseline (no rotation correction): sum_sq_residual={baseline_score:.1f}  "
-          f"rms_per_ray={np.sqrt(baseline_score/(2*len(rows))):.2f}mm")
+    baseline_score = total_residual([0, 0, 0, 0.0], rows, bottom_model, top_origin, focal, bottom_principal, top_principal)
+    n = len(rows)
+    print(f"n={n} points, sweep {sweep_id} pylon {args.pylon_id}")
+    print(f"baseline (no correction): sum_sq={baseline_score:.1f}  rms_per_ray={np.sqrt(baseline_score/(2*n)):.2f}mm")
 
-    best_rvec, best_score = grid_search(
-        rows, bottom_model, top_origin, top_focal, top_principal,
-        center=[0.0, 0.0, 0.0], half_range=0.05, steps=7, depth=6)
+    # Stage 1: rotation only (reproduces the earlier fit, as a sanity checkpoint)
+    rot_only, rot_score = grid_search(
+        rows, bottom_model, top_origin, focal, bottom_principal, top_principal,
+        center=[0.0, 0.0, 0.0, 0.0], half_ranges=[0.05, 0.05, 0.05, 0.0], steps=7, depth=6)
+    print(f"rotation-only: rvec_deg={[round(np.degrees(v),3) for v in rot_only[:3]]}  "
+          f"rms_per_ray={np.sqrt(rot_score/(2*n)):.2f}mm")
 
-    print(f"fitted rvec (radians): {best_rvec}")
-    print(f"fitted rvec (degrees): {[np.degrees(v) for v in best_rvec]}")
-    print(f"corrected: sum_sq_residual={best_score:.1f}  "
-          f"rms_per_ray={np.sqrt(best_score/(2*len(rows))):.2f}mm")
-    print(f"improvement: {100*(1-best_score/baseline_score):.1f}%")
+    # Stage 2: rotation + shared radial distortion, starting from stage 1's rotation
+    joint, joint_score = grid_search(
+        rows, bottom_model, top_origin, focal, bottom_principal, top_principal,
+        center=[rot_only[0], rot_only[1], rot_only[2], 0.0],
+        half_ranges=[0.02, 0.02, 0.02, 0.5], steps=9, depth=6)
+    print(f"rotation+distortion: rvec_deg={[round(np.degrees(v),3) for v in joint[:3]]}  k1={joint[3]:.4f}  "
+          f"rms_per_ray={np.sqrt(joint_score/(2*n)):.2f}mm")
+    print(f"improvement over rotation-only: {100*(1-joint_score/rot_score):.1f}%")
+    print(f"improvement over baseline: {100*(1-joint_score/baseline_score):.1f}%")
 
 
 if __name__ == "__main__":
