@@ -5,7 +5,11 @@ and clear_outside_volume lets the base color show through everywhere
 outside it - so the base color is set once at startup (--base-color)
 rather than left as whatever's currently loaded, since that's commonly
 black right now (left over from calibration/testing, not a real display
-setting).
+setting). Defaults to firmware's own verified white_____ preset
+(dcm_rgb.cpp) rather than a guessed RGB triple - a guessed "warm amber"
+looked wrong on the real hardware (likely voltage drop along the strings
+affecting the R/G/B LEDs differently), where the firmware presets were
+already tuned by eye against the real strings.
 
 Two modes:
   --mode linear (default): constant velocity, one full pass per
@@ -145,9 +149,14 @@ def main():
                          help="(--mode gravity/launch only) target frame rate during the motion")
     parser.add_argument('--range-min', type=int, default=None)
     parser.add_argument('--range-max', type=int, default=None)
-    parser.add_argument('--base-color', type=int, nargs=3, default=[255, 147, 41], metavar=('R', 'G', 'B'),
-                         help="set once at startup (default: warm white/amber, like incandescent "
-                              "string lights - a cozy backdrop for the bright random sweep band)")
+    parser.add_argument('--base-color', type=int, nargs=3, default=[80, 80, 80], metavar=('R', 'G', 'B'),
+                         help="set once at startup (default: (80,80,80), the RGB values of "
+                              "firmware's own white_____ preset (dcm_rgb.cpp) - user-verified "
+                              "visually pleasing on the real strings, unlike a guessed value. An "
+                              "earlier guessed 'warm amber' (255,147,41) looked wrong on the real "
+                              "hardware - likely voltage drop along the strings affecting the "
+                              "R/G/B LEDs' apparent color differently, not something a plausible-"
+                              "looking digital RGB triple accounts for)")
     args = parser.parse_args()
 
     ranges = full_sweep_sequence.real_ranges(args.db)
