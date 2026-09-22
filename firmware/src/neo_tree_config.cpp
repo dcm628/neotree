@@ -108,6 +108,47 @@ bool verify_pos_config(string_led_config set_config, string_led_config read_conf
     return matches;
 }
 
+// Erases and programs the full reserved flash region with an entire
+// neo_tree_pos_config_data struct. Shared by write_flash_pos_config()
+// (which patches one entry into posConfigData first) and
+// reset_pos_config_to_default() (which writes the compiled-in default
+// wholesale).
+static void write_flash_pos_config_raw(const neo_tree_pos_config_data& data)
+{
+    // Stage the full reserved region to write. This buffer is several KB -
+    // it MUST be static (BSS), never a stack local: each core's entire
+    // stack is only 4096 bytes total (see memmap_custom.ld
+    // SCRATCH_X/SCRATCH_Y), so a buffer this size as a local would consume
+    // most or all of the stack with zero margin for anything else,
+    // risking a stack overflow. (An earlier version of this function did
+    // exactly that, with a same-sized stack-local buffer.)
+    static uint8_t staging[CONFIG_FLASH_REGION_SIZE];
+    memset(staging, 0xFF, sizeof(staging));
+    memcpy(staging, &data, sizeof(data));
+
+    // Pause core1 for the duration of the erase/program. Both cores
+    // execute from flash (XIP) continuously, and core1 in particular is
+    // always spinning in its serial-read loop with no idle time.
+    // hardware/flash.h documents that flash_range_erase/program are
+    // *unsafe* if the other core can fetch from flash concurrently, and
+    // recommends exactly this: the multicore_lockout functions.
+    // save_and_disable_interrupts() alone (an earlier approach) only
+    // protects the core that calls it - core1 was never paused, so it
+    // could fault mid-instruction-fetch the moment XIP was suspended.
+    multicore_lockout_start_blocking();
+    uint32_t interrupts = save_and_disable_interrupts();
+
+    flash_range_erase(CONFIG_FLASH_TARGET_OFFSET, CONFIG_FLASH_REGION_SIZE);
+    // Program the FULL reserved region, not just one page. An earlier
+    // version erased a full 4096-byte sector but only programmed back 256
+    // bytes (one page) of a 4024-byte struct, leaving most of the LED
+    // position array as erased/blank flash after every write.
+    flash_range_program(CONFIG_FLASH_TARGET_OFFSET, staging, CONFIG_FLASH_REGION_SIZE);
+
+    restore_interrupts(interrupts);
+    multicore_lockout_end_blocking();
+}
+
 bool write_flash_pos_config(string_led_config set_config)
 {
     printf("write_flash_pos_config: position %u\n", set_config.string_position);
@@ -123,39 +164,7 @@ bool write_flash_pos_config(string_led_config set_config)
     // immediately even if something below goes wrong - only a future
     // reboot before a successful flash write would lose it.
     posConfigData.tree_config_array[set_config.string_position] = set_config;
-
-    // Stage the full reserved region to write. This buffer is several KB -
-    // it MUST be static (BSS), never a stack local: each core's entire
-    // stack is only 4096 bytes total (see memmap_custom.ld
-    // SCRATCH_X/SCRATCH_Y), so a buffer this size as a local would consume
-    // most or all of the stack with zero margin for anything else,
-    // risking a stack overflow. (The previous version of this function
-    // did exactly that, with a same-sized stack-local buffer.)
-    static uint8_t staging[CONFIG_FLASH_REGION_SIZE];
-    memset(staging, 0xFF, sizeof(staging));
-    memcpy(staging, &posConfigData, sizeof(posConfigData));
-
-    // Pause core1 for the duration of the erase/program. Both cores
-    // execute from flash (XIP) continuously, and core1 in particular is
-    // always spinning in its serial-read loop with no idle time.
-    // hardware/flash.h documents that flash_range_erase/program are
-    // *unsafe* if the other core can fetch from flash concurrently, and
-    // recommends exactly this: the multicore_lockout functions.
-    // save_and_disable_interrupts() alone (the previous approach) only
-    // protects the core that calls it - core1 was never paused, so it
-    // could fault mid-instruction-fetch the moment XIP was suspended.
-    multicore_lockout_start_blocking();
-    uint32_t interrupts = save_and_disable_interrupts();
-
-    flash_range_erase(CONFIG_FLASH_TARGET_OFFSET, CONFIG_FLASH_REGION_SIZE);
-    // Program the FULL reserved region, not just one page. The previous
-    // version erased a full 4096-byte sector but only programmed back 256
-    // bytes (one page) of a 4024-byte struct, leaving most of the LED
-    // position array as erased/blank flash after every write.
-    flash_range_program(CONFIG_FLASH_TARGET_OFFSET, staging, CONFIG_FLASH_REGION_SIZE);
-
-    restore_interrupts(interrupts);
-    multicore_lockout_end_blocking();
+    write_flash_pos_config_raw(posConfigData);
 
     // Verify against the actual flash content (not the RAM copy we set
     // ourselves above, which would trivially "match" regardless of
@@ -163,5 +172,19 @@ bool write_flash_pos_config(string_led_config set_config)
     bool write_success = verify_pos_config(
         set_config, flash_config_ptr()->tree_config_array[set_config.string_position]);
     printf("write_flash_pos_config: verify %s\n", write_success ? "OK" : "FAILED");
+    return write_success;
+}
+
+bool reset_pos_config_to_default()
+{
+    printf("reset_pos_config_to_default: overwriting flash + RAM with compiled-in default\n");
+    posConfigData = get_default_tree_pos_config_data();
+    write_flash_pos_config_raw(posConfigData);
+
+    const neo_tree_pos_config_data* flash_data = flash_config_ptr();
+    bool write_success = (flash_data->config_header.type_id == config_type::string_position &&
+                          flash_data->config_header.size_bytes == sizeof(neo_tree_pos_config_data) &&
+                          flash_data->max_pos_index == max_led_config_size);
+    printf("reset_pos_config_to_default: verify %s\n", write_success ? "OK" : "FAILED");
     return write_success;
 }

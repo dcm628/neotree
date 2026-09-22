@@ -6,6 +6,7 @@
 using std::array;
 
 #include "dcm_physics_math.hpp"
+#include "generated_pos_config.hpp"
 
 struct string_led_config
 {
@@ -63,6 +64,15 @@ void print_pos_config(uint16_t string_position_in);
 // hold a valid config yet (e.g. first boot ever, or a mismatched struct
 // version). Call once at startup, before anything reads posConfigData.
 void load_pos_config_from_flash();
+// Overwrites BOTH the RAM working copy and the persisted flash config with
+// the compiled-in default (mapping/generate_pos_config_header.py) -
+// triggered by the RESET_POS_CONFIG_TO_DEFAULT serial command. The
+// intended workflow for pushing a full coordinate update: regenerate that
+// header from new sweep data, rebuild/reflash, then send this once
+// instead of replaying ~1000 individual position writes over serial.
+// Caller still needs RGB_LED_3D::initialize_from_config() afterward to
+// re-sync live LED objects, same as CONFIG_RELOAD.
+bool reset_pos_config_to_default();
 
 // RAM-resident working copy - the single source of truth everything reads
 // (lookup_pos_config, RGB_LED_3D::initialize_from_config, etc). No longer
@@ -82,10 +92,15 @@ constexpr neo_tree_pos_config_data get_default_tree_pos_config_data() {
 
     config_data.max_pos_index = max_led_config_size;
 
-    // Initialize tree_config_array with default values
+    // Compile-time default from the best current real sweep data (see
+    // mapping/generate_pos_config_header.py) - a clean flash boots with
+    // actual measured LED positions instead of needing the whole
+    // serial-write population pass re-run. Unsolved LEDs come out of the
+    // generator already set to the null sentinel (z=-32768), so they're
+    // excluded from any sane volume bound without special-casing here.
     for (size_t i = 0; i < max_led_config_size; ++i) {
-        config_data.tree_config_array[i].string_position = static_cast<uint16_t>(i); // Example string position
-        config_data.tree_config_array[i].coordinates = {static_cast<int16_t>(i), static_cast<uint16_t>(i), static_cast<uint16_t>(i)}; // Default cylindrical coordinates (x=0, y=0, z=0), incrementing with i to allow a test sweep in any axis to work as a string sweep
+        config_data.tree_config_array[i].string_position = static_cast<uint16_t>(i);
+        config_data.tree_config_array[i].coordinates = generated_led_coordinates[i];
     }
 
     return config_data;

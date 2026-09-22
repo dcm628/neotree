@@ -235,6 +235,26 @@ def write_tree_set_volume_cylindrical(ser, z_min, z_max, radius_min, radius_max,
     if verbose:
         print(f"Sent set_volume_cylindrical: {packed_data}")
 
+RESET_POS_CONFIG_TO_DEFAULT_MSG_TYPE = 11
+
+def write_tree_reset_pos_config_to_default(ser):
+    """
+    One-shot: overwrites BOTH the persisted flash position config and the
+    live LED objects with the firmware's compiled-in default (baked in by
+    mapping/generate_pos_config_header.py at build time). The intended
+    workflow for pushing a full coordinate update: regenerate that header
+    from new sweep data, rebuild/reflash (tools/deploy.ps1), then send
+    this once instead of replaying ~1000 individual LED_POS_UPDATE_* writes
+    over serial - much faster, and avoids stale flash-persisted data
+    silently overriding freshly reflashed coordinates.
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :return: None
+    """
+    packed_data = struct.pack('<B', RESET_POS_CONFIG_TO_DEFAULT_MSG_TYPE)
+    ser.write(packed_data)
+    print("Sent reset_pos_config_to_default")
+
 def cleanup_serial():
     """
     Closes the serial port connection if it is open.

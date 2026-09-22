@@ -1160,6 +1160,12 @@ enum class serial_msg_type : uint8_t
     READ_POS_CONFIG,
     SET_VOLUME_CARTESIAN,
     SET_VOLUME_CYLINDRICAL,
+    // One-shot: overwrites both flash and the live tree with the
+    // compiled-in default position config (mapping/
+    // generate_pos_config_header.py) - the fast path for pushing a full
+    // coordinate update (reflash with freshly generated data, then send
+    // this) instead of replaying ~1000 individual position writes.
+    RESET_POS_CONFIG_TO_DEFAULT,
 };
 
 uint32_t msg_process_counter = 0;
@@ -1366,7 +1372,13 @@ void process_msg()
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
-    
+    case serial_msg_type::RESET_POS_CONFIG_TO_DEFAULT:
+        reset_pos_config_to_default();
+        RGB_LED_3D::initialize_from_config();
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+
     default:
         // not a valid msg_type
         printf("Not a valid msg type");
