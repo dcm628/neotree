@@ -235,6 +235,27 @@ def write_tree_set_volume_cylindrical(ser, z_min, z_max, radius_min, radius_max,
     if verbose:
         print(f"Sent set_volume_cylindrical: {packed_data}")
 
+ALL_LED_UPDATE_BASE_MSG_TYPE = 12
+
+def write_tree_all_led_base(ser, r, g, b):
+    """
+    Sets the PRIMARY/base color for every LED - distinct from
+    write_tree_all_led() (msg_type 3), which only ever touches the
+    secondary overlay. This is the color a LED falls back to whenever it
+    isn't otherwise lit (e.g. outside a SET_VOLUME_* window with
+    clear_outside_volume set), so a volume sweep against a non-black base
+    pattern (e.g. the teal default on some LED ranges) will show that base
+    color everywhere outside the current window instead of going dark -
+    set this to black first for a clean sweep test.
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :param r, g, b: uint8_t.
+    :return: None
+    """
+    packed_data = struct.pack('<BBBB', ALL_LED_UPDATE_BASE_MSG_TYPE, r, g, b)
+    ser.write(packed_data)
+    print(f"Sent data: {packed_data}")
+
 RESET_POS_CONFIG_TO_DEFAULT_MSG_TYPE = 11
 
 def write_tree_reset_pos_config_to_default(ser):

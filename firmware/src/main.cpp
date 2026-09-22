@@ -1166,6 +1166,11 @@ enum class serial_msg_type : uint8_t
     // coordinate update (reflash with freshly generated data, then send
     // this) instead of replaying ~1000 individual position writes.
     RESET_POS_CONFIG_TO_DEFAULT,
+    // Sets the PRIMARY/base color for every LED (same payload shape as
+    // ALL_LED_UPDATE, which only ever touches the secondary overlay) - the
+    // color shown when a LED isn't currently lit by anything else, e.g.
+    // outside a SET_VOLUME_* window with clear_outside_volume set.
+    ALL_LED_UPDATE_BASE,
 };
 
 uint32_t msg_process_counter = 0;
@@ -1375,6 +1380,12 @@ void process_msg()
     case serial_msg_type::RESET_POS_CONFIG_TO_DEFAULT:
         reset_pos_config_to_default();
         RGB_LED_3D::initialize_from_config();
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::ALL_LED_UPDATE_BASE:
+        memcpy(temp_all_led_update_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
+        RGB_LED_3D::update_ALL_base(&(temp_all_led_update_msg.msg.s_msg));
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;

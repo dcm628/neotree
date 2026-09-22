@@ -2121,6 +2121,30 @@ void RGB_LED_3D::update_ALL(struct all_led_update_t* msg_in)
     printf("%u\n", msg_in->rgb_update.bytes.blue);
 }
 
+void RGB_LED_3D::set_base_RGB(dcm_rgb_data rgb_data_in)
+{
+    rgb_data_base = rgb_data_in;
+}
+
+// Sets the PRIMARY/base color for every LED - distinct from update_ALL(),
+// which only ever touches the secondary overlay. Needed because
+// get_grb_word() falls back to rgb_data_base whenever secondary_toggle is
+// false (e.g. a LED outside a SET_VOLUME_* window with clear_outside_volume
+// set) - until now rgb_data_base was only ever set once at construction
+// (init_my_tree()'s per-range startup colors), so there was no way to make
+// the "off" state of a volume sweep actually black if the base pattern
+// wasn't already black.
+void RGB_LED_3D::update_ALL_base(struct all_led_update_t* msg_in)
+{
+    for (auto & element : string_vec) {
+    element->set_base_RGB(msg_in->rgb_update);
+    }
+    printf("all leds base color updated to: ");
+    printf("%u\n", msg_in->rgb_update.bytes.red);
+    printf("%u\n", msg_in->rgb_update.bytes.green);
+    printf("%u\n", msg_in->rgb_update.bytes.blue);
+}
+
 void RGB_LED_3D::update_single(struct single_led_update_t* msg_in)
 {
     // std lib range checks but it throws, I want to just ignore out of range calls without crashing.

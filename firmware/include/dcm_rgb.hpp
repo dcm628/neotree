@@ -149,9 +149,11 @@ class RGB_LED_3D
         uint32_t get_grb_word();
         void set_secondary_toggle(bool toggle_in);
         void set_secondary_RGB(dcm_rgb_data rgb_data_in, bool clear_on_zero = true);
+        void set_base_RGB(dcm_rgb_data rgb_data_in);
         void effect_state_machine();
         void static update_ALL();
         void static update_ALL(struct all_led_update_t* msg_in);
+        void static update_ALL_base(struct all_led_update_t* msg_in);
         void static update_single(struct single_led_update_t* msg_in);
         void static update_group(struct group_led_update_t* msg_in);
         void static update_volume_cartesian(struct set_volume_cartesian_t* msg_in);
