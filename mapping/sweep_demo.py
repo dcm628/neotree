@@ -1,0 +1,71 @@
+"""
+Animates a SET_VOLUME_CYLINDRICAL sweep: a bounding window of fixed width
+moves across one axis (z, radius, or omega) over the full 0..999 synthetic
+range, repainting each frame with clear_outside_volume=True so only the
+current window is lit - a moving flat layer (z), rotating pie slice
+(omega), or expanding/contracting ring (radius).
+
+Requires the matching synthetic config already written via
+write_axis_sweep_config.py --axis <same axis>, and a CONFIG_RELOAD sent
+since (write_axis_sweep_config.py does this automatically at the end).
+
+Usage (venv active):
+    python3 sweep_demo.py --axis omega --width 30 --step 10 --delay 0.1
+    python3 sweep_demo.py --axis z --width 50 --step 15 --delay 0.15 --loops 3
+Ctrl+C to stop.
+"""
+import argparse
+import time
+
+import neotree_serial as neoser
+
+AXIS_RANGE = 1000  # matches write_axis_sweep_config.py's synthetic 0..999 sweep
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--axis', required=True, choices=['z', 'radius', 'omega'])
+    parser.add_argument('--width', type=int, default=30, help="window width along the axis")
+    parser.add_argument('--step', type=int, default=10, help="how far the window moves per frame")
+    parser.add_argument('--delay', type=float, default=0.1, help="seconds between frames")
+    parser.add_argument('--color', type=int, nargs=3, default=[255, 255, 255], metavar=('R', 'G', 'B'))
+    parser.add_argument('--loops', type=int, default=1, help="how many full passes to run")
+    args = parser.parse_args()
+
+    error = neoser.open_neotree_serial('/dev/ttyACM0', baudrate=115200, timeout=0.2)
+    if error:
+        print(error)
+        return
+    time.sleep(0.3)
+    neoser.ser.read(neoser.ser.in_waiting or 1)
+    r, g, b = args.color
+
+    print(f"Sweeping axis='{args.axis}' width={args.width} step={args.step} "
+          f"delay={args.delay}s x{args.loops} loop(s) - Ctrl+C to stop")
+    try:
+        for loop in range(args.loops):
+            pos = 0
+            while pos < AXIS_RANGE:
+                lo, hi = pos, min(pos + args.width, AXIS_RANGE - 1)
+                if args.axis == 'z':
+                    neoser.write_tree_set_volume_cylindrical(
+                        neoser.ser, lo, hi, 0, 65535, 0, 65535, r, g, b, True)
+                elif args.axis == 'radius':
+                    neoser.write_tree_set_volume_cylindrical(
+                        neoser.ser, -32768, 32767, lo, hi, 0, 65535, r, g, b, True)
+                else:  # omega
+                    neoser.write_tree_set_volume_cylindrical(
+                        neoser.ser, -32768, 32767, 0, 65535, lo, hi, r, g, b, True)
+                neoser.ser.reset_input_buffer()
+                pos += args.step
+                time.sleep(args.delay)
+            print(f"  loop {loop + 1}/{args.loops} done")
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        neoser.cleanup_serial()
+
+
+if __name__ == "__main__":
+    main()
