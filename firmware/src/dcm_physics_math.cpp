@@ -37,8 +37,16 @@ cylindrical_coordinates transform_cartesian_to_cylindrical(cartesian_coordinates
     // Calculate radius from x and y
     return_coordinates.radius = static_cast<uint16_t>(sqrt(x * x + y * y));
 
-    // Calculate omega (in degrees)
-    double omega_rad = atan2(y, x);  // atan2 returns radians
+    // Calculate omega (in degrees). atan2 returns [-pi, pi] - omega is
+    // uint16_t, and casting a negative double straight to an unsigned type
+    // is undefined behavior in C++ (confirmed by testing: every LED whose
+    // true angle was negative came back omega=0). Normalize into [0, 360)
+    // first; transform_cylindrical_to_cartesian's inverse uses cos/sin
+    // directly, which are periodic, so this stays consistent both ways.
+    double omega_rad = atan2(y, x);
+    if (omega_rad < 0) {
+        omega_rad += 2.0 * M_PI;
+    }
     return_coordinates.omega = static_cast<uint16_t>(omega_rad * 180.0 / M_PI);  // Convert radians to degrees
 
     // z remains the same (no casting needed)
