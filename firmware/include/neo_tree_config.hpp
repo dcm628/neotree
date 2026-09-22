@@ -32,7 +32,12 @@ struct neo_tree_config_header
     uint32_t size_bytes;
 }__packed;
 
-const size_t max_led_config_size = 500;
+// Matches the full 1000-LED object count declared in dcm_rgb.hpp/.cpp
+// (led_1..led_1000). Not all of those are necessarily wired to a physical
+// string in write_string() (main.cpp) yet - that mapping is pending a
+// physical audit of the tree - but the position-config storage itself
+// should be able to address the full range regardless.
+const size_t max_led_config_size = 1000;
 struct neo_tree_pos_config_data
 {
     neo_tree_config_header config_header;

@@ -6,20 +6,30 @@
 #include "hardware/sync.h"
 #include "pico/multicore.h"
 
-// Reserve the last sector of flash for config storage, at a fixed offset
-// entirely independent of wherever the linker happens to place program
-// code/data. This is the standard pico-sdk pattern (matches the SDK's own
+// Reserve however many whole flash sectors the config struct actually
+// needs (rounded up), at a fixed offset at the end of flash - entirely
+// independent of wherever the linker happens to place program code/data.
+// This is the standard pico-sdk pattern (matches the SDK's own
 // flash_program.c example) and replaces the previous approach of a custom
 // linker section, which placed the struct mid-image, only 1024-byte
 // aligned (flash_range_erase() requires 4096-byte sector alignment), and
 // directly adjacent to .data's flash-resident initial values - a
 // full-sector erase from that misaligned offset was silently corrupting
-// them on every write. This binary is ~180KB; the reserved sector sits at
+// them on every write. This binary is ~180KB; the reserved region sits at
 // the very end of the 2MB chip, nowhere near it.
-static_assert(sizeof(neo_tree_pos_config_data) <= FLASH_SECTOR_SIZE,
-              "neo_tree_pos_config_data must fit in a single flash sector - "
-              "the write path below only erases/programs one sector");
-#define CONFIG_FLASH_TARGET_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
+//
+// Computed rather than hardcoded to "1 sector" so bumping
+// max_led_config_size (neo_tree_config.hpp) doesn't silently overflow a
+// fixed single-sector assumption - it just reserves more space
+// automatically. The sanity static_assert below still catches a truly
+// runaway size (e.g. a typo turning max_led_config_size into something
+// enormous) rather than silently reserving a huge, wrong chunk of flash.
+#define CONFIG_FLASH_REGION_SIZE \
+    (((sizeof(neo_tree_pos_config_data) + FLASH_SECTOR_SIZE - 1) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE)
+static_assert(CONFIG_FLASH_REGION_SIZE <= 16 * FLASH_SECTOR_SIZE,
+              "neo_tree_pos_config_data is suspiciously large (>16 sectors / 64KB) - "
+              "check max_led_config_size wasn't set to something unintended");
+#define CONFIG_FLASH_TARGET_OFFSET (PICO_FLASH_SIZE_BYTES - CONFIG_FLASH_REGION_SIZE)
 
 // RAM-resident working copy - the single source of truth everything reads.
 // Compile-time default-initialized so there's always a sane value even
@@ -114,13 +124,14 @@ bool write_flash_pos_config(string_led_config set_config)
     // reboot before a successful flash write would lose it.
     posConfigData.tree_config_array[set_config.string_position] = set_config;
 
-    // Stage the full sector to write. This buffer is ~4KB - it MUST be
-    // static (BSS), never a stack local: each core's entire stack is only
-    // 4096 bytes total (see memmap_custom.ld SCRATCH_X/SCRATCH_Y), so a
-    // 4KB local here would consume essentially the whole stack with zero
-    // margin for anything else, guaranteeing a stack overflow. (The
-    // previous version of this function did exactly that.)
-    static uint8_t staging[FLASH_SECTOR_SIZE];
+    // Stage the full reserved region to write. This buffer is several KB -
+    // it MUST be static (BSS), never a stack local: each core's entire
+    // stack is only 4096 bytes total (see memmap_custom.ld
+    // SCRATCH_X/SCRATCH_Y), so a buffer this size as a local would consume
+    // most or all of the stack with zero margin for anything else,
+    // risking a stack overflow. (The previous version of this function
+    // did exactly that, with a same-sized stack-local buffer.)
+    static uint8_t staging[CONFIG_FLASH_REGION_SIZE];
     memset(staging, 0xFF, sizeof(staging));
     memcpy(staging, &posConfigData, sizeof(posConfigData));
 
@@ -136,12 +147,12 @@ bool write_flash_pos_config(string_led_config set_config)
     multicore_lockout_start_blocking();
     uint32_t interrupts = save_and_disable_interrupts();
 
-    flash_range_erase(CONFIG_FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
-    // Program the FULL sector, not just one page. The struct is 4024
-    // bytes; the previous version erased a full 4096-byte sector but only
-    // programmed back 256 bytes (one page), leaving ~3770 bytes - most of
-    // the LED position array - as erased/blank flash after every write.
-    flash_range_program(CONFIG_FLASH_TARGET_OFFSET, staging, FLASH_SECTOR_SIZE);
+    flash_range_erase(CONFIG_FLASH_TARGET_OFFSET, CONFIG_FLASH_REGION_SIZE);
+    // Program the FULL reserved region, not just one page. The previous
+    // version erased a full 4096-byte sector but only programmed back 256
+    // bytes (one page) of a 4024-byte struct, leaving most of the LED
+    // position array as erased/blank flash after every write.
+    flash_range_program(CONFIG_FLASH_TARGET_OFFSET, staging, CONFIG_FLASH_REGION_SIZE);
 
     restore_interrupts(interrupts);
     multicore_lockout_end_blocking();

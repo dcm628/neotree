@@ -1,4 +1,4 @@
-/*  This program is my neopixel Christmas Tree running from a Pico W 
+﻿/*  This program is my neopixel Christmas Tree running from a Pico W 
     It has a bunch of hardcoding of things and is not meant to be a general purpose program. */
 
 // normie files
@@ -20,7 +20,7 @@ mutex core0_data_update;
 
 
 #define IS_RGBW false
-#define NUM_PIXELS 500
+#define NUM_PIXELS 1000  // matches led_1..led_1000 in dcm_rgb.hpp/.cpp; currently unused elsewhere
 
 // default to pin 2 if the board doesn't have a default WS2812 pin defined
 #define WS2812_PIN_STRING_1 2
@@ -44,15 +44,15 @@ void write_string(uint8_t sm_to_update)
     // Sequential writes to the pio of all N led objects, very ugly, don't care.
     if (sm_to_update == 0)
     {
-    put_pixel(sm_to_update,  led_1.get_grb_word());
-    put_pixel(sm_to_update,  led_2.get_grb_word());
-    put_pixel(sm_to_update,  led_3.get_grb_word());
-    put_pixel(sm_to_update,  led_4.get_grb_word());
-    put_pixel(sm_to_update,  led_5.get_grb_word());
-    put_pixel(sm_to_update,  led_6.get_grb_word());
-    put_pixel(sm_to_update,  led_7.get_grb_word());
-    put_pixel(sm_to_update,  led_8.get_grb_word());
-    put_pixel(sm_to_update,  led_9.get_grb_word());
+    put_pixel(sm_to_update, led_1.get_grb_word());
+    put_pixel(sm_to_update, led_2.get_grb_word());
+    put_pixel(sm_to_update, led_3.get_grb_word());
+    put_pixel(sm_to_update, led_4.get_grb_word());
+    put_pixel(sm_to_update, led_5.get_grb_word());
+    put_pixel(sm_to_update, led_6.get_grb_word());
+    put_pixel(sm_to_update, led_7.get_grb_word());
+    put_pixel(sm_to_update, led_8.get_grb_word());
+    put_pixel(sm_to_update, led_9.get_grb_word());
     put_pixel(sm_to_update, led_10.get_grb_word());
     put_pixel(sm_to_update, led_11.get_grb_word());
     put_pixel(sm_to_update, led_12.get_grb_word());
@@ -144,9 +144,6 @@ void write_string(uint8_t sm_to_update)
     put_pixel(sm_to_update, led_98.get_grb_word());
     put_pixel(sm_to_update, led_99.get_grb_word());
     put_pixel(sm_to_update, led_100.get_grb_word());
-    }
-    else if (sm_to_update == 1)
-    {
     put_pixel(sm_to_update, led_101.get_grb_word());
     put_pixel(sm_to_update, led_102.get_grb_word());
     put_pixel(sm_to_update, led_103.get_grb_word());
@@ -347,6 +344,9 @@ void write_string(uint8_t sm_to_update)
     put_pixel(sm_to_update, led_298.get_grb_word());
     put_pixel(sm_to_update, led_299.get_grb_word());
     put_pixel(sm_to_update, led_300.get_grb_word());
+    }
+    else if (sm_to_update == 1)
+    {
     put_pixel(sm_to_update, led_301.get_grb_word());
     put_pixel(sm_to_update, led_302.get_grb_word());
     put_pixel(sm_to_update, led_303.get_grb_word());
@@ -447,9 +447,6 @@ void write_string(uint8_t sm_to_update)
     put_pixel(sm_to_update, led_398.get_grb_word());
     put_pixel(sm_to_update, led_399.get_grb_word());
     put_pixel(sm_to_update, led_400.get_grb_word());
-    }
-    else if (sm_to_update == 2)
-    {
     put_pixel(sm_to_update, led_401.get_grb_word());
     put_pixel(sm_to_update, led_402.get_grb_word());
     put_pixel(sm_to_update, led_403.get_grb_word());
@@ -651,7 +648,7 @@ void write_string(uint8_t sm_to_update)
     put_pixel(sm_to_update, led_599.get_grb_word());
     put_pixel(sm_to_update, led_600.get_grb_word());
     }
-    else if (sm_to_update == 3)
+    else if (sm_to_update == 2)
     {
     put_pixel(sm_to_update, led_601.get_grb_word());
     put_pixel(sm_to_update, led_602.get_grb_word());
@@ -853,6 +850,209 @@ void write_string(uint8_t sm_to_update)
     put_pixel(sm_to_update, led_798.get_grb_word());
     put_pixel(sm_to_update, led_799.get_grb_word());
     put_pixel(sm_to_update, led_800.get_grb_word());
+    }
+    else if (sm_to_update == 3)
+    {
+    put_pixel(sm_to_update, led_801.get_grb_word());
+    put_pixel(sm_to_update, led_802.get_grb_word());
+    put_pixel(sm_to_update, led_803.get_grb_word());
+    put_pixel(sm_to_update, led_804.get_grb_word());
+    put_pixel(sm_to_update, led_805.get_grb_word());
+    put_pixel(sm_to_update, led_806.get_grb_word());
+    put_pixel(sm_to_update, led_807.get_grb_word());
+    put_pixel(sm_to_update, led_808.get_grb_word());
+    put_pixel(sm_to_update, led_809.get_grb_word());
+    put_pixel(sm_to_update, led_810.get_grb_word());
+    put_pixel(sm_to_update, led_811.get_grb_word());
+    put_pixel(sm_to_update, led_812.get_grb_word());
+    put_pixel(sm_to_update, led_813.get_grb_word());
+    put_pixel(sm_to_update, led_814.get_grb_word());
+    put_pixel(sm_to_update, led_815.get_grb_word());
+    put_pixel(sm_to_update, led_816.get_grb_word());
+    put_pixel(sm_to_update, led_817.get_grb_word());
+    put_pixel(sm_to_update, led_818.get_grb_word());
+    put_pixel(sm_to_update, led_819.get_grb_word());
+    put_pixel(sm_to_update, led_820.get_grb_word());
+    put_pixel(sm_to_update, led_821.get_grb_word());
+    put_pixel(sm_to_update, led_822.get_grb_word());
+    put_pixel(sm_to_update, led_823.get_grb_word());
+    put_pixel(sm_to_update, led_824.get_grb_word());
+    put_pixel(sm_to_update, led_825.get_grb_word());
+    put_pixel(sm_to_update, led_826.get_grb_word());
+    put_pixel(sm_to_update, led_827.get_grb_word());
+    put_pixel(sm_to_update, led_828.get_grb_word());
+    put_pixel(sm_to_update, led_829.get_grb_word());
+    put_pixel(sm_to_update, led_830.get_grb_word());
+    put_pixel(sm_to_update, led_831.get_grb_word());
+    put_pixel(sm_to_update, led_832.get_grb_word());
+    put_pixel(sm_to_update, led_833.get_grb_word());
+    put_pixel(sm_to_update, led_834.get_grb_word());
+    put_pixel(sm_to_update, led_835.get_grb_word());
+    put_pixel(sm_to_update, led_836.get_grb_word());
+    put_pixel(sm_to_update, led_837.get_grb_word());
+    put_pixel(sm_to_update, led_838.get_grb_word());
+    put_pixel(sm_to_update, led_839.get_grb_word());
+    put_pixel(sm_to_update, led_840.get_grb_word());
+    put_pixel(sm_to_update, led_841.get_grb_word());
+    put_pixel(sm_to_update, led_842.get_grb_word());
+    put_pixel(sm_to_update, led_843.get_grb_word());
+    put_pixel(sm_to_update, led_844.get_grb_word());
+    put_pixel(sm_to_update, led_845.get_grb_word());
+    put_pixel(sm_to_update, led_846.get_grb_word());
+    put_pixel(sm_to_update, led_847.get_grb_word());
+    put_pixel(sm_to_update, led_848.get_grb_word());
+    put_pixel(sm_to_update, led_849.get_grb_word());
+    put_pixel(sm_to_update, led_850.get_grb_word());
+    put_pixel(sm_to_update, led_851.get_grb_word());
+    put_pixel(sm_to_update, led_852.get_grb_word());
+    put_pixel(sm_to_update, led_853.get_grb_word());
+    put_pixel(sm_to_update, led_854.get_grb_word());
+    put_pixel(sm_to_update, led_855.get_grb_word());
+    put_pixel(sm_to_update, led_856.get_grb_word());
+    put_pixel(sm_to_update, led_857.get_grb_word());
+    put_pixel(sm_to_update, led_858.get_grb_word());
+    put_pixel(sm_to_update, led_859.get_grb_word());
+    put_pixel(sm_to_update, led_860.get_grb_word());
+    put_pixel(sm_to_update, led_861.get_grb_word());
+    put_pixel(sm_to_update, led_862.get_grb_word());
+    put_pixel(sm_to_update, led_863.get_grb_word());
+    put_pixel(sm_to_update, led_864.get_grb_word());
+    put_pixel(sm_to_update, led_865.get_grb_word());
+    put_pixel(sm_to_update, led_866.get_grb_word());
+    put_pixel(sm_to_update, led_867.get_grb_word());
+    put_pixel(sm_to_update, led_868.get_grb_word());
+    put_pixel(sm_to_update, led_869.get_grb_word());
+    put_pixel(sm_to_update, led_870.get_grb_word());
+    put_pixel(sm_to_update, led_871.get_grb_word());
+    put_pixel(sm_to_update, led_872.get_grb_word());
+    put_pixel(sm_to_update, led_873.get_grb_word());
+    put_pixel(sm_to_update, led_874.get_grb_word());
+    put_pixel(sm_to_update, led_875.get_grb_word());
+    put_pixel(sm_to_update, led_876.get_grb_word());
+    put_pixel(sm_to_update, led_877.get_grb_word());
+    put_pixel(sm_to_update, led_878.get_grb_word());
+    put_pixel(sm_to_update, led_879.get_grb_word());
+    put_pixel(sm_to_update, led_880.get_grb_word());
+    put_pixel(sm_to_update, led_881.get_grb_word());
+    put_pixel(sm_to_update, led_882.get_grb_word());
+    put_pixel(sm_to_update, led_883.get_grb_word());
+    put_pixel(sm_to_update, led_884.get_grb_word());
+    put_pixel(sm_to_update, led_885.get_grb_word());
+    put_pixel(sm_to_update, led_886.get_grb_word());
+    put_pixel(sm_to_update, led_887.get_grb_word());
+    put_pixel(sm_to_update, led_888.get_grb_word());
+    put_pixel(sm_to_update, led_889.get_grb_word());
+    put_pixel(sm_to_update, led_890.get_grb_word());
+    put_pixel(sm_to_update, led_891.get_grb_word());
+    put_pixel(sm_to_update, led_892.get_grb_word());
+    put_pixel(sm_to_update, led_893.get_grb_word());
+    put_pixel(sm_to_update, led_894.get_grb_word());
+    put_pixel(sm_to_update, led_895.get_grb_word());
+    put_pixel(sm_to_update, led_896.get_grb_word());
+    put_pixel(sm_to_update, led_897.get_grb_word());
+    put_pixel(sm_to_update, led_898.get_grb_word());
+    put_pixel(sm_to_update, led_899.get_grb_word());
+    put_pixel(sm_to_update, led_900.get_grb_word());
+    put_pixel(sm_to_update, led_901.get_grb_word());
+    put_pixel(sm_to_update, led_902.get_grb_word());
+    put_pixel(sm_to_update, led_903.get_grb_word());
+    put_pixel(sm_to_update, led_904.get_grb_word());
+    put_pixel(sm_to_update, led_905.get_grb_word());
+    put_pixel(sm_to_update, led_906.get_grb_word());
+    put_pixel(sm_to_update, led_907.get_grb_word());
+    put_pixel(sm_to_update, led_908.get_grb_word());
+    put_pixel(sm_to_update, led_909.get_grb_word());
+    put_pixel(sm_to_update, led_910.get_grb_word());
+    put_pixel(sm_to_update, led_911.get_grb_word());
+    put_pixel(sm_to_update, led_912.get_grb_word());
+    put_pixel(sm_to_update, led_913.get_grb_word());
+    put_pixel(sm_to_update, led_914.get_grb_word());
+    put_pixel(sm_to_update, led_915.get_grb_word());
+    put_pixel(sm_to_update, led_916.get_grb_word());
+    put_pixel(sm_to_update, led_917.get_grb_word());
+    put_pixel(sm_to_update, led_918.get_grb_word());
+    put_pixel(sm_to_update, led_919.get_grb_word());
+    put_pixel(sm_to_update, led_920.get_grb_word());
+    put_pixel(sm_to_update, led_921.get_grb_word());
+    put_pixel(sm_to_update, led_922.get_grb_word());
+    put_pixel(sm_to_update, led_923.get_grb_word());
+    put_pixel(sm_to_update, led_924.get_grb_word());
+    put_pixel(sm_to_update, led_925.get_grb_word());
+    put_pixel(sm_to_update, led_926.get_grb_word());
+    put_pixel(sm_to_update, led_927.get_grb_word());
+    put_pixel(sm_to_update, led_928.get_grb_word());
+    put_pixel(sm_to_update, led_929.get_grb_word());
+    put_pixel(sm_to_update, led_930.get_grb_word());
+    put_pixel(sm_to_update, led_931.get_grb_word());
+    put_pixel(sm_to_update, led_932.get_grb_word());
+    put_pixel(sm_to_update, led_933.get_grb_word());
+    put_pixel(sm_to_update, led_934.get_grb_word());
+    put_pixel(sm_to_update, led_935.get_grb_word());
+    put_pixel(sm_to_update, led_936.get_grb_word());
+    put_pixel(sm_to_update, led_937.get_grb_word());
+    put_pixel(sm_to_update, led_938.get_grb_word());
+    put_pixel(sm_to_update, led_939.get_grb_word());
+    put_pixel(sm_to_update, led_940.get_grb_word());
+    put_pixel(sm_to_update, led_941.get_grb_word());
+    put_pixel(sm_to_update, led_942.get_grb_word());
+    put_pixel(sm_to_update, led_943.get_grb_word());
+    put_pixel(sm_to_update, led_944.get_grb_word());
+    put_pixel(sm_to_update, led_945.get_grb_word());
+    put_pixel(sm_to_update, led_946.get_grb_word());
+    put_pixel(sm_to_update, led_947.get_grb_word());
+    put_pixel(sm_to_update, led_948.get_grb_word());
+    put_pixel(sm_to_update, led_949.get_grb_word());
+    put_pixel(sm_to_update, led_950.get_grb_word());
+    put_pixel(sm_to_update, led_951.get_grb_word());
+    put_pixel(sm_to_update, led_952.get_grb_word());
+    put_pixel(sm_to_update, led_953.get_grb_word());
+    put_pixel(sm_to_update, led_954.get_grb_word());
+    put_pixel(sm_to_update, led_955.get_grb_word());
+    put_pixel(sm_to_update, led_956.get_grb_word());
+    put_pixel(sm_to_update, led_957.get_grb_word());
+    put_pixel(sm_to_update, led_958.get_grb_word());
+    put_pixel(sm_to_update, led_959.get_grb_word());
+    put_pixel(sm_to_update, led_960.get_grb_word());
+    put_pixel(sm_to_update, led_961.get_grb_word());
+    put_pixel(sm_to_update, led_962.get_grb_word());
+    put_pixel(sm_to_update, led_963.get_grb_word());
+    put_pixel(sm_to_update, led_964.get_grb_word());
+    put_pixel(sm_to_update, led_965.get_grb_word());
+    put_pixel(sm_to_update, led_966.get_grb_word());
+    put_pixel(sm_to_update, led_967.get_grb_word());
+    put_pixel(sm_to_update, led_968.get_grb_word());
+    put_pixel(sm_to_update, led_969.get_grb_word());
+    put_pixel(sm_to_update, led_970.get_grb_word());
+    put_pixel(sm_to_update, led_971.get_grb_word());
+    put_pixel(sm_to_update, led_972.get_grb_word());
+    put_pixel(sm_to_update, led_973.get_grb_word());
+    put_pixel(sm_to_update, led_974.get_grb_word());
+    put_pixel(sm_to_update, led_975.get_grb_word());
+    put_pixel(sm_to_update, led_976.get_grb_word());
+    put_pixel(sm_to_update, led_977.get_grb_word());
+    put_pixel(sm_to_update, led_978.get_grb_word());
+    put_pixel(sm_to_update, led_979.get_grb_word());
+    put_pixel(sm_to_update, led_980.get_grb_word());
+    put_pixel(sm_to_update, led_981.get_grb_word());
+    put_pixel(sm_to_update, led_982.get_grb_word());
+    put_pixel(sm_to_update, led_983.get_grb_word());
+    put_pixel(sm_to_update, led_984.get_grb_word());
+    put_pixel(sm_to_update, led_985.get_grb_word());
+    put_pixel(sm_to_update, led_986.get_grb_word());
+    put_pixel(sm_to_update, led_987.get_grb_word());
+    put_pixel(sm_to_update, led_988.get_grb_word());
+    put_pixel(sm_to_update, led_989.get_grb_word());
+    put_pixel(sm_to_update, led_990.get_grb_word());
+    put_pixel(sm_to_update, led_991.get_grb_word());
+    put_pixel(sm_to_update, led_992.get_grb_word());
+    put_pixel(sm_to_update, led_993.get_grb_word());
+    put_pixel(sm_to_update, led_994.get_grb_word());
+    put_pixel(sm_to_update, led_995.get_grb_word());
+    put_pixel(sm_to_update, led_996.get_grb_word());
+    put_pixel(sm_to_update, led_997.get_grb_word());
+    put_pixel(sm_to_update, led_998.get_grb_word());
+    put_pixel(sm_to_update, led_999.get_grb_word());
+    put_pixel(sm_to_update, led_1000.get_grb_word());
     }
 };
 
