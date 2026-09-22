@@ -21,6 +21,8 @@ Usage (venv active):
 import argparse
 import time
 
+import cv2
+
 import neotree_camera as neocam
 import neotree_serial as neoser
 import pylon_geometry as geom
@@ -33,7 +35,16 @@ def build_pylon(pylon_id, top_id, bottom_id, width, height, spacing_mm):
         raise RuntimeError(f"pylon {pylon_id}: could not open camera ids {top_id}/{bottom_id}")
     neocam.set_camera_settings(captures, width=width, height=height)
     top_cap, bottom_cap = captures
-    bottom_model, top_model = geom.make_pylon_cameras(width, height, spacing_mm=spacing_mm)
+    # The driver doesn't always honor the requested resolution (seen in
+    # practice: 1208x680 requested, 1280x720 negotiated) - the geometry
+    # model's focal length must match what's actually coming back, or
+    # every triangulation is silently off.
+    actual_width = int(top_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_height = int(top_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if actual_width != width or actual_height != height:
+        print(f"pylon {pylon_id}: requested {width}x{height}, driver negotiated "
+              f"{actual_width}x{actual_height} - using the actual size for triangulation")
+    bottom_model, top_model = geom.make_pylon_cameras(actual_width, actual_height, spacing_mm=spacing_mm)
     return {
         "pylon_id": pylon_id,
         "top_id": top_id, "bottom_id": bottom_id,
