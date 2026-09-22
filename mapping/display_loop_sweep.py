@@ -75,11 +75,54 @@ def run_gravity_pass(color, range_min, range_max, width, gravity_mm_s2, fps):
     return t
 
 
+def run_launch_pass(color, range_min, range_max, width, gravity_mm_s2, fps):
+    """
+    One launch-and-fall pass: an object launched from the bottom with
+    just enough initial velocity for its apogee (v=0) to land exactly at
+    the top, then falls back down under the same gravity - reuses
+    run_gravity_pass's free-fall relation directly: v0 = sqrt(2*g*h) is
+    the same speed a dropped object reaches after falling height h (energy
+    conservation), so it's also exactly the launch speed needed to just
+    reach h before gravity brings it back to zero velocity. Total flight
+    time is 2*v0/g - by symmetry, exactly double run_gravity_pass's
+    one-way fall time for the same height/gravity.
+
+    Unlike run_gravity_pass (which tracks a leading edge, since motion is
+    one-directional), the band here is centered on the object's
+    instantaneous height and clamped to stay within [range_min,
+    range_max] - it touches the floor at launch, touches the ceiling
+    exactly at apogee, and touches the floor again on landing, without a
+    direction-dependent edge definition that would need to flip at apogee.
+    """
+    height = range_max - range_min
+    v0 = (2 * gravity_mm_s2 * height) ** 0.5
+    t_total = 2 * v0 / gravity_mm_s2
+    dt = 1.0 / fps
+    t0 = time.time()
+    t = 0.0
+    while True:
+        y = v0 * t - 0.5 * gravity_mm_s2 * t * t
+        done = t >= t_total
+        y = 0.0 if done else max(0.0, min(height, y))
+        center = range_min + y
+        center = max(range_min + width / 2, min(range_max - width / 2, center))
+        lo, hi = center - width / 2, center + width / 2
+        sweep_demo.send_volume_frame('z', int(lo), int(hi), *color)
+        neoser.ser.reset_input_buffer()
+        if done:
+            break
+        t += dt
+        sleep_time = (t0 + t) - time.time()
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+    return t
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--db', default=sweep_db.DEFAULT_DB_PATH)
-    parser.add_argument('--mode', choices=['linear', 'gravity'], default='linear')
+    parser.add_argument('--mode', choices=['linear', 'gravity', 'launch'], default='linear')
     parser.add_argument('--hz', type=float, default=1.0,
                          help="(--mode linear only) full top-to-bottom passes per second")
     parser.add_argument('--width', type=int, default=None,
@@ -88,12 +131,13 @@ def main():
                          help="(--mode linear only) frames per pass - more is smoother motion but "
                               "needs a faster serial round-trip to hold the target Hz")
     parser.add_argument('--gravity', type=float, default=2000.0,
-                         help="(--mode gravity only) acceleration in mm/s^2 - real gravity is 9800, "
-                              "but that clears a real tree's height in well under a second; the "
-                              "default gives a ~1.5s fall over a ~2.2m tree, visibly accelerating "
-                              "without being over before it registers")
+                         help="(--mode gravity/launch only) acceleration in mm/s^2 - real gravity is "
+                              "9800, but that clears a real tree's height in well under a second; the "
+                              "default gives a ~1.5s fall (gravity mode) or ~3s round trip (launch "
+                              "mode) over a ~2.2m tree, visibly accelerating without being over "
+                              "before it registers")
     parser.add_argument('--fps', type=float, default=12.0,
-                         help="(--mode gravity only) target frame rate during the fall")
+                         help="(--mode gravity/launch only) target frame rate during the motion")
     parser.add_argument('--range-min', type=int, default=None)
     parser.add_argument('--range-max', type=int, default=None)
     parser.add_argument('--base-color', type=int, nargs=3, default=[255, 147, 41], metavar=('R', 'G', 'B'),
@@ -124,11 +168,16 @@ def main():
         print(f"Display loop [linear]: z range=[{range_min},{range_max}] (top-to-bottom) width={width} "
               f"step={step} target={args.hz}Hz/pass ({args.steps} frames, delay={delay:.3f}s) "
               f"- Ctrl+C to stop")
-    else:
+    elif args.mode == 'gravity':
         expected_fall_s = (2 * (range_max - range_min) / args.gravity) ** 0.5
         print(f"Display loop [gravity]: z range=[{range_min},{range_max}] (top-to-bottom) width={width} "
               f"gravity={args.gravity}mm/s^2 fps={args.fps} expected_fall~={expected_fall_s:.2f}s "
               f"- Ctrl+C to stop")
+    else:
+        expected_flight_s = 2 * (2 * (range_max - range_min) / args.gravity) ** 0.5
+        print(f"Display loop [launch]: z range=[{range_min},{range_max}] (bottom -> apogee at top -> "
+              f"bottom) width={width} gravity={args.gravity}mm/s^2 fps={args.fps} "
+              f"expected_flight~={expected_flight_s:.2f}s - Ctrl+C to stop")
 
     pass_count = 0
     t_start = time.time()
@@ -139,8 +188,10 @@ def main():
             t0 = time.time()
             if args.mode == 'linear':
                 run_linear_pass(color, range_min, range_max, width, step, delay)
-            else:
+            elif args.mode == 'gravity':
                 run_gravity_pass(color, range_min, range_max, width, args.gravity, args.fps)
+            else:
+                run_launch_pass(color, range_min, range_max, width, args.gravity, args.fps)
             pass_time = time.time() - t0
             print(f"  pass {pass_count}: color=rgb{color} actual={pass_time:.2f}s "
                   f"(avg over run={(time.time()-t_start)/pass_count:.2f}s)")
