@@ -69,7 +69,11 @@ def write_tree_single_led(ser, msg_type, led_position, r, g, b):
     # Write the packed data to the serial port
     ser.write(packed_data)
     print(f"Sent data: {packed_data}")
-MAX_GROUP_UPDATE_ENTRIES = 50  # must match max_group_update_entries in firmware/include/dcm_rgb.hpp
+MAX_GROUP_UPDATE_ENTRIES = 12  # must match max_group_update_entries in firmware/include/dcm_rgb.hpp
+# Kept low deliberately: a 50-entry (252-byte) message was confirmed by
+# testing to get split by the firmware across 64-byte USB packet boundaries
+# (serial_read_buffer() drains greedily and doesn't reassemble a message
+# across multiple reads). 12 entries (62 bytes) fits in a single packet.
 
 def write_tree_group_leds(ser, msg_type, led_updates):
     """

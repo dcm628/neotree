@@ -35,12 +35,19 @@ struct all_led_update_t
 
 // COLOR_GROUP_RGB_UPDATE payload - update several LEDs (each its own position
 // and color) in a single serial message instead of one round-trip per LED.
-// max_group_update_entries is bounded by SERIAL_BUFFER_SIZE (main.cpp): the
-// whole message (type + count + entries) has to fit in one read of the
-// fixed-size serial receive buffer, since serial_read_buffer() just greedily
-// drains whatever's immediately available in one pass rather than reassembling
-// a message across multiple reads.
-const size_t max_group_update_entries = 50;
+//
+// max_group_update_entries=12 keeps the whole message (2 + 12*5 = 62 bytes)
+// inside a single 64-byte full-speed USB bulk packet. This isn't just about
+// SERIAL_BUFFER_SIZE (main.cpp) being big enough - it's confirmed by testing
+// that it needs to be. serial_read_buffer() greedily drains whatever's
+// immediately available in one pass and treats that as a complete message;
+// it doesn't reassemble a message across multiple reads. A 50-entry (252
+// byte) version of this message spans 4 USB packets, and was observed
+// getting split exactly on a 64-byte packet boundary (a 192-byte first
+// "message" - precisely 3 packets - followed by the remaining 60 bytes
+// misread as a bogus new message). Anything that reliably fits in one
+// packet doesn't have a boundary to split on.
+const size_t max_group_update_entries = 12;
 
 struct group_led_entry_t
 {
