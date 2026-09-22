@@ -50,19 +50,26 @@ def build_pylon(pylon_id, top_id, bottom_id, width, height, spacing_mm):
         "top_id": top_id, "bottom_id": bottom_id,
         "top_cap": top_cap, "bottom_cap": bottom_cap,
         "top_model": top_model, "bottom_model": bottom_model,
-        "top_bg": None, "bottom_bg": None,
         "width": actual_width, "height": actual_height,
     }
 
 
-def capture_reference_frames(pylon):
-    """One all-LEDs-off reference frame per camera, for background subtraction."""
+def capture_background_frames(pylon):
+    """
+    One all-LEDs-off frame per camera, captured fresh for THIS LED
+    position (not once for the whole sweep) - ambient light (daylight
+    through windows, in particular) can change meaningfully over a
+    multi-minute sweep, and a stale background frame was confirmed by
+    testing to cause near-total detection failure under daylight: a
+    static glare/reflection spot won the single-blob detection every
+    time regardless of which LED was actually lit, and broad daylight
+    brightening tripped the multi-blob rejection almost everywhere.
+    """
     # discard one buffered frame first - the capture object can otherwise
     # hand back a frame queued before the LED state actually changed
     neocam.capture_frame(pylon["top_cap"])
     neocam.capture_frame(pylon["bottom_cap"])
-    pylon["top_bg"] = neocam.capture_frame(pylon["top_cap"])
-    pylon["bottom_bg"] = neocam.capture_frame(pylon["bottom_cap"])
+    return neocam.capture_frame(pylon["top_cap"]), neocam.capture_frame(pylon["bottom_cap"])
 
 
 def capture_centroid_with_retry(cap, background, dwell_s, retries, threshold_value):
@@ -80,17 +87,22 @@ def capture_centroid_with_retry(cap, background, dwell_s, retries, threshold_val
     return None, None, blob_count if frame is not None else 0, blob_area if frame is not None else 0.0, retries
 
 
-def run_sweep(conn, sweep_id, pylons, led_start, led_count, dwell_s, retries, pixel_sigma_px, threshold_value):
+def run_sweep(conn, sweep_id, pylons, led_start, led_count, dwell_s, background_dwell_s,
+              retries, pixel_sigma_px, threshold_value):
     for i in range(led_start, led_start + led_count):
         neoser.write_tree_all_led(neoser.ser, 3, 0, 0, 0)
+        time.sleep(background_dwell_s)
+        backgrounds = {pylon["pylon_id"]: capture_background_frames(pylon) for pylon in pylons}
+
         neoser.write_tree_single_led(neoser.ser, 1, i, 255, 255, 255)
         time.sleep(dwell_s)
 
         for pylon in pylons:
+            top_bg, bottom_bg = backgrounds[pylon["pylon_id"]]
             obs = {}
             for pos, cap, model, bg in (
-                ("top", pylon["top_cap"], pylon["top_model"], pylon["top_bg"]),
-                ("bottom", pylon["bottom_cap"], pylon["bottom_model"], pylon["bottom_bg"]),
+                ("top", pylon["top_cap"], pylon["top_model"], top_bg),
+                ("bottom", pylon["bottom_cap"], pylon["bottom_model"], bottom_bg),
             ):
                 cx, cy, blob_count, blob_area, attempts = capture_centroid_with_retry(
                     cap, bg, dwell_s, retries, threshold_value)
@@ -137,6 +149,11 @@ def main():
     parser.add_argument('--start-led', type=int, default=0, help="first LED position to walk")
     parser.add_argument('--count', type=int, default=1000, help="how many LEDs to walk, starting at --start-led")
     parser.add_argument('--dwell', type=float, default=0.2, help="seconds to wait after lighting an LED")
+    parser.add_argument('--background-dwell', type=float, default=0.05,
+                         help="seconds to wait after turning all LEDs off before capturing that "
+                              "position's background frame - short, since fixed manual exposure/"
+                              "gain/focus means no auto-adjustment settling to wait out, just "
+                              "camera buffer flush")
     parser.add_argument('--retries', type=int, default=3)
     parser.add_argument('--threshold', type=int, default=250)
     parser.add_argument('--pixel-sigma', type=float, default=1.0,
@@ -169,10 +186,6 @@ def main():
             print(f"Opening pylon {pid}: top={top_id} bottom={bottom_id}")
             pylons.append(build_pylon(pid, top_id, bottom_id, args.width, args.height, args.spacing_mm))
 
-        print("Capturing all-off reference frames for background subtraction...")
-        for pylon in pylons:
-            capture_reference_frames(pylon)
-
         conn = sweep_db.connect(args.db)
         try:
             while True:
@@ -185,8 +198,8 @@ def main():
                 print(f"\nStarting sweep {sweep_id} (LEDs {args.start_led}-"
                       f"{args.start_led + args.count - 1}, dwell={args.dwell}s, retries={args.retries})...")
                 t0 = time.time()
-                run_sweep(conn, sweep_id, pylons, args.start_led, args.count, args.dwell, args.retries,
-                          args.pixel_sigma, args.threshold)
+                run_sweep(conn, sweep_id, pylons, args.start_led, args.count, args.dwell,
+                          args.background_dwell, args.retries, args.pixel_sigma, args.threshold)
                 print(f"Sweep {sweep_id} done in {time.time() - t0:.1f}s")
                 print_summary(conn, sweep_id, args.count)
 
@@ -194,8 +207,6 @@ def main():
                 if answer != 'y':
                     break
                 input("Reposition camera(s) now, then press Enter to start the next sweep...")
-                for pylon in pylons:
-                    capture_reference_frames(pylon)
         finally:
             conn.close()
     finally:
