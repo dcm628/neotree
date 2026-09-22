@@ -43,6 +43,8 @@ def main():
 
     print(f"Sweeping axis='{args.axis}' width={args.width} step={args.step} "
           f"delay={args.delay}s x{args.loops} loop(s) - Ctrl+C to stop")
+    frame_count = 0
+    t0 = time.time()
     try:
         for loop in range(args.loops):
             pos = 0
@@ -50,17 +52,20 @@ def main():
                 lo, hi = pos, min(pos + args.width, AXIS_RANGE - 1)
                 if args.axis == 'z':
                     neoser.write_tree_set_volume_cylindrical(
-                        neoser.ser, lo, hi, 0, 65535, 0, 65535, r, g, b, True)
+                        neoser.ser, lo, hi, 0, 65535, 0, 65535, r, g, b, True, verbose=False)
                 elif args.axis == 'radius':
                     neoser.write_tree_set_volume_cylindrical(
-                        neoser.ser, -32768, 32767, lo, hi, 0, 65535, r, g, b, True)
+                        neoser.ser, -32768, 32767, lo, hi, 0, 65535, r, g, b, True, verbose=False)
                 else:  # omega
                     neoser.write_tree_set_volume_cylindrical(
-                        neoser.ser, -32768, 32767, 0, 65535, lo, hi, r, g, b, True)
+                        neoser.ser, -32768, 32767, 0, 65535, lo, hi, r, g, b, True, verbose=False)
                 neoser.ser.reset_input_buffer()
                 pos += args.step
+                frame_count += 1
                 time.sleep(args.delay)
-            print(f"  loop {loop + 1}/{args.loops} done")
+            elapsed = time.time() - t0
+            print(f"  loop {loop + 1}/{args.loops} done "
+                  f"({frame_count} frames, {frame_count / elapsed:.0f} fps avg)")
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:

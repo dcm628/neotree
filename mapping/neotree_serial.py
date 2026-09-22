@@ -209,7 +209,8 @@ def write_tree_set_volume_cartesian(ser, x_min, x_max, y_min, y_max, z_min, z_ma
     print(f"Sent set_volume_cartesian: {packed_data}")
 
 def write_tree_set_volume_cylindrical(ser, z_min, z_max, radius_min, radius_max,
-                                       omega_min, omega_max, r, g, b, clear_outside_volume):
+                                       omega_min, omega_max, r, g, b, clear_outside_volume,
+                                       verbose=True):
     """
     Sets every LED whose mapped (z, radius, omega) falls inside the given
     range (all bounds inclusive) to (r, g, b). Same clear_outside_volume
@@ -222,13 +223,17 @@ def write_tree_set_volume_cylindrical(ser, z_min, z_max, radius_min, radius_max,
     :param radius_min, radius_max, omega_min, omega_max: uint16_t.
     :param r, g, b: Color for LEDs inside the volume (uint8_t).
     :param clear_outside_volume: bool.
+    :param verbose: print the sent bytes (default True) - set False for a
+        fast animation loop sending many frames per second, where per-frame
+        prints would otherwise dominate the loop's own timing.
     :return: None
     """
     packed_data = struct.pack('<BhhHHHHBBBB', SET_VOLUME_CYLINDRICAL_MSG_TYPE,
                                z_min, z_max, radius_min, radius_max, omega_min, omega_max,
                                r, g, b, 1 if clear_outside_volume else 0)
     ser.write(packed_data)
-    print(f"Sent set_volume_cylindrical: {packed_data}")
+    if verbose:
+        print(f"Sent set_volume_cylindrical: {packed_data}")
 
 def cleanup_serial():
     """
