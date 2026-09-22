@@ -79,8 +79,8 @@ def capture_centroid_with_retry(cap, background, dwell_s, retries, threshold_val
     return None, None, blob_count if frame is not None else 0, blob_area if frame is not None else 0.0, retries
 
 
-def run_sweep(conn, sweep_id, pylons, led_count, dwell_s, retries, pixel_sigma_px, threshold_value):
-    for i in range(led_count):
+def run_sweep(conn, sweep_id, pylons, led_start, led_count, dwell_s, retries, pixel_sigma_px, threshold_value):
+    for i in range(led_start, led_start + led_count):
         neoser.write_tree_all_led(neoser.ser, 3, 0, 0, 0)
         neoser.write_tree_single_led(neoser.ser, 1, i, 255, 255, 255)
         time.sleep(dwell_s)
@@ -107,8 +107,9 @@ def run_sweep(conn, sweep_id, pylons, led_count, dwell_s, retries, pixel_sigma_p
                     obs["bottom"], obs["top"], pixel_sigma_px=pixel_sigma_px)
                 sweep_db.record_session_solve(conn, sweep_id, pylon["pylon_id"], i, result)
 
-        if (i + 1) % 100 == 0:
-            print(f"  {i + 1}/{led_count} LEDs walked")
+        walked = i - led_start + 1
+        if walked % 100 == 0:
+            print(f"  {walked}/{led_count} LEDs walked (position {i})")
 
 
 def print_summary(conn, sweep_id, led_count):
@@ -132,7 +133,8 @@ def main():
     parser.add_argument('--height', type=int, default=680)
     parser.add_argument('--spacing-mm', type=float, default=geom.PYLON_CAMERA_SPACING_MM,
                          help="vertical distance between each pylon's top/bottom camera")
-    parser.add_argument('--count', type=int, default=1000)
+    parser.add_argument('--start-led', type=int, default=0, help="first LED position to walk")
+    parser.add_argument('--count', type=int, default=1000, help="how many LEDs to walk, starting at --start-led")
     parser.add_argument('--dwell', type=float, default=0.2, help="seconds to wait after lighting an LED")
     parser.add_argument('--retries', type=int, default=3)
     parser.add_argument('--threshold', type=int, default=250)
@@ -179,10 +181,10 @@ def main():
                         conn, sweep_id, pylon["pylon_id"], pylon["top_id"], pylon["bottom_id"],
                         args.width, args.height, args.spacing_mm, calibration_source="nominal")
 
-                print(f"\nStarting sweep {sweep_id} ({args.count} LEDs, "
-                      f"dwell={args.dwell}s, retries={args.retries})...")
+                print(f"\nStarting sweep {sweep_id} (LEDs {args.start_led}-"
+                      f"{args.start_led + args.count - 1}, dwell={args.dwell}s, retries={args.retries})...")
                 t0 = time.time()
-                run_sweep(conn, sweep_id, pylons, args.count, args.dwell, args.retries,
+                run_sweep(conn, sweep_id, pylons, args.start_led, args.count, args.dwell, args.retries,
                           args.pixel_sigma, args.threshold)
                 print(f"Sweep {sweep_id} done in {time.time() - t0:.1f}s")
                 print_summary(conn, sweep_id, args.count)

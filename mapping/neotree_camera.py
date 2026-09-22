@@ -167,7 +167,10 @@ def find_single_blob_centroid(frame, background=None, threshold_value=250, min_a
     blob_areas = [stats[i, cv2.CC_STAT_AREA] for i in range(1, num_labels)
                   if stats[i, cv2.CC_STAT_AREA] >= min_area]
     blob_count = len(blob_areas)
-    largest_area = max(blob_areas) if blob_areas else 0.0
+    # cv2 stats are numpy int32 - cast to a native float so callers (e.g.
+    # sqlite3) don't silently serialize a numpy scalar as raw bytes via the
+    # buffer protocol instead of a real number (confirmed: this happened).
+    largest_area = float(max(blob_areas)) if blob_areas else 0.0
 
     if blob_count != 1:
         return None, None, blob_count, largest_area

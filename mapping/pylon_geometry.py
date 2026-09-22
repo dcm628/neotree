@@ -101,39 +101,15 @@ class TriangulationResult:
     n_rays: int
 
 
-def triangulate_rays(origins, directions, pixel_sigma_px=1.0, focal_px=None):
+def _lstsq_point(origins, directions):
     """
-    Least-squares closest point to a set of 3D rays (each origin o_i,
-    unit direction d_i), all expressed in the same frame.
-
-    For each ray, the point P minimizing perpendicular distance satisfies
-    (I - d d^T)(P - o) = 0. Summing these normal equations across rays
-    gives a standard linear least-squares system A P = b.
-
-    Covariance is approximated as (pixel_sigma_px / focal_px)^2 * inv(A):
-    A's eigenstructure already encodes how well each direction is
-    constrained by the ray geometry (e.g. a narrow-baseline stereo pair
-    poorly constrains depth along the shared viewing direction), so scaling
-    inv(A) by the angular pixel-noise variance carries that anisotropy
-    through to the output rather than reporting an isotropic guess. This is
-    a linearized approximation (ignores that pixel noise --> ray-direction
-    noise is only locally linear), good enough to rank axes/points by
-    confidence; a full nonlinear reprojection-error Jacobian would be more
-    exact but isn't needed for that purpose.
-
-    :param origins: list/array of (3,) ray origins.
-    :param directions: list/array of (3,) unit ray directions.
-    :param pixel_sigma_px: assumed 1-sigma centroid pixel noise.
-    :param focal_px: focal length in pixels (required to scale the
-        covariance into real units - pass the value used to build the rays).
-    :return: TriangulationResult, or None if fewer than 2 rays are given.
+    Least-squares closest point to a set of 3D rays (each origin o_i, unit
+    direction d_i). For each ray, the point P minimizing perpendicular
+    distance satisfies (I - d d^T)(P - o) = 0; summing these normal
+    equations across rays gives a standard linear least-squares system
+    A P = b. Point-only - no uncertainty here, see _triangulate() below for
+    why covariance needs more than this.
     """
-    origins = np.asarray(origins, dtype=float)
-    directions = np.asarray(directions, dtype=float)
-    n = len(origins)
-    if n < 2:
-        return None
-
     A = np.zeros((3, 3))
     b = np.zeros(3)
     for o, d in zip(origins, directions):
@@ -141,8 +117,19 @@ def triangulate_rays(origins, directions, pixel_sigma_px=1.0, focal_px=None):
         M = np.eye(3) - np.outer(d, d)
         A += M
         b += M @ o
-
     point, *_ = np.linalg.lstsq(A, b, rcond=None)
+    return point
+
+
+def _rays_from_pixels(cameras, pixels):
+    origins = [c.origin for c in cameras]
+    directions = [c.ray_direction(u, v) for c, (u, v) in zip(cameras, pixels)]
+    return origins, directions
+
+
+def _triangulate(cameras, pixels, pixel_sigma_px):
+    origins, directions = _rays_from_pixels(cameras, pixels)
+    point = _lstsq_point(origins, directions)
 
     residuals = []
     for o, d in zip(origins, directions):
@@ -152,16 +139,33 @@ def triangulate_rays(origins, directions, pixel_sigma_px=1.0, focal_px=None):
         residuals.append(np.linalg.norm(perp))
     ray_residual_mm = float(np.sqrt(np.mean(np.square(residuals))))
 
-    if focal_px is None:
-        raise ValueError("focal_px is required to scale the covariance into real units")
-    try:
-        A_inv = np.linalg.inv(A)
-    except np.linalg.LinAlgError:
-        A_inv = np.linalg.pinv(A)
-    covariance = (pixel_sigma_px / focal_px) ** 2 * A_inv
+    # Covariance via a numerical Jacobian of the triangulated point w.r.t.
+    # each pixel coordinate (central differences), rather than an
+    # analytical shortcut. This matters: an earlier version approximated
+    # covariance from the ray-geometry matrix alone, scaled by pixel noise
+    # - which is dimensionally wrong (it never scales with distance to the
+    # point) and gave physically implausible sub-micron uncertainties at
+    # real-world (multi-meter) ranges. The correct behavior - e.g. depth
+    # uncertainty growing with range^2 / baseline, a standard stereo-vision
+    # result - falls straight out of actually perturbing pixel coordinates
+    # and re-solving, since the triangulation is nonlinear in pixel space.
+    eps_px = 0.5
+    n_params = 2 * len(cameras)
+    J = np.zeros((3, n_params))
+    for k in range(n_params):
+        cam_idx, axis = divmod(k, 2)  # axis 0=u, 1=v
+        px_plus = [list(p) for p in pixels]
+        px_minus = [list(p) for p in pixels]
+        px_plus[cam_idx][axis] += eps_px
+        px_minus[cam_idx][axis] -= eps_px
+        pt_plus = _lstsq_point(*_rays_from_pixels(cameras, px_plus))
+        pt_minus = _lstsq_point(*_rays_from_pixels(cameras, px_minus))
+        J[:, k] = (pt_plus - pt_minus) / (2 * eps_px)
+
+    covariance = (pixel_sigma_px ** 2) * (J @ J.T)
 
     return TriangulationResult(point=point, covariance=covariance,
-                                ray_residual_mm=ray_residual_mm, n_rays=n)
+                                ray_residual_mm=ray_residual_mm, n_rays=len(cameras))
 
 
 def triangulate_pylon_observation(bottom_cam, top_cam, bottom_px, top_px, pixel_sigma_px=1.0):
@@ -174,17 +178,16 @@ def triangulate_pylon_observation(bottom_cam, top_cam, bottom_px, top_px, pixel_
     :return: TriangulationResult, or None if fewer than 2 of the 2 cameras
         found a centroid (a single ray alone can't be triangulated).
     """
-    origins, directions = [], []
+    cameras, pixels = [], []
     if bottom_px is not None:
-        origins.append(bottom_cam.origin)
-        directions.append(bottom_cam.ray_direction(*bottom_px))
+        cameras.append(bottom_cam)
+        pixels.append(bottom_px)
     if top_px is not None:
-        origins.append(top_cam.origin)
-        directions.append(top_cam.ray_direction(*top_px))
-    if len(origins) < 2:
+        cameras.append(top_cam)
+        pixels.append(top_px)
+    if len(cameras) < 2:
         return None
-    return triangulate_rays(origins, directions, pixel_sigma_px=pixel_sigma_px,
-                             focal_px=bottom_cam.focal_px)
+    return _triangulate(cameras, pixels, pixel_sigma_px)
 
 
 def _self_test():
@@ -214,14 +217,24 @@ def _self_test():
 
     # Sanity check on the anisotropy claim: with a vertical-only baseline,
     # depth (Y, along the shared viewing direction) should be far less
-    # constrained than the lateral axes for a point straight ahead.
-    pt = np.array([0.0, 3000.0, PYLON_CAMERA_SPACING_MM / 2])
+    # constrained than the lateral axes for a point straight ahead, and its
+    # magnitude should roughly match the standard stereo-vision result
+    # sigma_Z ~= Z^2 * sigma_pixel / (f * baseline) - not just "large", but
+    # the right order of magnitude for a real depth range.
+    Z_range = 3000.0
+    pt = np.array([0.0, Z_range, PYLON_CAMERA_SPACING_MM / 2])
     u_b, v_b = bottom.project(pt)
     u_t, v_t = top.project(pt)
-    result = triangulate_pylon_observation(bottom, top, (u_b, v_b), (u_t, v_t), pixel_sigma_px=1.0)
+    pixel_sigma = 1.0
+    result = triangulate_pylon_observation(bottom, top, (u_b, v_b), (u_t, v_t), pixel_sigma_px=pixel_sigma)
     cov_x, cov_y, cov_z = result.covariance.diagonal()
-    print(f"\nanisotropy check at {pt}: cov_x={cov_x:.4f} cov_y(depth)={cov_y:.4f} cov_z={cov_z:.4f}")
+    sigma_y = math.sqrt(cov_y)
+    expected_sigma_y = Z_range ** 2 * pixel_sigma / (bottom.focal_px * PYLON_CAMERA_SPACING_MM)
+    print(f"\nanisotropy check at {pt}: cov_x={cov_x:.2f} cov_y(depth)={cov_y:.2f} cov_z={cov_z:.2f}")
+    print(f"  sigma_y={sigma_y:.1f}mm vs standard-formula estimate={expected_sigma_y:.1f}mm")
     assert cov_y > cov_x and cov_y > cov_z, "expected depth (Y) to be the least-constrained axis"
+    ratio = sigma_y / expected_sigma_y
+    assert 0.5 < ratio < 2.0, f"depth uncertainty off from the standard stereo estimate by {ratio:.2f}x"
 
     print(f"\nAll self-tests passed. max round-trip error = {max_err:.2e} mm")
 
