@@ -28,14 +28,41 @@ def initialize_video_capture(camera_ids):
         captures.append(cap)
     return captures
 
-def set_camera_settings(captures, width=1920, height=1080, exposure=-5):
+def set_camera_settings(captures, width=1920, height=1080, exposure=666, gain=255, focus=30):
     """
     Set various camera settings for all cameras in the list.
+
+    Explicitly disables auto-exposure and autofocus before setting manual
+    values - confirmed via v4l2-ctl that these C920x cameras default to
+    auto_exposure=3 (Aperture Priority/auto) and focus_automatic_continuous=1,
+    under which exposure_time_absolute and focus_absolute both show
+    flags=inactive and silently ignore whatever CAP_PROP_EXPOSURE/
+    CAP_PROP_FOCUS are set to. Every capture done before this fix
+    (including the mapping sweeps) had exposure, gain, and focus all free
+    to drift/hunt frame-to-frame - exposure/gain based on overall scene
+    brightness (which changes constantly as different LEDs light up in
+    different positions during a sweep), focus by continuously re-hunting
+    for sharpness. Both are real sources of centroid noise/bias
+    independent of any physical calibration issue - continuous autofocus
+    in particular can shift a lens's effective optical axis slightly while
+    hunting, which would show up as position error, not just blur.
+
+    Defaults (666, 255, 30) match what auto-exposure/autofocus had been
+    converging to in practice for the real tree scene - confirmed via
+    testing to reliably detect real LEDs across multiple string positions
+    on both cameras. A short/low-gain exposure (150, 0) was tried first
+    and failed to detect anything at all; gain=255 is maxed and likely
+    adds real sensor noise on top of being stable now, so there's still
+    headroom to tune exposure/gain down with more careful testing later,
+    but locking these to known-working fixed values (vs. left free to
+    drift) is the actual fix that matters here.
 
     :param captures: List of video capture objects.
     :param width: Desired frame width (default is 1920).
     :param height: Desired frame height (default is 1080).
-    :param exposure: Exposure value (default is -5).
+    :param exposure: Manual exposure_time_absolute, V4L2 100us units.
+    :param gain: Manual gain, 0-255.
+    :param focus: Manual focus_absolute, V4L2 units (0=infinity, higher=closer).
     :return: None
     """
     for cap in captures:
@@ -49,17 +76,27 @@ def set_camera_settings(captures, width=1920, height=1080, exposure=-5):
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # V4L2 UVC: 1 = Manual Mode (3 = auto, the default, was silently winning)
         cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
+        cap.set(cv2.CAP_PROP_GAIN, gain)
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        cap.set(cv2.CAP_PROP_FOCUS, focus)
 
     # Print the current settings to verify (optional)
     for idx, cap in enumerate(captures):
         actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
         actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        actual_auto_exposure = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
         actual_exposure = cap.get(cv2.CAP_PROP_EXPOSURE)
+        actual_gain = cap.get(cv2.CAP_PROP_GAIN)
+        actual_autofocus = cap.get(cv2.CAP_PROP_AUTOFOCUS)
+        actual_focus = cap.get(cv2.CAP_PROP_FOCUS)
         actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
         actual_fourcc_str = "".join(chr((actual_fourcc >> (8 * i)) & 0xFF) for i in range(4))
         print(f"Camera {idx}: Width={actual_width}, Height={actual_height}, "
-              f"Exposure={actual_exposure}, FOURCC={actual_fourcc_str}")
+              f"AutoExposure={actual_auto_exposure}, Exposure={actual_exposure}, "
+              f"Gain={actual_gain}, AutoFocus={actual_autofocus}, Focus={actual_focus}, "
+              f"FOURCC={actual_fourcc_str}")
 
 def capture_frame(cap):
     """
