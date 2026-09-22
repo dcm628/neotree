@@ -1649,8 +1649,6 @@ led_545.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
 led_546.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
 led_547.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
 led_548.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
-led_548.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
-led_548.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
 led_549.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
 led_550.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
 led_551.init_RGB_LED_3D(pattern_color_2_______, 300,0,0);
