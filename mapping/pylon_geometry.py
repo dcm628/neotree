@@ -29,6 +29,7 @@ the same orientation as the bottom camera (parallel-cameras assumption).
 import math
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 # Logitech C920x HD Pro spec'd diagonal FOV. Placeholder in the same sense
@@ -69,12 +70,15 @@ class CameraModel:
     origin: np.ndarray       # (3,) position in pylon-local frame
     principal_x: float = None
     principal_y: float = None
+    rotation: np.ndarray = None  # (3,3) - orientation relative to the parallel-cameras assumption, identity if None
 
     def __post_init__(self):
         if self.principal_x is None:
             self.principal_x = self.width_px / 2.0
         if self.principal_y is None:
             self.principal_y = self.height_px / 2.0
+        if self.rotation is None:
+            self.rotation = np.eye(3)
         self.origin = np.asarray(self.origin, dtype=float)
 
     def ray_direction(self, u, v):
@@ -98,11 +102,13 @@ class CameraModel:
         right = (v - self.principal_y) / self.focal_px
         up = (u - self.principal_x) / self.focal_px
         d = np.array([right, 1.0, up], dtype=float)
+        d = self.rotation @ d
         return d / np.linalg.norm(d)
 
     def project(self, point_pylon_frame):
         """Inverse of ray_direction: 3D pylon-local point -> (u, v) pixel. Used only by the self-test."""
         p = np.asarray(point_pylon_frame, dtype=float) - self.origin
+        p = self.rotation.T @ p  # rotation is orthogonal - transpose is the inverse
         if p[1] <= 0:
             return None  # behind the camera
         right = p[0] / p[1]
@@ -112,12 +118,29 @@ class CameraModel:
         return u, v
 
 
+# Small rotation correction for the top camera, fitted by
+# fit_camera_tilt.py via self-calibration (minimizing ray residual across
+# sweep 2's 119 real LED point correspondences) rather than hand-derived -
+# confirms the user's suspicion that the cameras aren't parallel, though
+# the dominant fitted component (~2.5deg) is a yaw (rotation around the
+# vertical/Z axis) rather than the pitch that seemed likely from the
+# earlier delta_v-vs-position correlation. Dropped RMS ray residual from
+# 46.2mm to 11.5mm (93.8% reduction in sum-squared error) on sweep 2.
+# Still a coarse single-sweep fit, not a real multi-pose stereo
+# calibration - worth re-fitting if the rig is touched or a bigger/better
+# dataset becomes available.
+TOP_CAMERA_RVEC = np.array([-0.0018518518518518518, 0.005555555555555556, 0.043621399176954734])
+
+
 def make_pylon_cameras(width_px, height_px, spacing_mm=PYLON_CAMERA_SPACING_MM,
-                        diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG):
+                        diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG, top_rotation_rvec=TOP_CAMERA_RVEC):
     """Build the (bottom, top) CameraModel pair for one pylon."""
     f = focal_length_px(width_px, height_px, diagonal_fov_deg)
     bottom = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, 0.0))
-    top = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, spacing_mm))
+    top_rotation = None
+    if top_rotation_rvec is not None:
+        top_rotation, _ = cv2.Rodrigues(np.asarray(top_rotation_rvec, dtype=float))
+    top = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, spacing_mm), rotation=top_rotation)
     return bottom, top
 
 
