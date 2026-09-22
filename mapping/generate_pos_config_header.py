@@ -76,6 +76,11 @@ def main():
     parser.add_argument('--count', type=int, default=1000, help="total LED range, 0..count-1")
     parser.add_argument('--standoff-mm', type=float, default=0.0)
     parser.add_argument('--ground-offset-mm', type=float, default=0.0)
+    parser.add_argument('--max-residual-mm', type=float, default=None,
+                         help="drop solves with ray_residual_mm above this (treated as unsolved / "
+                              "null sentinel) instead of trusting a noisy point. Sweep 2 showed a "
+                              "clean natural break around ~20mm - the bulk of points sit under 17mm, "
+                              "then a distinct outlier tail jumps to 22mm+.")
     parser.add_argument('--output', default='generated_pos_config.hpp')
     args = parser.parse_args()
 
@@ -86,11 +91,17 @@ def main():
         sweep_id = int(args.sweep_id)
 
     solves = {}
-    for led_position, x, y, z in conn.execute(
-            "SELECT led_position, x_mm, y_mm, z_mm FROM session_solves "
+    dropped = 0
+    for led_position, x, y, z, resid in conn.execute(
+            "SELECT led_position, x_mm, y_mm, z_mm, ray_residual_mm FROM session_solves "
             "WHERE sweep_id = ? AND pylon_id = ?", (sweep_id, args.pylon_id)):
+        if args.max_residual_mm is not None and resid > args.max_residual_mm:
+            dropped += 1
+            continue
         solves[led_position] = (x, y, z)
     conn.close()
+    if args.max_residual_mm is not None:
+        print(f"Dropped {dropped} solves with ray_residual_mm > {args.max_residual_mm}")
 
     lines = []
     for led in range(args.count):
