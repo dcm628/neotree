@@ -5,6 +5,13 @@ Raw pixel data is untouched by this - it exists so a geometry-model fix
 (wrong axis mapping, corrected camera spacing, etc.) can be applied to
 already-collected data without a new physical capture sweep.
 
+Uses the per-sweep, per-pylon top-camera tilt correction from
+pylon_tilt_fits if one has been fit (see fit_camera_tilt.py - the
+standard practice is to fit this fresh for every sweep/pylon, since the
+rig is deliberately hand-aimed rather than kept parallel), falling back
+to pylon_geometry's module-default rotation (fit for pylon A specifically
+- not generally correct for a different pylon) with a warning if not.
+
 Usage (venv active):
     python3 retriangulate_sweep.py --sweep-id 1 --pylon-id A --spacing-mm 592
 """
@@ -36,7 +43,17 @@ def main():
     if placement is None:
         raise SystemExit(f"no pylon_placements row for sweep {sweep_id} pylon {args.pylon_id}")
     width, height = placement
-    bottom_model, top_model = geom.make_pylon_cameras(width, height, spacing_mm=args.spacing_mm)
+
+    tilt_rvec = sweep_db.get_pylon_tilt_fit(conn, sweep_id, args.pylon_id)
+    if tilt_rvec is not None:
+        print(f"Using fitted tilt correction from pylon_tilt_fits for sweep {sweep_id} pylon {args.pylon_id}")
+        bottom_model, top_model = geom.make_pylon_cameras(
+            width, height, spacing_mm=args.spacing_mm, top_rotation_rvec=tilt_rvec)
+    else:
+        print(f"WARNING: no pylon_tilt_fits entry for sweep {sweep_id} pylon {args.pylon_id} - "
+              f"run fit_camera_tilt.py first. Falling back to pylon_geometry's module-default "
+              f"rotation (fit for pylon A specifically, likely wrong for a different pylon).")
+        bottom_model, top_model = geom.make_pylon_cameras(width, height, spacing_mm=args.spacing_mm)
 
     observations = {}  # led_position -> {'top': (u,v), 'bottom': (u,v)}
     for led, cam_pos, u, v in conn.execute(

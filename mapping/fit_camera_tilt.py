@@ -99,6 +99,13 @@ def main():
     parser.add_argument('--sweep-id', default='latest')
     parser.add_argument('--pylon-id', default='A')
     parser.add_argument('--spacing-mm', type=float, default=geom.PYLON_CAMERA_SPACING_MM)
+    parser.add_argument('--fit-distortion', action='store_true',
+                         help="also try jointly fitting a shared radial distortion coefficient "
+                              "(experimental - a prior attempt overfit a small dataset and was "
+                              "rejected after cross-checking against a known real measurement; "
+                              "not part of the standard per-sweep fit, print-only, never saved)")
+    parser.add_argument('--no-save', action='store_true',
+                         help="print the fit without writing it to pylon_tilt_fits")
     args = parser.parse_args()
 
     conn = sweep_db.connect(args.db)
@@ -117,7 +124,6 @@ def main():
         WHERE t.sweep_id=? AND t.pylon_id=? AND t.camera_position="top" AND b.camera_position="bottom"
           AND t.found=1 AND b.found=1
     ''', (sweep_id, args.pylon_id)).fetchall()
-    conn.close()
 
     bottom_model, top_model = geom.make_pylon_cameras(width, height, spacing_mm=args.spacing_mm,
                                                         top_rotation_rvec=None)
@@ -131,22 +137,31 @@ def main():
     print(f"n={n} points, sweep {sweep_id} pylon {args.pylon_id}")
     print(f"baseline (no correction): sum_sq={baseline_score:.1f}  rms_per_ray={np.sqrt(baseline_score/(2*n)):.2f}mm")
 
-    # Stage 1: rotation only (reproduces the earlier fit, as a sanity checkpoint)
+    # Standard per-sweep, per-pylon correction: fit the top camera's
+    # rotation relative to the bottom camera fresh every time, since the
+    # rig is deliberately hand-aimed (not kept parallel) each sweep - see
+    # module docstring / project discussion.
     rot_only, rot_score = grid_search(
         rows, bottom_model, top_origin, focal, bottom_principal, top_principal,
         center=[0.0, 0.0, 0.0, 0.0], half_ranges=[0.05, 0.05, 0.05, 0.0], steps=7, depth=6)
-    print(f"rotation-only: rvec_deg={[round(np.degrees(v),3) for v in rot_only[:3]]}  "
-          f"rms_per_ray={np.sqrt(rot_score/(2*n)):.2f}mm")
+    rms = float(np.sqrt(rot_score / (2 * n)))
+    print(f"fitted rotation: rvec_deg={[round(np.degrees(v),3) for v in rot_only[:3]]}  "
+          f"rms_per_ray={rms:.2f}mm  (improvement over baseline: {100*(1-rot_score/baseline_score):.1f}%)")
 
-    # Stage 2: rotation + shared radial distortion, starting from stage 1's rotation
-    joint, joint_score = grid_search(
-        rows, bottom_model, top_origin, focal, bottom_principal, top_principal,
-        center=[rot_only[0], rot_only[1], rot_only[2], 0.0],
-        half_ranges=[0.02, 0.02, 0.02, 0.5], steps=9, depth=6)
-    print(f"rotation+distortion: rvec_deg={[round(np.degrees(v),3) for v in joint[:3]]}  k1={joint[3]:.4f}  "
-          f"rms_per_ray={np.sqrt(joint_score/(2*n)):.2f}mm")
-    print(f"improvement over rotation-only: {100*(1-joint_score/rot_score):.1f}%")
-    print(f"improvement over baseline: {100*(1-joint_score/baseline_score):.1f}%")
+    if not args.no_save:
+        sweep_db.record_pylon_tilt_fit(conn, sweep_id, args.pylon_id, rot_only[:3], n, rms)
+        print(f"Saved to pylon_tilt_fits (sweep {sweep_id}, pylon {args.pylon_id})")
+    conn.close()
+
+    if args.fit_distortion:
+        joint, joint_score = grid_search(
+            rows, bottom_model, top_origin, focal, bottom_principal, top_principal,
+            center=[rot_only[0], rot_only[1], rot_only[2], 0.0],
+            half_ranges=[0.02, 0.02, 0.02, 0.5], steps=9, depth=6)
+        print(f"[experimental, not saved] rotation+distortion: "
+              f"rvec_deg={[round(np.degrees(v),3) for v in joint[:3]]}  k1={joint[3]:.4f}  "
+              f"rms_per_ray={np.sqrt(joint_score/(2*n)):.2f}mm  "
+              f"(improvement over rotation-only: {100*(1-joint_score/rot_score):.1f}%)")
 
 
 if __name__ == "__main__":

@@ -72,6 +72,25 @@ CREATE TABLE IF NOT EXISTS session_solves (
     FOREIGN KEY (sweep_id, pylon_id) REFERENCES pylon_placements(sweep_id, pylon_id)
 );
 
+-- Within-pylon top-camera tilt correction (top camera's rotation
+-- relative to the bottom camera, fitted by fit_camera_tilt.py via
+-- self-calibration against this sweep+pylon's own raw pixel data) -
+-- applied during triangulation, upstream of and distinct from
+-- session_transforms (which relates whole sessions to each other after
+-- triangulation). Intentionally fit fresh per sweep per pylon as standard
+-- practice - the physical rig is hand-aimed each time (deliberately not
+-- kept parallel, since aiming works better that way), so there's no
+-- single "correct" tilt value to reuse across sweeps.
+CREATE TABLE IF NOT EXISTS pylon_tilt_fits (
+    sweep_id INTEGER NOT NULL,
+    pylon_id TEXT NOT NULL,
+    rvec_json TEXT NOT NULL,   -- Rodrigues rotation vector, JSON list of 3 floats
+    n_correspondences INTEGER NOT NULL,
+    rms_error_mm REAL NOT NULL,
+    fitted_at TEXT NOT NULL,
+    PRIMARY KEY (sweep_id, pylon_id)
+);
+
 -- The rigid transform (rotation + translation) that maps one (sweep_id,
 -- pylon_id) session's local-frame session_solves onto the shared global
 -- frame - fitted by align_sweep.py via weighted Kabsch + RANSAC on LEDs
@@ -174,6 +193,24 @@ def record_session_solve(conn, sweep_id, pylon_id, led_position, result):
              float(cov[0, 0]), float(cov[1, 1]), float(cov[2, 2]),
              float(cov[0, 1]), float(cov[0, 2]), float(cov[1, 2]),
              result.ray_residual_mm, result.n_rays, now_iso()))
+
+
+def record_pylon_tilt_fit(conn, sweep_id, pylon_id, rvec, n_correspondences, rms_error_mm):
+    rvec = np.asarray(rvec, dtype=float)
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO pylon_tilt_fits "
+            "(sweep_id, pylon_id, rvec_json, n_correspondences, rms_error_mm, fitted_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (sweep_id, pylon_id, json.dumps(rvec.tolist()), n_correspondences, rms_error_mm, now_iso()))
+
+
+def get_pylon_tilt_fit(conn, sweep_id, pylon_id):
+    """Returns rvec (3,) ndarray, or None if not fitted yet for this sweep+pylon."""
+    row = conn.execute(
+        "SELECT rvec_json FROM pylon_tilt_fits WHERE sweep_id = ? AND pylon_id = ?",
+        (sweep_id, pylon_id)).fetchone()
+    return np.array(json.loads(row[0])) if row else None
 
 
 def record_session_transform(conn, sweep_id, pylon_id, rotation, translation,

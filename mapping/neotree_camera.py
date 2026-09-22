@@ -21,10 +21,17 @@ def initialize_video_capture(camera_ids):
 
         if not cap.isOpened():
             print(f"Error: Could not open camera {camera_id}.")
+            # Release whatever already opened successfully - otherwise
+            # those devices leak held-open (confirmed by testing: a prior
+            # failed multi-camera open left earlier cameras in the list
+            # locked until the whole process was killed, blocking every
+            # later attempt to use them).
+            for opened_cap in captures:
+                opened_cap.release()
             return None
         else:
             print(f"Success: Opened camera {camera_id}.")
-            
+
         captures.append(cap)
     return captures
 
