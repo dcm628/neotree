@@ -40,11 +40,31 @@ struct neo_tree_pos_config_data
     std::array<string_led_config, max_led_config_size> tree_config_array;
 }__packed;
 
+struct read_pos_config_request_t
+{
+    uint16_t led_string_position;
+}__packed;
+
 string_led_config lookup_pos_config(uint16_t string_position_in);
 bool write_flash_pos_config(string_led_config set_config);
+// Prints the current (RAM working-copy) config for one LED string position
+// over serial, in a fixed, parseable format. Used by the READ_POS_CONFIG
+// serial command, and called automatically right after every flash write
+// so the actual stored result can be confirmed independently of the
+// firmware's own internal verify_pos_config() check.
+void print_pos_config(uint16_t string_position_in);
+// Loads the persisted config from its reserved flash sector into the RAM
+// working copy (posConfigData), falling back to defaults if flash doesn't
+// hold a valid config yet (e.g. first boot ever, or a mismatched struct
+// version). Call once at startup, before anything reads posConfigData.
+void load_pos_config_from_flash();
 
-// Place it in a custom section so the linker can control where it's placed
-__attribute__((section(".config_data_section"))) extern neo_tree_pos_config_data posConfigData;
+// RAM-resident working copy - the single source of truth everything reads
+// (lookup_pos_config, RGB_LED_3D::initialize_from_config, etc). No longer
+// placed via a custom linker section - see write_flash_pos_config() for why
+// that was unsafe. Compile-time default-initialized so there's always a
+// sane value even before load_pos_config_from_flash() runs.
+extern neo_tree_pos_config_data posConfigData;
 
 // Define the constexpr function for default initialization
 constexpr neo_tree_pos_config_data get_default_tree_pos_config_data() {

@@ -149,16 +149,17 @@ SECTIONS
         *(.uninitialized_data*)
     } > RAM
 
-    /* Custom section for configuration data at the end of flash */
-    .config_data_section :
-    {
-        . = ALIGN(0x400);  /* Align to the next flash page boundary (1024 bytes) */
-        PROVIDE(__config_data_start = .);  /* Define the start of the config data section */
-        KEEP(*(.config_data_section))  /* Keep the section in the final binary */
-    } > FLASH
-
-    /* Define the end of the configuration data section */
-    __config_data_end = .;
+    /* NOTE: LED position config storage used to live here as a custom
+       .config_data_section, placed by the linker mid-image (only
+       1024-byte aligned, directly adjacent to .data's flash load image
+       below) rather than at a proper 4096-byte sector-aligned, isolated
+       location. flash_range_erase() requires sector alignment, and a
+       full-sector erase from that misaligned offset reached into .data's
+       saved initial values - corrupting them on every config write. Fixed
+       by reserving the last flash sector by fixed offset instead (see
+       CONFIG_FLASH_TARGET_OFFSET in neo_tree_config.cpp), which needs no
+       linker involvement at all. Keeping this note here so nobody
+       reintroduces a linker-placed section for this. */
 
     .data : {
         __data_start__ = .;

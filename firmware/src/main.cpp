@@ -928,6 +928,9 @@ enum class serial_msg_type : uint8_t
     LED_POS_UPDATE_CYLINDRICAL,
     CONFIG_RELOAD,
     RUN_SWEEP_SEQUENCE,
+    // Appended rather than inserted, to keep existing numeric values
+    // (and therefore wire compatibility) unchanged.
+    READ_POS_CONFIG,
 };
 
 uint32_t msg_process_counter = 0;
@@ -957,6 +960,11 @@ struct config_reload_frame
     uint8_t s_msg_type;
     config_type s_msg;
 }__packed;
+struct read_pos_config_request_frame
+{
+    uint8_t s_msg_type;
+    read_pos_config_request_t s_msg;
+}__packed;
 
 union single_led_update_msg
 {
@@ -982,6 +990,11 @@ union config_reload_msg
 {
     uint8_t buf[SERIAL_BUFFER_SIZE];
     config_reload_frame msg;
+};
+union read_pos_config_request_msg
+{
+    uint8_t buf[SERIAL_BUFFER_SIZE];
+    read_pos_config_request_frame msg;
 };
 
 void process_msg()
@@ -1011,6 +1024,7 @@ void process_msg()
     single_led_pos_cylindrical_update_msg temp_single_led_pos_cylindrical_update_msg;
     single_led_pos_cartesian_update_msg temp_single_led_pos_cartesian_update_msg;
     config_reload_msg temp_config_reload_msg;
+    read_pos_config_request_msg temp_read_pos_config_msg;
     switch (new_msg)
     {
     case serial_msg_type::NOOP:
@@ -1044,6 +1058,11 @@ void process_msg()
         temp_single_led_pos_cylindrical_update_msg.msg.s_msg.led_string_position = temp_single_led_pos_cartesian_update_msg.msg.s_msg.led_string_position;
         printf("attempt write_flash_pos_config ");
         write_flash_pos_config(*reinterpret_cast<string_led_config*>(&temp_single_led_pos_cylindrical_update_msg.msg.s_msg));
+        // Read back and print the actual stored result, independent of
+        // write_flash_pos_config()'s own internal verify check - lets a
+        // caller (or a human on a serial monitor) confirm the write really
+        // took by eye, not just trust a pass/fail flag.
+        print_pos_config(temp_single_led_pos_cylindrical_update_msg.msg.s_msg.led_string_position);
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
@@ -1053,6 +1072,13 @@ void process_msg()
         // do update stuff
         printf("attempt write_flash_pos_config ");
         write_flash_pos_config(*reinterpret_cast<string_led_config*>(&temp_single_led_pos_cylindrical_update_msg.msg.s_msg));
+        print_pos_config(temp_single_led_pos_cylindrical_update_msg.msg.s_msg.led_string_position);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::READ_POS_CONFIG:
+        memcpy(temp_read_pos_config_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
+        print_pos_config(temp_read_pos_config_msg.msg.s_msg.led_string_position);
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
@@ -1075,6 +1101,13 @@ void process_msg()
 void main_core1()
 {
     // code for second core
+    // Register this core as a lockout "victim" so core0 can pause it via
+    // multicore_lockout_start/end_blocking() during flash erase/program in
+    // write_flash_pos_config() (neo_tree_config.cpp). This core spins in
+    // the serial-read loop below continuously, executing from flash (XIP)
+    // the whole time - flash erase/program is documented as unsafe unless
+    // the other core is prevented from fetching from flash concurrently.
+    multicore_lockout_victim_init();
     // cyw43_arch_init() talks to the onboard CYW43 WiFi/BT chip, which on
     // this board is unreliable - confirmed (via added diagnostics) to
     // sometimes hang indefinitely and never return at all. Since it blocks
@@ -1155,6 +1188,14 @@ int main() {
     ws2812_program_init(pio, 3, offset, WS2812_PIN_STRING_4, 800000, IS_RGBW);
 
     init_my_tree();
+    // Load any persisted LED position config from flash (falls back to
+    // compiled-in defaults if flash doesn't hold a valid config yet) and
+    // apply it to the tree. Previously this only happened on an explicit
+    // CONFIG_RELOAD serial command, so even a correctly-written config
+    // would have had no effect after a real power cycle - the write path
+    // existed but nothing ever loaded it back.
+    load_pos_config_from_flash();
+    RGB_LED_3D::initialize_from_config();
     // grab first loop a abs time
     initial_abs_time_check = get_absolute_time();
     // adding a wait loop before starting the main while loop
