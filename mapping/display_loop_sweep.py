@@ -1,17 +1,19 @@
 """
 Fun, display-only loop: a colored band sweeps top to bottom, continuously,
 a fresh random color each pass, at a configurable rate (default 1Hz - one
-full top-to-bottom pass per second). Never touches the base color
-(ALL_LED_UPDATE_BASE) - the band is the secondary-color overlay, and
-clear_outside_volume lets whatever base color/pattern is already running
-show through everywhere outside the current band. Ctrl+C to stop.
+full top-to-bottom pass per second). The band is the secondary-color
+overlay, and clear_outside_volume lets the base color show through
+everywhere outside it - so the base color is set once at startup
+(--base-color) rather than left as whatever's currently loaded, since
+that's commonly black right now (left over from calibration/testing, not
+a real display setting).
 
 Real z range is pulled from global_estimates automatically (same as
 full_sweep_sequence.py), so it covers whatever's currently mapped.
 
 Usage (venv active):
     python3 display_loop_sweep.py
-    python3 display_loop_sweep.py --hz 0.5 --width 200
+    python3 display_loop_sweep.py --hz 0.5 --width 200 --base-color 0 60 20
 """
 import argparse
 import random
@@ -34,6 +36,9 @@ def main():
                          "motion but needs a faster serial round-trip to hold the target Hz")
     parser.add_argument('--range-min', type=int, default=None)
     parser.add_argument('--range-max', type=int, default=None)
+    parser.add_argument('--base-color', type=int, nargs=3, default=[255, 147, 41], metavar=('R', 'G', 'B'),
+                         help="set once at startup (default: warm white/amber, like incandescent "
+                              "string lights - a cozy backdrop for the bright random sweep band)")
     args = parser.parse_args()
 
     ranges = full_sweep_sequence.real_ranges(args.db)
@@ -50,6 +55,11 @@ def main():
     time.sleep(0.3)
     neoser.ser.read(neoser.ser.in_waiting or 1)
 
+    neoser.write_tree_all_led_base(neoser.ser, *args.base_color)
+    time.sleep(0.2)
+    neoser.ser.read(neoser.ser.in_waiting or 1)
+
+    print(f"Base color set to rgb{tuple(args.base_color)}")
     print(f"Display loop: z range=[{range_min},{range_max}] (top-to-bottom) width={width} "
           f"step={step} target={args.hz}Hz/pass ({args.steps} frames, delay={delay:.3f}s) "
           f"- Ctrl+C to stop")
