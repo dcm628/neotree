@@ -15,11 +15,16 @@ import neotree_serial as neoser
 TOTAL_LEDS = 1000
 GROUP_UPDATE_MSG_TYPE = 2  # COLOR_GROUP_RGB_UPDATE
 FRAME_DELAY_S = 0.15
+# Was random.randint(1, TOTAL_LEDS) - averaged ~500 LEDs/frame, so nearly the
+# whole tree was repainted almost every frame instead of a scattered handful.
+# Capped at MAX_GROUP_UPDATE_ENTRIES (12) so each frame is also exactly one
+# group-update packet - no chunking needed below.
+MAX_LEDS_PER_FRAME = neoser.MAX_GROUP_UPDATE_ENTRIES
 
 
 def random_frame():
     """One (led_position, r, g, b) tuple per randomly-chosen, distinct LED."""
-    count = random.randint(1, TOTAL_LEDS)
+    count = random.randint(1, MAX_LEDS_PER_FRAME)
     positions = random.sample(range(TOTAL_LEDS), count)
     return [
         (pos, random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
