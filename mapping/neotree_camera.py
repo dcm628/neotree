@@ -138,6 +138,45 @@ def find_center_of_mass(frame, threshold_value=50, display_height = 360, display
     else:
         return None  # If no mass is detected, return None
     
+def find_single_blob_centroid(frame, background=None, threshold_value=250, min_area=20):
+    """
+    Centroid detection for the mapping sweep, stricter than
+    find_center_of_mass(): requires exactly one bright blob above
+    min_area after optional background subtraction, since a real sweep
+    can pick up static room-light/ornament-reflection artifacts that a
+    plain single-frame threshold can't tell apart from the lit LED.
+
+    :param frame: captured frame (numpy array, BGR).
+    :param background: an all-LEDs-off reference frame from the same
+        camera (captured once per sweep), or None to skip subtraction.
+    :param threshold_value: luminance threshold after subtraction.
+    :param min_area: minimum blob pixel area to count as a real detection.
+    :return: (cx, cy, blob_count, largest_area). cx/cy are None unless
+        blob_count == 1 - blob_count/largest_area are still reported when
+        ambiguous (0 or >1 blobs) so the caller can log why it was rejected.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    if background is not None:
+        bg_gray = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY) if background.ndim == 3 else background
+        gray = cv2.subtract(gray, bg_gray)
+
+    _, mask = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+    # label 0 is the background component; keep only real blobs >= min_area
+    blob_areas = [stats[i, cv2.CC_STAT_AREA] for i in range(1, num_labels)
+                  if stats[i, cv2.CC_STAT_AREA] >= min_area]
+    blob_count = len(blob_areas)
+    largest_area = max(blob_areas) if blob_areas else 0.0
+
+    if blob_count != 1:
+        return None, None, blob_count, largest_area
+
+    idx = 1 + [stats[i, cv2.CC_STAT_AREA] for i in range(1, num_labels)].index(largest_area)
+    cx, cy = centroids[idx]
+    return float(cx), float(cy), blob_count, float(largest_area)
+
+
 def process_for_display_frame(raw_frame, new_width=480, new_height=640):
     """
     Process the raw captured frame:

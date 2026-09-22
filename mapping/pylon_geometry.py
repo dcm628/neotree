@@ -1,0 +1,230 @@
+"""
+Camera/pylon geometry model and multi-view triangulation, used to turn 2D
+centroid pixel coordinates from a pylon's cameras into a 3D LED position
+estimate (in that pylon's own local coordinate frame - cross-pylon/
+cross-sweep alignment into one shared frame is a separate, later step).
+
+No formal stereo calibration is being done (deliberate, for now - see
+project discussion): intrinsics are derived from the camera's spec'd
+diagonal FOV rather than measured, and each pylon's two cameras are assumed
+perfectly parallel (no relative tilt/pan/roll) and separated by exactly
+PYLON_CAMERA_SPACING_MM along the pylon's own vertical rail. This bakes in
+real systematic error, not just noise - every solved point/session is
+tagged with a calibration_source so this can be revisited without silently
+mixing calibrated and uncalibrated data later.
+
+Units: millimeters, matching the firmware's cylindrical position config
+(see neotree_serial.write_tree_pos_cylindrical).
+
+Pylon-local frame (right-handed): origin at the BOTTOM camera's optical
+center.
+    X = camera "right" (image +u direction)
+    Y = camera "forward" (viewing direction, into the tree)
+    Z = "up" (toward the top camera)
+The top camera sits at (0, 0, PYLON_CAMERA_SPACING_MM) in this frame, with
+the same orientation as the bottom camera (parallel-cameras assumption).
+"""
+import math
+from dataclasses import dataclass
+
+import numpy as np
+
+# Logitech C920x HD Pro spec'd diagonal FOV. Placeholder in the same sense
+# as the 24" pylon spacing - good enough to get real units into the
+# triangulation now, worth replacing with an actual calibration later.
+C920X_DIAGONAL_FOV_DEG = 78.0
+
+PYLON_CAMERA_SPACING_MM = 24 * 25.4  # 24" placeholder, per-pylon override supported
+
+
+def focal_length_px(width_px, height_px, diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG):
+    """
+    Pinhole focal length in pixels, derived from the sensor's spec'd
+    diagonal FOV and the actual capture resolution (must match whatever
+    resolution the frames being measured were captured at).
+    """
+    diag_px = math.hypot(width_px, height_px)
+    return (diag_px / 2.0) / math.tan(math.radians(diagonal_fov_deg) / 2.0)
+
+
+@dataclass
+class CameraModel:
+    """A single camera's intrinsics + its pose within a pylon's local frame."""
+    width_px: int
+    height_px: int
+    focal_px: float
+    origin: np.ndarray       # (3,) position in pylon-local frame
+    principal_x: float = None
+    principal_y: float = None
+
+    def __post_init__(self):
+        if self.principal_x is None:
+            self.principal_x = self.width_px / 2.0
+        if self.principal_y is None:
+            self.principal_y = self.height_px / 2.0
+        self.origin = np.asarray(self.origin, dtype=float)
+
+    def ray_direction(self, u, v):
+        """Unit direction (in pylon-local frame) of the ray through pixel (u, v)."""
+        xc = (u - self.principal_x) / self.focal_px
+        yc = (v - self.principal_y) / self.focal_px
+        # camera frame (right=xc, down=yc, forward=1) -> pylon frame (right, forward, up)
+        d = np.array([xc, 1.0, -yc], dtype=float)
+        return d / np.linalg.norm(d)
+
+    def project(self, point_pylon_frame):
+        """Inverse of ray_direction: 3D pylon-local point -> (u, v) pixel. Used only by the self-test."""
+        p = np.asarray(point_pylon_frame, dtype=float) - self.origin
+        if p[1] <= 0:
+            return None  # behind the camera
+        xc = p[0] / p[1]
+        yc = -p[2] / p[1]
+        u = xc * self.focal_px + self.principal_x
+        v = yc * self.focal_px + self.principal_y
+        return u, v
+
+
+def make_pylon_cameras(width_px, height_px, spacing_mm=PYLON_CAMERA_SPACING_MM,
+                        diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG):
+    """Build the (bottom, top) CameraModel pair for one pylon."""
+    f = focal_length_px(width_px, height_px, diagonal_fov_deg)
+    bottom = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, 0.0))
+    top = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, spacing_mm))
+    return bottom, top
+
+
+@dataclass
+class TriangulationResult:
+    point: np.ndarray          # (3,) solved position, pylon-local frame, mm
+    covariance: np.ndarray     # (3,3) approximate covariance, mm^2
+    ray_residual_mm: float     # RMS perpendicular distance from the solved point to each ray
+    n_rays: int
+
+
+def triangulate_rays(origins, directions, pixel_sigma_px=1.0, focal_px=None):
+    """
+    Least-squares closest point to a set of 3D rays (each origin o_i,
+    unit direction d_i), all expressed in the same frame.
+
+    For each ray, the point P minimizing perpendicular distance satisfies
+    (I - d d^T)(P - o) = 0. Summing these normal equations across rays
+    gives a standard linear least-squares system A P = b.
+
+    Covariance is approximated as (pixel_sigma_px / focal_px)^2 * inv(A):
+    A's eigenstructure already encodes how well each direction is
+    constrained by the ray geometry (e.g. a narrow-baseline stereo pair
+    poorly constrains depth along the shared viewing direction), so scaling
+    inv(A) by the angular pixel-noise variance carries that anisotropy
+    through to the output rather than reporting an isotropic guess. This is
+    a linearized approximation (ignores that pixel noise --> ray-direction
+    noise is only locally linear), good enough to rank axes/points by
+    confidence; a full nonlinear reprojection-error Jacobian would be more
+    exact but isn't needed for that purpose.
+
+    :param origins: list/array of (3,) ray origins.
+    :param directions: list/array of (3,) unit ray directions.
+    :param pixel_sigma_px: assumed 1-sigma centroid pixel noise.
+    :param focal_px: focal length in pixels (required to scale the
+        covariance into real units - pass the value used to build the rays).
+    :return: TriangulationResult, or None if fewer than 2 rays are given.
+    """
+    origins = np.asarray(origins, dtype=float)
+    directions = np.asarray(directions, dtype=float)
+    n = len(origins)
+    if n < 2:
+        return None
+
+    A = np.zeros((3, 3))
+    b = np.zeros(3)
+    for o, d in zip(origins, directions):
+        d = d / np.linalg.norm(d)
+        M = np.eye(3) - np.outer(d, d)
+        A += M
+        b += M @ o
+
+    point, *_ = np.linalg.lstsq(A, b, rcond=None)
+
+    residuals = []
+    for o, d in zip(origins, directions):
+        d = d / np.linalg.norm(d)
+        v = point - o
+        perp = v - np.dot(v, d) * d
+        residuals.append(np.linalg.norm(perp))
+    ray_residual_mm = float(np.sqrt(np.mean(np.square(residuals))))
+
+    if focal_px is None:
+        raise ValueError("focal_px is required to scale the covariance into real units")
+    try:
+        A_inv = np.linalg.inv(A)
+    except np.linalg.LinAlgError:
+        A_inv = np.linalg.pinv(A)
+    covariance = (pixel_sigma_px / focal_px) ** 2 * A_inv
+
+    return TriangulationResult(point=point, covariance=covariance,
+                                ray_residual_mm=ray_residual_mm, n_rays=n)
+
+
+def triangulate_pylon_observation(bottom_cam, top_cam, bottom_px, top_px, pixel_sigma_px=1.0):
+    """
+    Convenience wrapper for the common 2-camera (single pylon) case.
+
+    :param bottom_cam, top_cam: CameraModel.
+    :param bottom_px, top_px: (u, v) pixel centroid in each camera, or None
+        if that camera didn't find a valid centroid for this LED.
+    :return: TriangulationResult, or None if fewer than 2 of the 2 cameras
+        found a centroid (a single ray alone can't be triangulated).
+    """
+    origins, directions = [], []
+    if bottom_px is not None:
+        origins.append(bottom_cam.origin)
+        directions.append(bottom_cam.ray_direction(*bottom_px))
+    if top_px is not None:
+        origins.append(top_cam.origin)
+        directions.append(top_cam.ray_direction(*top_px))
+    if len(origins) < 2:
+        return None
+    return triangulate_rays(origins, directions, pixel_sigma_px=pixel_sigma_px,
+                             focal_px=bottom_cam.focal_px)
+
+
+def _self_test():
+    """Synthetic round-trip check: project a known point, triangulate it back."""
+    width, height = 1208, 680
+    bottom, top = make_pylon_cameras(width, height)
+
+    test_points = [
+        (150.0, 2000.0, 300.0),
+        (-400.0, 3500.0, 900.0),
+        (0.0, 1200.0, 12.0),
+    ]
+    print(f"focal_px = {bottom.focal_px:.1f}")
+    max_err = 0.0
+    for pt in test_points:
+        pt = np.array(pt)
+        u_b, v_b = bottom.project(pt)
+        u_t, v_t = top.project(pt)
+        result = triangulate_pylon_observation(bottom, top, (u_b, v_b), (u_t, v_t))
+        err = np.linalg.norm(result.point - pt)
+        max_err = max(max_err, err)
+        print(f"  true={pt} solved={result.point.round(3)} "
+              f"err_mm={err:.6f} ray_residual_mm={result.ray_residual_mm:.6f} "
+              f"cov_diag={result.covariance.diagonal().round(6)}")
+        assert err < 1e-6, f"triangulation round-trip failed: err={err}"
+        assert result.ray_residual_mm < 1e-6
+
+    # Sanity check on the anisotropy claim: with a vertical-only baseline,
+    # depth (Y, along the shared viewing direction) should be far less
+    # constrained than the lateral axes for a point straight ahead.
+    pt = np.array([0.0, 3000.0, PYLON_CAMERA_SPACING_MM / 2])
+    u_b, v_b = bottom.project(pt)
+    u_t, v_t = top.project(pt)
+    result = triangulate_pylon_observation(bottom, top, (u_b, v_b), (u_t, v_t), pixel_sigma_px=1.0)
+    cov_x, cov_y, cov_z = result.covariance.diagonal()
+    print(f"\nanisotropy check at {pt}: cov_x={cov_x:.4f} cov_y(depth)={cov_y:.4f} cov_z={cov_z:.4f}")
+    assert cov_y > cov_x and cov_y > cov_z, "expected depth (Y) to be the least-constrained axis"
+
+    print(f"\nAll self-tests passed. max round-trip error = {max_err:.2e} mm")
+
+
+if __name__ == "__main__":
+    _self_test()
