@@ -106,6 +106,12 @@ def main():
                               "(treated as unsolved / null sentinel) instead of trusting a noisy "
                               "point. Sweep 2 showed a clean natural break around ~20mm - the bulk "
                               "of points sit under 17mm, then a distinct outlier tail jumps to 22mm+.")
+    parser.add_argument('--max-cov-trace', type=float, default=1000.0,
+                         help="(--source global only) drop global_estimates with cov_xx+cov_yy+cov_zz "
+                              "above this instead of trusting a noisy merged point - a single Kabsch-"
+                              "fit outlier can land far outside the tree with a covariance orders of "
+                              "magnitude above every other point (seen: one point at 311128 vs. a "
+                              "normal range of 60-160). Pass 0 to disable.")
     parser.add_argument('--output', default='generated_pos_config.hpp')
     args = parser.parse_args()
 
@@ -113,10 +119,16 @@ def main():
 
     if args.source == 'global':
         solves = {}
-        for led_position, x, y, z in conn.execute(
-                "SELECT led_position, x_mm, y_mm, z_mm FROM global_estimates"):
+        dropped = 0
+        for led_position, x, y, z, cxx, cyy, czz in conn.execute(
+                "SELECT led_position, x_mm, y_mm, z_mm, cov_xx, cov_yy, cov_zz FROM global_estimates"):
+            if args.max_cov_trace and (cxx + cyy + czz) > args.max_cov_trace:
+                dropped += 1
+                continue
             solves[led_position] = (x, y, z)
         conn.close()
+        if args.max_cov_trace:
+            print(f"Dropped {dropped} global_estimates with cov_trace > {args.max_cov_trace}")
 
         lines = []
         for led in range(args.count):
