@@ -32,8 +32,19 @@ from dataclasses import dataclass
 import numpy as np
 
 # Logitech C920x HD Pro spec'd diagonal FOV. Placeholder in the same sense
-# as the 24" pylon spacing - good enough to get real units into the
+# as the 24" pylon spacing was - good enough to get real units into the
 # triangulation now, worth replacing with an actual calibration later.
+#
+# Tried empirically "correcting" this to 95 degrees after sweep 1's z-span
+# (~2867mm robust p5-p95) came out larger than the real ~2130mm tree
+# height - reverted. Verified with a controlled synthetic test (project a
+# known point at the true FOV, triangulate assuming a deliberately wrong
+# one): for this vertical-baseline geometry, the reconstructed Z (the
+# baseline-aligned axis) is exactly invariant to the assumed focal length
+# - only Y (depth/range, the direction both cameras look along) is
+# affected. So the oversized z-span isn't an FOV problem at all; the FOV
+# assumption is still worth calibrating properly eventually (it does
+# affect Y), just not the cause of this particular discrepancy.
 C920X_DIAGONAL_FOV_DEG = 78.0
 
 PYLON_CAMERA_SPACING_MM = 592.0  # measured (was a 24"/609.6mm placeholder), per-pylon override supported
