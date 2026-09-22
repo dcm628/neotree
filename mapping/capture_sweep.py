@@ -51,6 +51,7 @@ def build_pylon(pylon_id, top_id, bottom_id, width, height, spacing_mm):
         "top_cap": top_cap, "bottom_cap": bottom_cap,
         "top_model": top_model, "bottom_model": bottom_model,
         "top_bg": None, "bottom_bg": None,
+        "width": actual_width, "height": actual_height,
     }
 
 
@@ -179,7 +180,7 @@ def main():
                 for pylon in pylons:
                     sweep_db.record_pylon_placement(
                         conn, sweep_id, pylon["pylon_id"], pylon["top_id"], pylon["bottom_id"],
-                        args.width, args.height, args.spacing_mm, calibration_source="nominal")
+                        pylon["width"], pylon["height"], args.spacing_mm, calibration_source="nominal")
 
                 print(f"\nStarting sweep {sweep_id} (LEDs {args.start_led}-"
                       f"{args.start_led + args.count - 1}, dwell={args.dwell}s, retries={args.retries})...")

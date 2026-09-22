@@ -18,9 +18,11 @@ Units: millimeters, matching the firmware's cylindrical position config
 
 Pylon-local frame (right-handed): origin at the BOTTOM camera's optical
 center.
-    X = camera "right" (image +u direction)
+    X = camera "right" (raw image +v direction - the cameras are mounted
+        rotated 90 degrees/portrait, confirmed physically and by real
+        captured data, see CameraModel.ray_direction)
     Y = camera "forward" (viewing direction, into the tree)
-    Z = "up" (toward the top camera)
+    Z = "up" (toward the top camera, raw image +u direction)
 The top camera sits at (0, 0, PYLON_CAMERA_SPACING_MM) in this frame, with
 the same orientation as the bottom camera (parallel-cameras assumption).
 """
@@ -34,7 +36,7 @@ import numpy as np
 # triangulation now, worth replacing with an actual calibration later.
 C920X_DIAGONAL_FOV_DEG = 78.0
 
-PYLON_CAMERA_SPACING_MM = 24 * 25.4  # 24" placeholder, per-pylon override supported
+PYLON_CAMERA_SPACING_MM = 592.0  # measured (was a 24"/609.6mm placeholder), per-pylon override supported
 
 
 def focal_length_px(width_px, height_px, diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG):
@@ -65,11 +67,26 @@ class CameraModel:
         self.origin = np.asarray(self.origin, dtype=float)
 
     def ray_direction(self, u, v):
-        """Unit direction (in pylon-local frame) of the ray through pixel (u, v)."""
-        xc = (u - self.principal_x) / self.focal_px
-        yc = (v - self.principal_y) / self.focal_px
-        # camera frame (right=xc, down=yc, forward=1) -> pylon frame (right, forward, up)
-        d = np.array([xc, 1.0, -yc], dtype=float)
+        """
+        Unit direction (in pylon-local frame) of the ray through raw pixel
+        (u, v).
+
+        The physical cameras are mounted rotated 90 degrees (portrait, to
+        cover more of the tree's height per frame) - confirmed by the user
+        and by real captured data: for the same LED, the top and bottom
+        camera's raw *u* coordinate differs by a large, consistent amount
+        matching the ~592mm vertical baseline (mean ~168px, stdev ~33px
+        across 111 real LEDs), while raw *v* barely differs (mean ~35px,
+        stdev ~22px - consistent with noise, not a baseline). So raw u is
+        real-world vertical, not raw v as a normal (unrotated) camera would
+        have it. Re-triangulating the same real data with u/v swapped
+        dropped the mean ray residual from 283.7mm to 66.1mm (out of a
+        ~600mm z-span) - confirms the swap; see git history for the
+        before/after if this ever needs re-deriving.
+        """
+        right = (v - self.principal_y) / self.focal_px
+        up = (u - self.principal_x) / self.focal_px
+        d = np.array([right, 1.0, up], dtype=float)
         return d / np.linalg.norm(d)
 
     def project(self, point_pylon_frame):
@@ -77,10 +94,10 @@ class CameraModel:
         p = np.asarray(point_pylon_frame, dtype=float) - self.origin
         if p[1] <= 0:
             return None  # behind the camera
-        xc = p[0] / p[1]
-        yc = -p[2] / p[1]
-        u = xc * self.focal_px + self.principal_x
-        v = yc * self.focal_px + self.principal_y
+        right = p[0] / p[1]
+        up = p[2] / p[1]
+        v = right * self.focal_px + self.principal_y
+        u = up * self.focal_px + self.principal_x
         return u, v
 
 
