@@ -190,6 +190,35 @@ def triangulate_pylon_observation(bottom_cam, top_cam, bottom_px, top_px, pixel_
     return _triangulate(cameras, pixels, pixel_sigma_px)
 
 
+def pylon_to_coarse_tree_frame(point_pylon, standoff_mm, ground_offset_mm):
+    """
+    Deliberately crude placeholder for turning one pylon's local-frame
+    solves into the tree's own frame (trunk = vertical Z axis, radius/omega
+    measured from it) - a manual stand-in until real cross-session
+    registration (Kabsch/RANSAC onto a shared frame, then a fit onto the
+    tree's actual trunk axis) exists.
+
+    Assumes the pylon is boresighted straight at the trunk - i.e. the trunk
+    is a vertical line at pylon-local (x=0, y=standoff_mm) for every
+    height - so only a horizontal shift (by the standoff distance from the
+    bottom camera to the trunk) and a vertical shift (by how far the
+    bottom camera sits above the tree's base) are applied. No rotation:
+    with a single pylon, radius = sqrt(x^2 + y'^2) and omega = atan2(y', x)
+    are already self-consistent around *a* vertical axis without one -
+    rotation only starts to matter once a second pylon/sweep needs its
+    omega to agree with this one, which is real alignment work, not this.
+
+    :param point_pylon: (3,) array-like, pylon-local (x, y, z) mm.
+    :param standoff_mm: horizontal distance from the bottom camera to the
+        trunk, measured along the camera's forward (Y) axis.
+    :param ground_offset_mm: height of the bottom camera above the tree's
+        base (added so z=0 lands at the tree base, not the camera).
+    :return: (3,) array, coarse tree-frame (x, y, z) mm.
+    """
+    x, y, z = point_pylon
+    return np.array([x, y - standoff_mm, z + ground_offset_mm])
+
+
 def _self_test():
     """Synthetic round-trip check: project a known point, triangulate it back."""
     width, height = 1208, 680
