@@ -37,7 +37,7 @@ def main():
     # --- Single-LED walk settings (msg_type 1 = single LED) ---
     msg_type = 1
     r, g, b = 255, 255, 255      # full white
-    max_led_position = 500
+    max_led_position = 1000
 
     # --- Initialize the cameras ---
     # 4 USB webcams exposed as V4L2 device ids (two top/bottom pairs).
