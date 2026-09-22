@@ -1487,7 +1487,8 @@ int main() {
         if (latest_abs_time_check > (last_uptime_print_us + uptime_print_interval_us))
         {
             last_uptime_print_us = latest_abs_time_check;
-            printf("uptime s: %u marker: 081f4c04\n", (uint32_t)(latest_abs_time_check / 1'000'000));
+            printf("uptime s: %u marker: 081f4c04 led_loop_counter: %u\n",
+                   (uint32_t)(latest_abs_time_check / 1'000'000), (uint32_t)led_loop_counter);
         }
         if (buf_copy_lock == 2)
         {
