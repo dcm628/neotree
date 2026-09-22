@@ -49,7 +49,20 @@ def main():
                          help="how many LED positions to write (default: all 1000)")
     args = parser.parse_args()
 
-    error = neoser.open_neotree_serial('/dev/ttyACM0', baudrate=115200)
+    # Short read timeout (0.2s) is deliberate: pyserial's ser.read(N) blocks
+    # up to the port's configured timeout on EVERY call if fewer than N
+    # bytes are immediately available, which can silently eat almost an
+    # entire polling loop's time budget in one call. Confirmed by testing:
+    # with the default 1s port timeout, a "poll for up to 1s, re-checking
+    # time.time() each iteration" loop only actually got one real read
+    # attempt in, effectively making the whole per-LED wait a single
+    # blocking call instead of a responsive poll - most writes never
+    # confirmed and were silently dropped as a result (LED_POS_UPDATE_
+    # CYLINDRICAL triggers a real flash write per call; sending the next
+    # one before the firmware finishes processing this one lets
+    # serial_read_buffer()'s single greedy drain scoop up more than one
+    # message at once, of which only the first gets processed).
+    error = neoser.open_neotree_serial('/dev/ttyACM0', baudrate=115200, timeout=0.2)
     if error:
         print(error)
         return
@@ -58,13 +71,30 @@ def main():
           f"(fixed z={FIXED_Z} radius={FIXED_RADIUS} omega={FIXED_OMEGA} "
           f"except the swept axis)...")
     t0 = time.time()
+    dropped = []
     for i in range(args.count):
         z, radius, omega = coords_for(args.axis, i)
+        neoser.ser.reset_input_buffer()
         neoser.write_tree_pos_cylindrical(neoser.ser, i, z, radius, omega)
+        deadline = time.time() + 2.0
+        buf = b''
+        while time.time() < deadline:
+            chunk = neoser.ser.read(256)  # returns within 0.2s even if empty
+            if chunk:
+                buf += chunk
+                if b'verify OK' in buf or b'verify FAILED' in buf:
+                    break
+        if b'verify OK' not in buf:
+            dropped.append(i)
+            print(f"  WARNING: no verify OK for LED {i} - response was: {buf!r}")
         if (i + 1) % 100 == 0:
             print(f"  {i + 1}/{args.count} written, elapsed={time.time() - t0:.1f}s")
 
     print(f"Done in {time.time() - t0:.1f}s")
+    if dropped:
+        print(f"WARNING: {len(dropped)} LEDs did not confirm: {dropped}")
+    else:
+        print(f"All {args.count} LEDs confirmed written.")
     neoser.cleanup_serial()
 
 
