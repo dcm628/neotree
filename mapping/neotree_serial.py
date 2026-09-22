@@ -164,6 +164,26 @@ def write_tree_read_pos_config(ser, led_position):
     packed_data = struct.pack('<BH', READ_POS_CONFIG_MSG_TYPE, led_position)
     ser.write(packed_data)
 
+CONFIG_RELOAD_MSG_TYPE = 6
+CONFIG_TYPE_STRING_POSITION = 1  # only value config_type currently defines
+
+def write_tree_config_reload(ser):
+    """
+    Re-syncs every live LED object's position from the current flash-backed
+    position config (RGB_LED_3D::initialize_from_config()). Required after
+    any LED_POS_UPDATE_CARTESIAN/CYLINDRICAL write(s) - those only update
+    the stored config (what READ_POS_CONFIG reports), not the live objects
+    that rendering and SET_VOLUME_CARTESIAN/CYLINDRICAL actually read
+    coordinates from. Easy to forget - confirmed by testing: a volume
+    command sent right after writing a fresh position config silently
+    filtered against the *previous* (stale) positions until this was sent.
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :return: None
+    """
+    packed_data = struct.pack('<BI', CONFIG_RELOAD_MSG_TYPE, CONFIG_TYPE_STRING_POSITION)
+    ser.write(packed_data)
+
 SET_VOLUME_CARTESIAN_MSG_TYPE = 9
 SET_VOLUME_CYLINDRICAL_MSG_TYPE = 10
 

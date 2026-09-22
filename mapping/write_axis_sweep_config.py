@@ -95,6 +95,18 @@ def main():
         print(f"WARNING: {len(dropped)} LEDs did not confirm: {dropped}")
     else:
         print(f"All {args.count} LEDs confirmed written.")
+
+    # Required for the new positions to actually take effect anywhere that
+    # reads live LED coordinates (rendering, SET_VOLUME_*) - writing only
+    # updates the flash-backed config, confirmed by testing to otherwise
+    # leave volume commands silently filtering against the previous config.
+    print("Sending CONFIG_RELOAD to sync live LED objects...")
+    neoser.ser.reset_input_buffer()
+    neoser.write_tree_config_reload(neoser.ser)
+    time.sleep(1.0)  # initialize_from_config() prints several lines per LED
+    neoser.ser.read(neoser.ser.in_waiting or 1)
+    print("Done.")
+
     neoser.cleanup_serial()
 
 
