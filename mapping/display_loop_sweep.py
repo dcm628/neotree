@@ -78,24 +78,29 @@ def run_gravity_pass(color, range_min, range_max, width, gravity_mm_s2, fps):
 def run_launch_pass(color, range_min, range_max, width, gravity_mm_s2, fps):
     """
     One launch-and-fall pass: an object launched from the bottom with
-    just enough initial velocity for its apogee (v=0) to land exactly at
-    the top, then falls back down under the same gravity - reuses
-    run_gravity_pass's free-fall relation directly: v0 = sqrt(2*g*h) is
-    the same speed a dropped object reaches after falling height h (energy
-    conservation), so it's also exactly the launch speed needed to just
-    reach h before gravity brings it back to zero velocity. Total flight
-    time is 2*v0/g - by symmetry, exactly double run_gravity_pass's
-    one-way fall time for the same height/gravity.
+    just enough initial velocity for its apogee (v=0) to land exactly when
+    the rendered band reaches the top, then falls back down under the same
+    gravity. Total flight time is 2*v0/g - by symmetry, exactly double
+    run_gravity_pass's one-way fall time for the same effective height/
+    gravity.
 
-    Unlike run_gravity_pass (which tracks a leading edge, since motion is
-    one-directional), the band here is centered on the object's
-    instantaneous height and clamped to stay within [range_min,
-    range_max] - it touches the floor at launch, touches the ceiling
-    exactly at apogee, and touches the floor again on landing, without a
-    direction-dependent edge definition that would need to flip at apogee.
+    The band is centered on the object's instantaneous height and clamped
+    to stay within [range_min, range_max] - which means the center only
+    actually has (height - width) of real travel room before it saturates
+    at a boundary, not the full height. v0 is calibrated against that
+    effective height, not the raw one: calibrating against the raw height
+    (an earlier version of this) made the *true* unclamped apogee sit
+    above range_max, so the center - and therefore the rendered band -
+    saturated at the top boundary for a whole window of time approaching
+    and leaving the peak (confirmed by testing: ~0.74s frozen at an
+    identical position out of a ~3.0s flight, not just slow motion).
+    Calibrating against (height - width) instead makes the true apogee
+    land exactly on the clamp boundary, so clamping only ever binds at
+    that single zero-velocity instant.
     """
     height = range_max - range_min
-    v0 = (2 * gravity_mm_s2 * height) ** 0.5
+    effective_height = max(0.0, height - width)
+    v0 = (2 * gravity_mm_s2 * effective_height) ** 0.5
     t_total = 2 * v0 / gravity_mm_s2
     dt = 1.0 / fps
     t0 = time.time()
@@ -103,8 +108,8 @@ def run_launch_pass(color, range_min, range_max, width, gravity_mm_s2, fps):
     while True:
         y = v0 * t - 0.5 * gravity_mm_s2 * t * t
         done = t >= t_total
-        y = 0.0 if done else max(0.0, min(height, y))
-        center = range_min + y
+        y = 0.0 if done else max(0.0, min(effective_height, y))
+        center = range_min + width / 2 + y
         center = max(range_min + width / 2, min(range_max - width / 2, center))
         lo, hi = center - width / 2, center + width / 2
         sweep_demo.send_volume_frame('z', int(lo), int(hi), *color)
@@ -174,7 +179,8 @@ def main():
               f"gravity={args.gravity}mm/s^2 fps={args.fps} expected_fall~={expected_fall_s:.2f}s "
               f"- Ctrl+C to stop")
     else:
-        expected_flight_s = 2 * (2 * (range_max - range_min) / args.gravity) ** 0.5
+        effective_height = max(0.0, (range_max - range_min) - width)
+        expected_flight_s = 2 * (2 * effective_height / args.gravity) ** 0.5
         print(f"Display loop [launch]: z range=[{range_min},{range_max}] (bottom -> apogee at top -> "
               f"bottom) width={width} gravity={args.gravity}mm/s^2 fps={args.fps} "
               f"expected_flight~={expected_flight_s:.2f}s - Ctrl+C to stop")
