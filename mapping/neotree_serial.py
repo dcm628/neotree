@@ -118,6 +118,98 @@ def write_tree_all_led(ser, msg_type, r, g, b):
     ser.write(packed_data)
     print(f"Sent data: {packed_data}")
     
+LED_POS_UPDATE_CARTESIAN_MSG_TYPE = 4
+LED_POS_UPDATE_CYLINDRICAL_MSG_TYPE = 5
+READ_POS_CONFIG_MSG_TYPE = 8
+
+def write_tree_pos_cylindrical(ser, led_position, z, radius, omega):
+    """
+    Sets one LED's mapped position (persisted to flash) in cylindrical
+    coordinates. See docs/ARCHITECTURE.md / dcm_physics_math.hpp - z and
+    radius are mm, omega is decimal degrees, though nothing enforces real
+    units yet (synthetic test data just uses raw integers).
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :param led_position: uint16_t.
+    :param z: int16_t. :param radius: uint16_t. :param omega: uint16_t.
+    :return: None
+    """
+    packed_data = struct.pack('<BHhHH', LED_POS_UPDATE_CYLINDRICAL_MSG_TYPE,
+                               led_position, z, radius, omega)
+    ser.write(packed_data)
+
+def write_tree_pos_cartesian(ser, led_position, x, y, z):
+    """
+    Sets one LED's mapped position (persisted to flash) in cartesian
+    coordinates - the firmware converts and stores it as cylindrical.
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :param led_position: uint16_t.
+    :param x, y, z: int16_t.
+    :return: None
+    """
+    packed_data = struct.pack('<BHhhh', LED_POS_UPDATE_CARTESIAN_MSG_TYPE,
+                               led_position, x, y, z)
+    ser.write(packed_data)
+
+def write_tree_read_pos_config(ser, led_position):
+    """
+    Requests the current (RAM working-copy) position config for one LED.
+    Firmware responds with a line: "POS_CONFIG position: N omega: N radius: N z: N".
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :param led_position: uint16_t.
+    :return: None
+    """
+    packed_data = struct.pack('<BH', READ_POS_CONFIG_MSG_TYPE, led_position)
+    ser.write(packed_data)
+
+SET_VOLUME_CARTESIAN_MSG_TYPE = 9
+SET_VOLUME_CYLINDRICAL_MSG_TYPE = 10
+
+def write_tree_set_volume_cartesian(ser, x_min, x_max, y_min, y_max, z_min, z_max,
+                                     r, g, b, clear_outside_volume):
+    """
+    Sets every LED whose mapped (x, y, z) falls inside the given box (all
+    bounds inclusive) to (r, g, b). LEDs outside the box are left alone
+    unless clear_outside_volume is True, in which case their secondary
+    color is cleared back to the base pattern - use True for a sweep, where
+    each frame should fully replace the last rather than accumulate.
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :param x_min, x_max, y_min, y_max, z_min, z_max: Box bounds (int16_t).
+    :param r, g, b: Color for LEDs inside the box (uint8_t).
+    :param clear_outside_volume: bool.
+    :return: None
+    """
+    packed_data = struct.pack('<BhhhhhhBBBB', SET_VOLUME_CARTESIAN_MSG_TYPE,
+                               x_min, x_max, y_min, y_max, z_min, z_max,
+                               r, g, b, 1 if clear_outside_volume else 0)
+    ser.write(packed_data)
+    print(f"Sent set_volume_cartesian: {packed_data}")
+
+def write_tree_set_volume_cylindrical(ser, z_min, z_max, radius_min, radius_max,
+                                       omega_min, omega_max, r, g, b, clear_outside_volume):
+    """
+    Sets every LED whose mapped (z, radius, omega) falls inside the given
+    range (all bounds inclusive) to (r, g, b). Same clear_outside_volume
+    semantics as write_tree_set_volume_cartesian(). Note: omega range is a
+    plain min<=v<=max check - a pie slice that needs to straddle the 0/360
+    wraparound isn't representable yet.
+
+    :param ser: The serial object (opened with pyserial) for sending data.
+    :param z_min, z_max: int16_t.
+    :param radius_min, radius_max, omega_min, omega_max: uint16_t.
+    :param r, g, b: Color for LEDs inside the volume (uint8_t).
+    :param clear_outside_volume: bool.
+    :return: None
+    """
+    packed_data = struct.pack('<BhhHHHHBBBB', SET_VOLUME_CYLINDRICAL_MSG_TYPE,
+                               z_min, z_max, radius_min, radius_max, omega_min, omega_max,
+                               r, g, b, 1 if clear_outside_volume else 0)
+    ser.write(packed_data)
+    print(f"Sent set_volume_cylindrical: {packed_data}")
+
 def cleanup_serial():
     """
     Closes the serial port connection if it is open.

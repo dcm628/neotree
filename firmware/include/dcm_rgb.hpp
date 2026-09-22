@@ -75,6 +75,50 @@ struct single_led_pos_cartesian_update_t
     cartesian_coordinates rgb_update;
 }__packed;
 
+// SET_VOLUME_CARTESIAN / SET_VOLUME_CYLINDRICAL payloads - test/animation
+// primitive: iterate every LED, and if its mapped coordinate falls inside
+// the given bounding region (inclusive min/max on every axis), set its
+// secondary color to r/g/b. clear_outside_volume controls what happens to
+// LEDs *outside* the region: 0 leaves their current secondary state alone
+// (so you can layer multiple volumes in separate commands), 1 clears it
+// (so a single command fully defines what's lit - what you want for a
+// sweep, where each frame should replace the last rather than accumulate).
+//
+// Both are 17 bytes (1 type + 16 payload) - comfortably inside a single
+// 64-byte USB packet, so no risk of the fragmentation bug found and fixed
+// in COLOR_GROUP_RGB_UPDATE.
+struct set_volume_cartesian_t
+{
+    int16_t x_min;
+    int16_t x_max;
+    int16_t y_min;
+    int16_t y_max;
+    int16_t z_min;
+    int16_t z_max;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t clear_outside_volume;
+}__packed;
+
+struct set_volume_cylindrical_t
+{
+    int16_t z_min;
+    int16_t z_max;
+    uint16_t radius_min;
+    uint16_t radius_max;
+    uint16_t omega_min;
+    uint16_t omega_max;   // NOTE: simple min<=v<=max range - doesn't handle
+                           // wrapping through 0/360 for a pie slice that
+                           // straddles that boundary. Fine for now (nothing
+                           // sends real angular data yet); revisit once real
+                           // mapped coordinates make that a real scenario.
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t clear_outside_volume;
+}__packed;
+
 enum class effect_state
 {
     OFF,
@@ -110,6 +154,8 @@ class RGB_LED_3D
         void static update_ALL(struct all_led_update_t* msg_in);
         void static update_single(struct single_led_update_t* msg_in);
         void static update_group(struct group_led_update_t* msg_in);
+        void static update_volume_cartesian(struct set_volume_cartesian_t* msg_in);
+        void static update_volume_cylindrical(struct set_volume_cylindrical_t* msg_in);
         void static initialize_from_config();
 };
 

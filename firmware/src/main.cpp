@@ -1158,6 +1158,8 @@ enum class serial_msg_type : uint8_t
     // Appended rather than inserted, to keep existing numeric values
     // (and therefore wire compatibility) unchanged.
     READ_POS_CONFIG,
+    SET_VOLUME_CARTESIAN,
+    SET_VOLUME_CYLINDRICAL,
 };
 
 uint32_t msg_process_counter = 0;
@@ -1197,6 +1199,16 @@ struct group_led_update_frame
     uint8_t s_msg_type;
     group_led_update_t s_msg;
 }__packed;
+struct set_volume_cartesian_frame
+{
+    uint8_t s_msg_type;
+    set_volume_cartesian_t s_msg;
+}__packed;
+struct set_volume_cylindrical_frame
+{
+    uint8_t s_msg_type;
+    set_volume_cylindrical_t s_msg;
+}__packed;
 
 union single_led_update_msg
 {
@@ -1233,6 +1245,16 @@ union group_led_update_msg
     uint8_t buf[SERIAL_BUFFER_SIZE];
     group_led_update_frame msg;
 };
+union set_volume_cartesian_msg
+{
+    uint8_t buf[SERIAL_BUFFER_SIZE];
+    set_volume_cartesian_frame msg;
+};
+union set_volume_cylindrical_msg
+{
+    uint8_t buf[SERIAL_BUFFER_SIZE];
+    set_volume_cylindrical_frame msg;
+};
 
 void process_msg()
 {
@@ -1263,6 +1285,8 @@ void process_msg()
     config_reload_msg temp_config_reload_msg;
     read_pos_config_request_msg temp_read_pos_config_msg;
     group_led_update_msg temp_group_led_update_msg;
+    set_volume_cartesian_msg temp_set_volume_cartesian_msg;
+    set_volume_cylindrical_msg temp_set_volume_cylindrical_msg;
     switch (new_msg)
     {
     case serial_msg_type::NOOP:
@@ -1320,6 +1344,18 @@ void process_msg()
     case serial_msg_type::READ_POS_CONFIG:
         memcpy(temp_read_pos_config_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
         print_pos_config(temp_read_pos_config_msg.msg.s_msg.led_string_position);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::SET_VOLUME_CARTESIAN:
+        memcpy(temp_set_volume_cartesian_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
+        RGB_LED_3D::update_volume_cartesian(&(temp_set_volume_cartesian_msg.msg.s_msg));
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::SET_VOLUME_CYLINDRICAL:
+        memcpy(temp_set_volume_cylindrical_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
+        RGB_LED_3D::update_volume_cylindrical(&(temp_set_volume_cylindrical_msg.msg.s_msg));
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;

@@ -2163,7 +2163,11 @@ void RGB_LED_3D::update_group(struct group_led_update_t* msg_in)
             color.bytes.green = msg_in->entries[i].g;
             color.bytes.blue = msg_in->entries[i].b;
             color.bytes.garbo = 0;
-            string_vec.at(pos)->set_secondary_RGB(color);
+            // clear_on_zero=false: an intentionally-sent (0,0,0) should
+            // paint the LED black, not be reinterpreted as "clear the
+            // secondary color back to the base pattern" (set_secondary_RGB's
+            // default behavior, meant for a different use case).
+            string_vec.at(pos)->set_secondary_RGB(color, false);
         }
         else
         {
@@ -2171,6 +2175,66 @@ void RGB_LED_3D::update_group(struct group_led_update_t* msg_in)
         }
     }
     printf("group update: %u LEDs\n", n);
+}
+
+void RGB_LED_3D::update_volume_cartesian(struct set_volume_cartesian_t* msg_in)
+{
+    dcm_rgb_data color;
+    color.bytes.red = msg_in->r;
+    color.bytes.green = msg_in->g;
+    color.bytes.blue = msg_in->b;
+    color.bytes.garbo = 0;
+
+    uint32_t lit_count = 0;
+    for (auto & element : string_vec)
+    {
+        // position_cylindrical is the only coordinate this project actually
+        // maintains (set_coordinates_from_config only ever writes that one -
+        // position_cartesian exists but is never populated), so convert on
+        // the fly here rather than trust a stale/unset cartesian field.
+        cartesian_coordinates pos = transform_cylindrical_to_cartesian(element->position_cylindrical);
+        bool inside = (pos.x >= msg_in->x_min && pos.x <= msg_in->x_max)
+                   && (pos.y >= msg_in->y_min && pos.y <= msg_in->y_max)
+                   && (pos.z >= msg_in->z_min && pos.z <= msg_in->z_max);
+        if (inside)
+        {
+            element->set_secondary_RGB(color, false);
+            lit_count++;
+        }
+        else if (msg_in->clear_outside_volume)
+        {
+            element->set_secondary_toggle(false);
+        }
+    }
+    printf("set_volume_cartesian: %u of %u LEDs inside\n", (unsigned)lit_count, (unsigned)string_vec.size());
+}
+
+void RGB_LED_3D::update_volume_cylindrical(struct set_volume_cylindrical_t* msg_in)
+{
+    dcm_rgb_data color;
+    color.bytes.red = msg_in->r;
+    color.bytes.green = msg_in->g;
+    color.bytes.blue = msg_in->b;
+    color.bytes.garbo = 0;
+
+    uint32_t lit_count = 0;
+    for (auto & element : string_vec)
+    {
+        cylindrical_coordinates pos = element->position_cylindrical;
+        bool inside = (pos.z >= msg_in->z_min && pos.z <= msg_in->z_max)
+                   && (pos.radius >= msg_in->radius_min && pos.radius <= msg_in->radius_max)
+                   && (pos.omega >= msg_in->omega_min && pos.omega <= msg_in->omega_max);
+        if (inside)
+        {
+            element->set_secondary_RGB(color, false);
+            lit_count++;
+        }
+        else if (msg_in->clear_outside_volume)
+        {
+            element->set_secondary_toggle(false);
+        }
+    }
+    printf("set_volume_cylindrical: %u of %u LEDs inside\n", (unsigned)lit_count, (unsigned)string_vec.size());
 }
 
 void RGB_LED_3D::initialize_from_config()
@@ -2213,6 +2277,17 @@ void RGB_LED_3D::set_secondary_RGB(dcm_rgb_data rgb_data_in, bool clear_on_zero)
         rgb_data_secondary = rgb_data_in;
         secondary_toggle = true;
     }
+}
+
+void RGB_LED_3D::set_secondary_toggle(bool toggle_in)
+{
+    // Declared and called in several places (update_ALL(), toggle_single_led(),
+    // and now update_volume_cartesian/cylindrical) but never actually defined -
+    // dead-code elimination (--gc-sections) had been silently stripping every
+    // one of those call sites since none of them were reachable from a live
+    // path, so the missing definition never showed up as a link error until
+    // now, with the first caller that's actually exercised.
+    secondary_toggle = toggle_in;
 }
 
 void toggle_single_led(uint16_t pos_in)
