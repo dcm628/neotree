@@ -2,11 +2,12 @@
 Writes real triangulated LED positions from one sweep_db.py session into
 the firmware's position config: solved LEDs get their real pylon-local
 (x, y, z) via LED_POS_UPDATE_CARTESIAN; every other LED in the 0..count-1
-range gets pushed to a "null" position - z far below any real sweep data
-(NULL_Z_MM, default -32768, the minimum representable int16) via
-LED_POS_UPDATE_CYLINDRICAL - so a volume command using any sane z bound
-naturally excludes unsolved LEDs instead of leaving them at stale/default
-coordinates from an earlier synthetic test config.
+range gets pushed to the null sentinel position (see
+pylon_geometry.NULL_Z_MM/NULL_RADIUS_MM/NULL_OMEGA_DEG - out of bounds on
+every axis, not just z) via LED_POS_UPDATE_CYLINDRICAL, so a volume
+command using any sane bound naturally excludes unsolved LEDs instead of
+leaving them at stale/default coordinates from an earlier synthetic test
+config.
 
 This does NOT attempt any cross-pylon/cross-sweep alignment - it just
 takes one session's solves as-is, in that pylon's own local frame. Good
@@ -23,8 +24,6 @@ import time
 import neotree_serial as neoser
 import pylon_geometry as geom
 import sweep_db
-
-NULL_Z_MM = -32768  # int16 minimum - guaranteed below any real sweep z
 
 
 def confirm_write(deadline_s=2.0):
@@ -99,7 +98,8 @@ def main():
             neoser.write_tree_pos_cartesian(neoser.ser, led, int(round(x)), int(round(y)), int(round(z)))
             solved_count += 1
         else:
-            neoser.write_tree_pos_cylindrical(neoser.ser, led, NULL_Z_MM, 0, 0)
+            neoser.write_tree_pos_cylindrical(
+                neoser.ser, led, geom.NULL_Z_MM, geom.NULL_RADIUS_MM, geom.NULL_OMEGA_DEG)
             nulled_count += 1
 
         buf = confirm_write()

@@ -50,6 +50,24 @@ C920X_DIAGONAL_FOV_DEG = 78.0
 
 PYLON_CAMERA_SPACING_MM = 592.0  # measured (was a 24"/609.6mm placeholder), per-pylon override supported
 
+# Sentinel cylindrical position written for every unsolved LED (see
+# apply_sweep_to_config.py / generate_pos_config_header.py), meant to
+# land outside any sane SET_VOLUME_CARTESIAN/CYLINDRICAL bound on every
+# axis at once. z=-32768 alone only achieves that for a Z sweep - the
+# firmware derives cartesian x/y from radius/omega on the fly
+# (transform_cylindrical_to_cartesian), and radius=0 collapses x=y=0
+# regardless of omega, which real data straddles on every X/Y/omega
+# sweep. Confirmed live: unmapped LEDs blipped on every frame of an X or
+# Y sweep that crossed the origin. NULL_RADIUS_MM=30000 with
+# NULL_OMEGA_DEG chosen so omega mod 360 == 45 degrees puts x=y=~21213mm
+# (radius/sqrt(2)) - comfortably within int16 range (avoiding the same
+# float-to-int16 UB class already fixed once in dcm_physics_math.cpp) and
+# ~35x beyond the real ~600mm data range, so it's excluded from X, Y,
+# radius, AND omega sweeps simultaneously, not just Z.
+NULL_Z_MM = -32768
+NULL_RADIUS_MM = 30000
+NULL_OMEGA_DEG = 36045  # 45 + 100*360
+
 
 def focal_length_px(width_px, height_px, diagonal_fov_deg=C920X_DIAGONAL_FOV_DEG):
     """
