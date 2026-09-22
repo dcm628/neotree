@@ -2112,13 +2112,18 @@ void RGB_LED_3D::update_ALL()
 }
 void RGB_LED_3D::update_ALL(struct all_led_update_t* msg_in)
 {
+    dcm_rgb_data color;
+    color.bytes.red = msg_in->r;
+    color.bytes.green = msg_in->g;
+    color.bytes.blue = msg_in->b;
+    color.bytes.garbo = 0;
     for (auto & element : string_vec) {
-    element->set_secondary_RGB(msg_in->rgb_update, false);
+    element->set_secondary_RGB(color, false);
     }
     printf("all leds updated to: ");
-    printf("%u\n", msg_in->rgb_update.bytes.red);
-    printf("%u\n", msg_in->rgb_update.bytes.green);
-    printf("%u\n", msg_in->rgb_update.bytes.blue);
+    printf("%u\n", msg_in->r);
+    printf("%u\n", msg_in->g);
+    printf("%u\n", msg_in->b);
 }
 
 void RGB_LED_3D::set_base_RGB(dcm_rgb_data rgb_data_in)
@@ -2136,13 +2141,18 @@ void RGB_LED_3D::set_base_RGB(dcm_rgb_data rgb_data_in)
 // wasn't already black.
 void RGB_LED_3D::update_ALL_base(struct all_led_update_t* msg_in)
 {
+    dcm_rgb_data color;
+    color.bytes.red = msg_in->r;
+    color.bytes.green = msg_in->g;
+    color.bytes.blue = msg_in->b;
+    color.bytes.garbo = 0;
     for (auto & element : string_vec) {
-    element->set_base_RGB(msg_in->rgb_update);
+    element->set_base_RGB(color);
     }
     printf("all leds base color updated to: ");
-    printf("%u\n", msg_in->rgb_update.bytes.red);
-    printf("%u\n", msg_in->rgb_update.bytes.green);
-    printf("%u\n", msg_in->rgb_update.bytes.blue);
+    printf("%u\n", msg_in->r);
+    printf("%u\n", msg_in->g);
+    printf("%u\n", msg_in->b);
 }
 
 void RGB_LED_3D::update_single(struct single_led_update_t* msg_in)
@@ -2153,7 +2163,12 @@ void RGB_LED_3D::update_single(struct single_led_update_t* msg_in)
     // boundary. More reachable now that the addressable range goes up to 1000.
     if (msg_in->led_string_position < string_vec.size())
     {
-        string_vec.at(msg_in->led_string_position)->set_secondary_RGB(msg_in->rgb_update);
+        dcm_rgb_data color;
+        color.bytes.red = msg_in->r;
+        color.bytes.green = msg_in->g;
+        color.bytes.blue = msg_in->b;
+        color.bytes.garbo = 0;
+        string_vec.at(msg_in->led_string_position)->set_secondary_RGB(color);
         printf("led updated at: ");
         printf("%u\n", msg_in->led_string_position);
     }

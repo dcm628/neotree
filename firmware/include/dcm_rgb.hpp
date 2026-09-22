@@ -22,15 +22,31 @@ union dcm_rgb_data
     uint32_t word;
 };
 
+// r/g/b as explicit named bytes, not an embedded dcm_rgb_data - found by
+// testing (real color commands, not just white/black which are swap-
+// invariant): the wire sender packs exactly 3 color bytes (r,g,b), but
+// dcm_rgb_data is a 4-byte union (rgb_raw_bytes has an unused trailing
+// "garbo" byte) and was being decoded via a direct struct memcpy with no
+// field-by-field mapping. The missing 4th byte shifted every field down
+// one position, landing r in .bytes.blue, g in .bytes.green (correct by
+// coincidence - middle position either way), and b in .bytes.red - an
+// R/B swap. COLOR_GROUP_RGB_UPDATE and SET_VOLUME_CARTESIAN/CYLINDRICAL
+// never had this bug: they already use explicit r/g/b fields like these,
+// decoded field-by-field in dcm_rgb.cpp (color.bytes.red = msg_in->r,
+// etc.) instead of an implicit struct-shaped memcpy.
 struct single_led_update_t
 {
     uint16_t led_string_position;
-    dcm_rgb_data rgb_update;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
 }__packed;
 
 struct all_led_update_t
 {
-    dcm_rgb_data rgb_update;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
 }__packed;
 
 // COLOR_GROUP_RGB_UPDATE payload - update several LEDs (each its own position
