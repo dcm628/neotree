@@ -59,6 +59,8 @@ def main():
     parser.add_argument('--width', type=int, default=1208)
     parser.add_argument('--height', type=int, default=680)
     parser.add_argument('--exposure', type=int, default=666)
+    parser.add_argument('--gain', type=int, default=255)
+    parser.add_argument('--fps', type=int, default=30)
     parser.add_argument('--threshold', type=int, default=150)
     parser.add_argument('--led-list', type=int, nargs='+', required=True)
     parser.add_argument('--dwell', type=float, default=None,
@@ -74,11 +76,13 @@ def main():
     caps = neocam.initialize_video_capture([args.top, args.bottom])
     if caps is None:
         return
-    neocam.set_camera_settings(caps, args.width, args.height, exposure=args.exposure)
+    neocam.set_camera_settings(caps, args.width, args.height, exposure=args.exposure,
+                                gain=args.gain, fps=args.fps)
     top_cap, bottom_cap = caps
     cams = {"top": top_cap, "bottom": bottom_cap}
+    all_caps = [top_cap, bottom_cap]
 
-    dwell_s = args.dwell if args.dwell is not None else cs.compute_min_dwell_s(args.exposure)
+    dwell_s = args.dwell if args.dwell is not None else cs.compute_min_dwell_s(args.exposure, args.fps)
     print(f"Using dwell={dwell_s*1000:.1f}ms, threshold={args.threshold}")
 
     error = neoser.open_neotree_serial('/dev/ttyACM0', baudrate=115200, timeout=0.2)
@@ -93,17 +97,15 @@ def main():
         for led in args.led_list:
             for rep in range(args.repeats):
                 neoser.write_tree_all_led(neoser.ser, 3, 0, 0, 0)
-                time.sleep(dwell_s)
+                neocam.drain_for(all_caps, dwell_s)
                 backgrounds = {}
                 for pos, cap in cams.items():
-                    neocam.capture_frame(cap)
                     backgrounds[pos] = neocam.capture_frame(cap)
 
                 neoser.write_tree_single_led(neoser.ser, 1, led, 255, 255, 255)
-                time.sleep(dwell_s)
+                neocam.drain_for(all_caps, dwell_s)
 
                 for pos, cap in cams.items():
-                    neocam.capture_frame(cap)
                     lit = neocam.capture_frame(cap)
                     if lit is None or backgrounds[pos] is None:
                         continue

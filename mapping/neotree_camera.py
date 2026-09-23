@@ -177,6 +177,61 @@ def drain_for(caps, duration_s):
             cap.read()
 
 
+def drain_until_live(caps, max_duration_s=1.0, live_threshold_s=0.012, consecutive_needed=2):
+    """
+    Drains each camera until its OWN reads directly show the live-frame
+    latency signature, instead of assuming a precomputed dwell time was
+    long enough. A backlogged (stale, pre-transition) read returns
+    near-instantly (~4-8ms observed); once the backlog is drained, reads
+    start genuinely blocking for close to the camera's real frame period
+    (~27-31ms+ at fps=30) - see investigate_frame_timing.py. A camera is
+    marked live once `consecutive_needed` reads in a row take at least
+    live_threshold_s (comfortably above backlog-draining latency,
+    comfortably below a real live frame time even at fps=30) - a single
+    slow read could be a scheduling hiccup, not real freshness, so this
+    asks for two in a row before trusting it.
+
+    This exists because computing dwell from a fixed formula (exposure,
+    fps, camera count) was confirmed by testing to sometimes make
+    results dramatically WORSE, not better, in ways that weren't fully
+    explained (e.g., scaling dwell up for a 4-camera round-robin, a
+    logically-justified change, tanked solve rates from ~100/1000 to
+    ~1-10/1000). Measuring the actual state directly, instead of
+    predicting it from a model that's proven unreliable, sidesteps
+    needing to get that model right.
+
+    Cameras that never reach the live signature within max_duration_s
+    (e.g., genuinely disconnected or badly misbehaving) are given up on
+    at the deadline rather than blocking the whole sweep forever - the
+    caller's subsequent real read may then land on a non-live frame for
+    that camera, same as it would have under the old dwell-based
+    approach, so this never behaves worse than that baseline.
+
+    :param caps: list of cv2.VideoCapture objects to drain independently.
+    :param max_duration_s: safety cap on total time spent per call.
+    :param live_threshold_s: read latency above which a read counts as "live".
+    :param consecutive_needed: consecutive live-latency reads required before stopping a camera.
+    :return: dict {id(cap): bool} - which cameras reached the live state before the deadline.
+    """
+    deadline = time.time() + max_duration_s
+    streaks = {id(cap): 0 for cap in caps}
+    live = {id(cap): False for cap in caps}
+    while time.time() < deadline and not all(live.values()):
+        for cap in caps:
+            if live[id(cap)]:
+                continue
+            t0 = time.time()
+            cap.read()
+            elapsed = time.time() - t0
+            if elapsed >= live_threshold_s:
+                streaks[id(cap)] += 1
+                if streaks[id(cap)] >= consecutive_needed:
+                    live[id(cap)] = True
+            else:
+                streaks[id(cap)] = 0
+    return live
+
+
 def capture_frame(cap):
     """
     Capture a single frame from the webcam.
