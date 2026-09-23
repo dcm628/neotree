@@ -1,6 +1,6 @@
 # NeoPixel Volumetric Christmas Tree — Architecture
 
-**Status:** First draft · **Owner:** Dan · **Last updated:** 2026-09-20
+**Status:** First draft · **Owner:** Dan · **Last updated:** 2026-09-23
 
 **Related:** [`DEVELOPMENT.md`](./DEVELOPMENT.md) — how the project is developed,
 versioned, and deployed (dev environment, git, remote build/flash workflow).
@@ -46,9 +46,11 @@ subsystems below:
 ```
                     ┌────────────────────────────────────────────┐
                     │              CONTROL PLANE                   │
-                    │   (phone / laptop / browser on the LAN)      │
+                    │   native Android app (Kotlin) on family      │
+                    │   phones/tablets, home WiFi LAN only         │
                     └───────────────────────┬────────────────────┘
-                                             │  WiFi / HTTP (or WS)
+                                             │  WiFi: custom protocol
+                                             │  (commands + live stream)
                                              ▼
    ┌─────────────────────────┐      ┌──────────────────────────────┐
    │   MAPPING RIG (offline)  │      │   RENDER TARGET (runtime)     │
@@ -57,7 +59,7 @@ subsystems below:
    │   4× USB webcams         │      │   C++ Pico SDK firmware       │
    │   Python capture +       │      │   PIO + DMA → 4 LED strings   │
    │   centroid + 3D solve    │──────▶   Volumetric renderer         │
-   │                          │ coord│   HTTP/WS control endpoint    │
+   │                          │ coord│   Control protocol server     │
    │   Outputs coordinate map │ config│                              │
    └─────────────────────────┘      └───────────────┬──────────────┘
                                                      │  WS2812 (800 kHz)
@@ -79,12 +81,13 @@ renderer, and exposes the control interface. The Pi is not in the runtime path.
 
 ### 3.1 Render target — Raspberry Pi Pico 2 W
 
-> **Hardware status (2026-09-20):** the tree currently runs a **Pico W
-> (RP2040)** — that's what the existing firmware builds and flashes for today.
-> The project is migrating to the **Pico 2 W (RP2350)**, which is the platform
-> this architecture targets (the RP2350's FPU and larger SRAM are what make the
-> volumetric rendering goals practical). The RP2350 details below describe that
-> target; migration specifics are deferred.
+> **Hardware status (2026-09-23):** the tree still physically runs a **Pico W
+> (RP2040)**, but the move to the **Pico 2 W (RP2350)** is decided and
+> permanent — the RP2350's FPU and larger SRAM are what make the volumetric
+> rendering and multi-client networking goals practical. A bare Pico 2 W
+> testbed already runs the current firmware and is on WiFi (see
+> DEVELOPMENT.md); the RP2040 build is kept only until the tree's board is
+> swapped.
 
 - **MCU:** RP2350, dual-core (Arm Cortex-M33 @ 150 MHz default; RISC-V Hazard3
   cores also selectable). The second core is available and is a natural place to
@@ -174,11 +177,18 @@ constraint; **per-frame compute time** is the thing to watch for simulations.
 
 ### 4.4 Concurrency
 
-Natural split across the two cores: **Core 0** = networking/control + scene
-state; **Core 1** = render loop (evaluate frame, hand buffers to DMA). DMA + PIO
-do the actual output asynchronously, so the render loop's budget is roughly the
-frame interval minus latch time. **[OPEN]** decide the core split and the
-render/output double-buffering scheme.
+Natural split across the two cores: one core for networking/control, the other
+for the render loop (evaluate frame, hand buffers to DMA). DMA + PIO do the
+actual output asynchronously, so the render loop's budget is roughly the frame
+interval minus latch time.
+
+**As built (2026-09-23)** the split is the other way round: **core 0** renders
+and applies commands; **core 1** reads USB serial and owns the CYW43/lwIP
+stack (its IRQs run there). That's deliberate for now — core 0's current output
+path masks interrupts for ~9 ms per string, which networking must not share.
+Commands cross from core 1 to core 0 through a single-slot handoff today; the
+control interface needs a real queue (§7.4). **[OPEN]** revisit the split once
+output moves to DMA, and the render/output double-buffering scheme.
 
 ### 4.5 Frame rate
 
@@ -317,37 +327,96 @@ Given the map changes rarely, (a) is the fastest path to first light;
 
 ### 7.4 Control interface (client → firmware)
 
-Over WiFi. A small HTTP (and possibly WebSocket) API on the Pico exposing:
-select active scene, set parameters (speed, colors, brightness), global on/off,
-and a live/preview channel if desired. **[OPEN]** HTTP-only vs. HTTP + WebSocket
-(WS is better for live sliders / continuous control); endpoint/message schema;
-whether any state persists across reboot.
+Over WiFi, between the Android app (§8) and a protocol server on the Pico.
+Because the only client is our own native app, this is a **custom protocol**,
+not HTTP — no web server or web assets on the Pico. Decided (2026-09-23):
+
+- **Two channels.**
+  - A **reliable command channel** carries discrete commands and state:
+    select mode, set a parameter, power, brightness, and query state/schema.
+    Every connected client receives state changes, so several family phones
+    stay in sync.
+  - A **low-latency stream channel** carries continuous input: live slider
+    drags, and later the phone-sensor paintbrush at ~30–60 updates/s. On this
+    channel a late update is dropped, never queued behind newer ones.
+  - Expected mapping: TCP for commands, UDP for the stream. Measured ping on
+    the home network is ~10 ms average with WiFi power-save off.
+- **Self-describing modes.**
+  - Each animation mode declares its parameters: name, type (number range,
+    color, toggle, choice), default and label.
+  - The app builds its controls from that schema.
+  - Modes don't exist yet (they move from the Pi's Python scripts into
+    firmware), so the interface is generic: a new mode or option appears in
+    the app with no app changes.
+- **Manual color control is a first-class mode:** whole tree, individual LEDs
+  and groups, and 3D regions, mirroring what the USB serial protocol already
+  exposes. The goal-3 paintbrush is manual mode driven by phone orientation.
+- **One command path.** Network and USB serial commands feed the same
+  thread-safe queue into the same dispatcher. The USB serial protocol stays
+  for mapping and deploy; it's limited to one ≤64-byte message per USB packet.
+- **Persistence.** The active mode, its parameters and the brightness survive a
+  power cycle. They're stored in flash, like the WiFi credentials.
+- **Discovery.** The Pico advertises itself with mDNS/DNS-SD, and the app finds
+  it with Android's built-in network service discovery. A DHCP reservation in
+  the router is the fallback. No IP typing.
+- **Security.** LAN only, on the secured home WiFi; no port forwarding, no app
+  auth.
+
+**[OPEN]** message encoding (compact binary vs. JSON on the command channel),
+schema format, protocol versioning, max concurrent clients, and exactly which
+state persists.
 
 ---
 
 ## 8. Subsystem C — Control (remote interface)
 
-**State: not started.**
+**State:** the Pico is on WiFi with auto-reconnect and USB-provisioned
+credentials (2026-09-23). The protocol server, modes and app are not started.
 
-### 8.1 Options
+### 8.1 Goals
 
-- **Server on the Pico (recommended default):** lwIP is available through the
-  Pico SDK; run a lightweight HTTP/WS server directly on the device. Keeps the
-  runtime a single self-contained box (Pi not needed at runtime), which matches
-  the architecture in §2. Constraint: keep the server light so it doesn't steal
-  the render loop's time (hence the Core 0 / Core 1 split in §4.4).
-- **Server on a companion (Pi or always-on host):** richer UI, easier to build,
-  but reintroduces a second always-on device into the runtime path. Reasonable
-  as a *fallback* or for a fancier UI later, talking to the Pico over a simple
-  protocol.
+The whole family uses it on the living-room tree at Christmas, from Android
+phones and tablets on the home WiFi.
 
-Recommendation: **server on the Pico**, with a minimal static web UI served from
-flash, so the whole runtime system is just the tree + Pico.
+1. **Basic control:** power, brightness, manual colors, pick an animation mode
+   and its options.
+2. **Interactive GUIs:** live sliders and color pickers, and a 3D view of the
+   tree (built from the LED map) with touch painting on the model.
+3. **Phone-sensor paintbrush (later):** point the phone at the tree and paint
+   with it, driven by the phone's orientation. This needs an accurate 3D map
+   (§5) and a "point at the tree centre and tap" calibration.
 
-### 8.2 UI
+Goals 1–2 come first; goal 3 shapes the design (the stream channel,
+manual-mode primitives, the native app).
 
-A single static page (HTML/JS) served by the firmware: scene picker + parameter
-controls, talking to the API in §7.4. **[OPEN]** scope of v1 UI.
+### 8.2 Decisions (2026-09-23)
+
+- **The server runs on the Pico; no companion device at runtime.** Plug the
+  tree in and it works, and the Pi mapping rig stays out of the living room.
+- **The client is a native Android app in Kotlin + Jetpack Compose.** Every
+  household device is Android.
+  - A browser can't read motion sensors over plain HTTP; Chrome restricts
+    them to secure contexts, and HTTPS with certificates on the Pico is
+    awkward.
+  - A native app also gets UDP, OS service discovery, haptics and widgets,
+    and leaves the Pico simpler (no web server, no web assets in flash).
+  - Costs accepted: Android only, and the app must be installed on each
+    device.
+- **Distribution (own devices only, no public Play listing):**
+  - `adb install`, over USB or wireless debugging, for development.
+  - For family devices, either a side-loaded APK from a download link or a
+    Play Console internal-testing track. The internal track costs $25 once
+    and gives Play-managed installs and auto-updates.
+  - Keep the signing keystore safe: updates only install over an app signed
+    with the same key.
+  - Watch Google's 2026–27 developer-verification rollout for side-loaded
+    apps. As announced, adb installs aren't affected.
+
+### 8.3 UI
+
+**[OPEN]** scope of the v1 screens. Minimum for goal 1: connection/discovery,
+power and brightness, manual color, and a mode picker with controls generated
+from the mode's parameter schema (§7.4).
 
 ---
 
@@ -357,7 +426,7 @@ controls, talking to the API in §7.4. **[OPEN]** scope of v1 UI.
 |---|---|---|---|
 | Render firmware | C++, Raspberry Pi Pico SDK (RP2350), PIO | VS Code + **Raspberry Pi Pico extension** (CMake, arm-none-eabi toolchain), flash via UF2/USB or SWD | Windows |
 | Mapping | Python (OpenCV expected for calibration/triangulation, NumPy) | run on the Pi | RPi 4 |
-| Control UI | HTML/CSS/JS (static), optionally a small build step | served from Pico flash | browser on LAN |
+| Control app | Kotlin + Jetpack Compose (Android) | Android Studio / Gradle on the desktop, installed via adb or APK | Windows → Android devices |
 | Coordinate map tooling | Python (part of mapping) → C++ header or binary blob | Pi, then fed to firmware build/flash | RPi 4 → Pico |
 
 **[OPEN]** confirm the mapping stack uses OpenCV (calibration + triangulation
@@ -382,7 +451,7 @@ Proposed monorepo shape:
                  #   renderer/scenes, control server, generated coord map
 /mapping         # Python: capture, centroid, calibration, 3D solve, export
 /coord-map       # generated artifacts: master CSV/JSON + firmware binary/header
-/web-ui          # static control UI served from firmware flash
+/android         # Kotlin control app (Gradle project)
 /docs            # this document + per-subsystem design docs
 ```
 
@@ -400,8 +469,10 @@ Proposed monorepo shape:
 | 2D → 3D reconstruction | ❌ | multi-view triangulation (§5.3) |
 | Coordinate map export format | ❌ | defined contract (§7.2) |
 | Map onto Pico | ❌ | header or flash upload (§7.3) |
-| WiFi control interface | ❌ not started | HTTP/WS server on Pico (§8) |
-| Control UI | ❌ | static web UI (§8.2) |
+| WiFi link | ✅ station mode, auto-reconnect, USB-provisioned creds (Pico 2 W testbed) | keep |
+| Animation modes in firmware | ❌ live in Pi Python scripts | self-describing modes on the Pico (§7.4) |
+| Control protocol | ❌ not started | command + stream channels on the Pico (§7.4) |
+| Control app | ❌ | native Android app (§8) |
 
 ---
 
@@ -417,13 +488,27 @@ A dependency-ordered path (not a schedule):
 4. **Volumetric renderer v1 (§6):** refactor the render front-end to be
    coordinate-driven; ship a couple of field/pattern scenes to validate the map
    visually (a sweeping plane instantly shows whether the map is correct).
-5. **Control interface (§8):** HTTP server + minimal UI; wire scene selection
-   and parameters.
+5. **Control interface (§7.4, §8):** protocol server on the Pico plus the
+   Android app. Wire up mode selection and parameters.
 6. **Simulations (§6):** particle and sim scenes once the pipeline and budget
    are proven.
 
 Step 4 doubles as the **map validation tool** — a plane or gradient swept
 through the volume makes any mapping error obvious to the eye.
+
+**Actual order (2026-09-23):** mapping (step 2) is paused until a ChArUco
+calibration board arrives. Control work therefore goes ahead first, in three
+phases:
+
+- **Phase A (goal 1).** Firmware foundations: the self-describing mode
+  framework, one command queue shared by serial and network, persisted state,
+  and the protocol server with discovery. The Pi's sweeps and animations move
+  into firmware modes. A basic Android app.
+- **Phase B (goal 2).** Live stream channel, multi-client sync polish, and the
+  3D tree view with touch painting.
+- **Phase C (goal 3).** The sensor paintbrush.
+
+Only the 3D-view and paintbrush parts depend on an accurate map.
 
 ---
 
@@ -439,7 +524,9 @@ through the volume makes any mapping error obvious to the eye.
 - Guaranteeing LED index ↔ physical LED correspondence between scan and runtime.
 - Coordinate map schema, units, and coordinate-frame convention.
 - Map delivery to Pico: compiled header (a) vs. flash upload (b).
-- Control transport: HTTP-only vs. HTTP + WebSocket; persistence across reboot.
+- Control protocol: message encoding, schema format, versioning, max clients,
+  and which state persists (§7.4). Transport and client are decided — see §8.2.
+- v1 app screen scope (§8.3).
 - Rendering: normalized vs. metric coords; direct point evaluation vs. voxel
   grid + interpolation; fixed-point vs. float.
 - Core 0 / Core 1 split and double-buffering scheme.
