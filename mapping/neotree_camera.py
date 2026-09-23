@@ -182,7 +182,7 @@ def find_center_of_mass(frame, threshold_value=50, display_height = 360, display
     else:
         return None  # If no mass is detected, return None
     
-def find_single_blob_centroid(frame, background=None, threshold_value=250, min_area=20):
+def find_single_blob_centroid(frame, background=None, threshold_value=250, min_area=20, close_kernel_size=3):
     """
     Centroid detection for the mapping sweep, stricter than
     find_center_of_mass(): requires exactly one bright blob above
@@ -195,6 +195,16 @@ def find_single_blob_centroid(frame, background=None, threshold_value=250, min_a
         camera (captured once per sweep), or None to skip subtraction.
     :param threshold_value: luminance threshold after subtraction.
     :param min_area: minimum blob pixel area to count as a real detection.
+    :param close_kernel_size: morphological CLOSE kernel size applied to
+        the mask before counting components. A single genuinely-lit LED's
+        blob was confirmed (via diagnose_blobs.py, visual inspection of
+        the actual mask) to sometimes come apart into 2+ disconnected
+        pixel islands a few px apart under MJPG compression noise -
+        connectedComponentsWithStats then counts it as multiple blobs and
+        the caller rejects it as ambiguous, even though only one real
+        light source is present. Closing bridges gaps that small without
+        merging genuinely separate blobs (seen in the same diagnostic
+        images sitting tens of px apart). Pass 0 to disable.
     :return: (cx, cy, blob_count, largest_area). cx/cy are None unless
         blob_count == 1 - blob_count/largest_area are still reported when
         ambiguous (0 or >1 blobs) so the caller can log why it was rejected.
@@ -205,6 +215,9 @@ def find_single_blob_centroid(frame, background=None, threshold_value=250, min_a
         gray = cv2.subtract(gray, bg_gray)
 
     _, mask = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+    if close_kernel_size > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size, close_kernel_size))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
 
     # label 0 is the background component; keep only real blobs >= min_area
