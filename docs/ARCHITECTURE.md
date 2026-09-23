@@ -362,9 +362,10 @@ not HTTP — no web server or web assets on the Pico. Decided (2026-09-23):
 - **Security.** LAN only, on the secured home WiFi; no port forwarding, no app
   auth.
 
-**[OPEN]** message encoding (compact binary vs. JSON on the command channel),
-schema format, protocol versioning, max concurrent clients, and exactly which
-state persists.
+**Phase A command channel (proposed 2026-09-23):** the existing binary serial
+message types, each with a length prefix, over TCP. **[OPEN]** the encoding of
+the mode schema when modes arrive (phase B), protocol versioning, max
+concurrent clients, and exactly which state persists.
 
 ---
 
@@ -500,12 +501,18 @@ through the volume makes any mapping error obvious to the eye.
 calibration board arrives. Control work therefore goes ahead first, in three
 phases:
 
-- **Phase A (goal 1).** Firmware foundations: the self-describing mode
-  framework, one command queue shared by serial and network, persisted state,
-  and the protocol server with discovery. The Pi's sweeps and animations move
-  into firmware modes. A basic Android app.
-- **Phase B (goal 2).** Live stream channel, multi-client sync polish, and the
-  3D tree view with touch painting.
+- **Phase A (goal 1), descoped to color control only (2026-09-23).**
+  - Firmware: one command queue shared by serial and network; a TCP command
+    server; mDNS discovery.
+  - The server carries the **existing binary color commands** (single LED,
+    group, whole-tree overlay/base color, cartesian/cylindrical volume), each
+    with a length prefix. It uses the same message types and dispatcher as
+    USB serial, without the 64-byte-per-message limit.
+  - A basic Android app to find the tree and set colors.
+  - Moved out of phase A: the self-describing mode framework, porting the
+    Pi's animations, and persisted state.
+- **Phase B (goal 2).** The mode framework and animation ports, the live
+  stream channel, multi-client sync, and the 3D tree view with touch painting.
 - **Phase C (goal 3).** The sensor paintbrush.
 
 Only the 3D-view and paintbrush parts depend on an accurate map.
