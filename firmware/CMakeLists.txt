@@ -23,7 +23,14 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
+# pico_w (RP2040) is what's on the tree today; the Pico 2 W (RP2350) testbed
+# builds in its own directory: cmake -B build_pico2w -G Ninja -DPICO_BOARD=pico2_w
 set(PICO_BOARD pico_w CACHE STRING "Board type")
+
+# WiFi credentials are not compiled in - they're provisioned over USB serial
+# (tools/set_wifi.py) and stored in flash. This is just the DHCP hostname the
+# board registers with the router.
+set(NEOTREE_HOSTNAME "neotree" CACHE STRING "WiFi DHCP hostname")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
@@ -50,6 +57,7 @@ target_sources(neo_tree PRIVATE
                 src/dcm_physics_math.cpp
                 src/neo_tree_serial.cpp
                 src/neo_tree_effects.cpp
+                src/neo_tree_wifi.cpp
                 )
 
 # Project headers live in include/
@@ -60,8 +68,7 @@ target_include_directories(neo_tree PRIVATE
 
 target_compile_definitions(neo_tree PRIVATE
         #PIN_DBG1=3
-        WIFI_SSID=\"${WIFI_SSID}\"
-        WIFI_PASSWORD=\"${WIFI_PASSWORD}\"
+        CYW43_HOST_NAME=\"${NEOTREE_HOSTNAME}\"
         )
 
 target_compile_options(neo_tree PRIVATE
@@ -74,8 +81,7 @@ target_link_libraries(neo_tree PRIVATE    pico_stdlib
                                             hardware_pio
                                             # hardware_dma
                                             pico_multicore
-                                            # pico_cyw43_arch_lwip_threadsafe_background
-                                            pico_cyw43_arch_none
+                                            pico_cyw43_arch_lwip_threadsafe_background
                                             hardware_flash)
 
 # enable usb output, disable uart output
@@ -84,7 +90,11 @@ pico_enable_stdio_uart(neo_tree 0)
 
 pico_add_extra_outputs(neo_tree)
 
-pico_set_linker_script(neo_tree ${CMAKE_CURRENT_LIST_DIR}/memmap_custom.ld)
+# memmap_custom.ld is a copy of the SDK's RP2040 default script (see the note
+# inside it); RP2350 builds use the SDK's own default.
+if (PICO_PLATFORM STREQUAL "rp2040")
+    pico_set_linker_script(neo_tree ${CMAKE_CURRENT_LIST_DIR}/memmap_custom.ld)
+endif()
 
 # add url via pico_set_program_url
 # example_auto_set_url(neo_tree)

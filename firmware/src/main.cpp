@@ -16,6 +16,7 @@
 #include "dcm_rgb.hpp"
 #include "neo_tree_config.hpp"
 #include "dcm_physics_math.hpp"
+#include "neo_tree_wifi.hpp"
 
 mutex core0_data_update;
 
@@ -1107,6 +1108,38 @@ void write_my_tree()
     write_string(3);
 }
 
+enum class serial_msg_type : uint8_t
+{
+    NOOP,
+    SINGLE_LED_UPDATE,
+    COLOR_GROUP_RGB_UPDATE,
+    ALL_LED_UPDATE,
+    LED_POS_UPDATE_CARTESIAN,
+    LED_POS_UPDATE_CYLINDRICAL,
+    CONFIG_RELOAD,
+    RUN_SWEEP_SEQUENCE,
+    // Appended rather than inserted, to keep existing numeric values
+    // (and therefore wire compatibility) unchanged.
+    READ_POS_CONFIG,
+    SET_VOLUME_CARTESIAN,
+    SET_VOLUME_CYLINDRICAL,
+    // One-shot: overwrites both flash and the live tree with the
+    // compiled-in default position config (mapping/
+    // generate_pos_config_header.py) - the fast path for pushing a full
+    // coordinate update (reflash with freshly generated data, then send
+    // this) instead of replaying ~1000 individual position writes.
+    RESET_POS_CONFIG_TO_DEFAULT,
+    // Sets the PRIMARY/base color for every LED (same payload shape as
+    // ALL_LED_UPDATE, which only ever touches the secondary overlay) - the
+    // color shown when a LED isn't currently lit by anything else, e.g.
+    // outside a SET_VOLUME_* window with clear_outside_volume set.
+    ALL_LED_UPDATE_BASE,
+    // WiFi provisioning (tools/set_wifi.py): credentials sent in <=32-byte
+    // pieces, then a commit that writes them to flash - see neo_tree_wifi.hpp.
+    WIFI_CRED_CHUNK,
+    WIFI_CRED_COMMIT,
+};
+
 uint8_t sleep_val = 25;
 // Was 40 - too small to hold a COLOR_GROUP_RGB_UPDATE message (up to
 // max_group_update_entries LEDs at 5 bytes each, see dcm_rgb.hpp). Every
@@ -1135,9 +1168,13 @@ void serial_read_buffer()
         temp_char = -1; // reset temp_char - don't think it's actually necessary but won't hurt
         memcpy(serial_buf_copy,serial_buf, SERIAL_BUFFER_SIZE);
         memset(serial_buf,0,SERIAL_BUFFER_SIZE);    // zero buffer
-        for (size_t i = 0; i < buf_index; i++)
+        // Don't echo credential bytes back to whoever has the port open.
+        if (serial_buf_copy[0] != static_cast<uint8_t>(serial_msg_type::WIFI_CRED_CHUNK))
         {
-            printf("%d\n", serial_buf_copy[i]);
+            for (size_t i = 0; i < buf_index; i++)
+            {
+                printf("%d\n", serial_buf_copy[i]);
+            }
         }
         temp_char = -1; // reset temp_char - don't think it's actually necessary but won't hurt
         buf_index = 0;  // reset buffer to beginning
@@ -1145,34 +1182,6 @@ void serial_read_buffer()
     }
     else buf_copy_lock = 0;
 }
-enum class serial_msg_type : uint8_t
-{
-    NOOP,
-    SINGLE_LED_UPDATE,
-    COLOR_GROUP_RGB_UPDATE,
-    ALL_LED_UPDATE,
-    LED_POS_UPDATE_CARTESIAN,
-    LED_POS_UPDATE_CYLINDRICAL,
-    CONFIG_RELOAD,
-    RUN_SWEEP_SEQUENCE,
-    // Appended rather than inserted, to keep existing numeric values
-    // (and therefore wire compatibility) unchanged.
-    READ_POS_CONFIG,
-    SET_VOLUME_CARTESIAN,
-    SET_VOLUME_CYLINDRICAL,
-    // One-shot: overwrites both flash and the live tree with the
-    // compiled-in default position config (mapping/
-    // generate_pos_config_header.py) - the fast path for pushing a full
-    // coordinate update (reflash with freshly generated data, then send
-    // this) instead of replaying ~1000 individual position writes.
-    RESET_POS_CONFIG_TO_DEFAULT,
-    // Sets the PRIMARY/base color for every LED (same payload shape as
-    // ALL_LED_UPDATE, which only ever touches the secondary overlay) - the
-    // color shown when a LED isn't currently lit by anything else, e.g.
-    // outside a SET_VOLUME_* window with clear_outside_volume set.
-    ALL_LED_UPDATE_BASE,
-};
-
 uint32_t msg_process_counter = 0;
 serial_msg_type new_msg = serial_msg_type::NOOP;
 struct single_led_update_frame
@@ -1219,6 +1228,17 @@ struct set_volume_cylindrical_frame
 {
     uint8_t s_msg_type;
     set_volume_cylindrical_t s_msg;
+}__packed;
+
+struct wifi_cred_chunk_frame
+{
+    uint8_t s_msg_type;
+    wifi_cred_chunk_t s_msg;
+}__packed;
+struct wifi_cred_commit_frame
+{
+    uint8_t s_msg_type;
+    wifi_cred_commit_t s_msg;
 }__packed;
 
 union single_led_update_msg
@@ -1389,6 +1409,18 @@ void process_msg()
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
+    case serial_msg_type::WIFI_CRED_CHUNK:
+        wifi_handle_cred_chunk(&reinterpret_cast<const wifi_cred_chunk_frame *>(serial_buf_copy)->s_msg);
+        // Scrub the password bytes out of the shared receive buffer.
+        memset(serial_buf_copy, 0, sizeof(serial_buf_copy));
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::WIFI_CRED_COMMIT:
+        wifi_handle_cred_commit(&reinterpret_cast<const wifi_cred_commit_frame *>(serial_buf_copy)->s_msg);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
 
     default:
         // not a valid msg_type
@@ -1397,6 +1429,11 @@ void process_msg()
     }
     
 }
+
+// Result of cyw43_arch_init() on core1 (0 = OK). Starts at a sentinel so the
+// heartbeat distinguishes "init never returned" from a real error code.
+#define CYW43_INIT_PENDING 1
+volatile int cyw43_init_result = CYW43_INIT_PENDING;
 
 void main_core1()
 {
@@ -1408,48 +1445,60 @@ void main_core1()
     // the whole time - flash erase/program is documented as unsafe unless
     // the other core is prevented from fetching from flash concurrently.
     multicore_lockout_victim_init();
-    // cyw43_arch_init() talks to the onboard CYW43 WiFi/BT chip, which on
-    // this board is unreliable - confirmed (via added diagnostics) to
-    // sometimes hang indefinitely and never return at all. Since it blocks
-    // at the very top of this function, before the serial-reading loop
-    // below, a hang here means core1 never reads serial for the rest of
-    // the session - which is exactly the bug this was all chasing. WiFi
-    // isn't used for anything today (lwIP/sta-mode are already commented
-    // out below), so skip the call entirely rather than depend on a chip
-    // that doesn't reliably come up.
-    bool wifi_ok = false;
-    //cyw43_arch_enable_sta_mode();
-
-/*     if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 30000)) {
-        printf("failed to connect\n");
+    // cyw43_arch_init() used to hang here intermittently. Likely root cause:
+    // the CYW43 driver talks to the WiFi chip over a PIO state machine it
+    // gets via pio_claim_free_sm_and_add_program_for_gpio_range() - i.e. the
+    // first *unclaimed* SM, pio0 first. The WS2812 init in main() used to
+    // run concurrently with this on core0 and program pio0 SMs 0-3 without
+    // claiming them, so it could silently overwrite the CYW43's SPI state
+    // machine mid-init. main() now claims those SMs and finishes PIO setup
+    // before launching this core, so the driver lands on a free SM.
+    // Initialised here (not on core0) so the CYW43 IRQ handlers run on this
+    // core - core0 masks interrupts for ~9ms per string in write_string().
+    cyw43_init_result = cyw43_arch_init();
+    bool wifi_ok = (cyw43_init_result == 0);
+    // Non-blocking: the connect proceeds in the background and wifi_poll()
+    // below handles retries, so serial reading starts immediately.
+    if (wifi_ok)
+    {
+        wifi_start();
     }
- */
     // Watchdog heartbeat for core1 itself, mirroring the core0 one, so we
     // can see whether this loop is actually cycling (and how fast) once
     // past init, independent of whether any serial data ever arrives.
     uint64_t last_core1_heartbeat_us = 0;
     const uint64_t core1_heartbeat_interval_us = 5'000'000;
     uint64_t core1_loop_count = 0;
+    uint64_t last_led_toggle_us = 0;
+    const uint64_t led_toggle_interval_us = 500'000;
+    bool led_on = false;
     while (true) {
         core1_loop_count++;
         uint64_t now_us = time_us_64();
         if (now_us > (last_core1_heartbeat_us + core1_heartbeat_interval_us))
         {
             last_core1_heartbeat_us = now_us;
-            printf("core1 alive: loop_count=%u buf_copy_lock=%d\n", (uint32_t)core1_loop_count, (int)buf_copy_lock);
+            printf("core1 alive: loop_count=%u buf_copy_lock=%d cyw43_init=%d wifi: %s\n",
+                   (uint32_t)core1_loop_count, (int)buf_copy_lock, (int)cyw43_init_result,
+                   wifi_ok ? wifi_status_str() : "n/a");
         }
         if (wifi_ok)
         {
-            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+            wifi_poll();
         }
-        // serial time - doing with LED on
+        // Onboard LED blinks at 1Hz while core1 is cycling and the CYW43 is
+        // up. The LED hangs off the CYW43, so each write is an SPI
+        // transaction to the WiFi chip - toggling it every loop (as this
+        // used to) throttled the serial-read loop to a few hundred Hz.
+        if (wifi_ok && now_us > (last_led_toggle_us + led_toggle_interval_us))
+        {
+            last_led_toggle_us = now_us;
+            led_on = !led_on;
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_on);
+        }
         if (buf_copy_lock == 0)
         {
             serial_read_buffer();
-        }
-        if (wifi_ok)
-        {
-            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
         }
     }
 }
@@ -1470,7 +1519,6 @@ const uint64_t uptime_print_interval_us = 5'000'000;   // 5 seconds
 int main() {
     //set_sys_clock_48();
     stdio_init_all();
-    multicore_launch_core1(main_core1);
 
     printf("WS2812 Smoke Test, using pin %d", WS2812_PIN_STRING_1);
     // Deploy-pipeline proof marker - a fresh, one-off token picked at the
@@ -1479,13 +1527,18 @@ int main() {
     // build is what's actually running.
     printf("\nDEPLOY MARKER: 081f4c04\n");
 
-    // todo get free sm
+    // put_pixel() hardcodes pio0 SMs 0-3 (one per string). Claim them so the
+    // CYW43 driver's own PIO allocation (see main_core1) can't land on them,
+    // and finish this setup before core1 starts that allocation.
     PIO pio = pio0;
+    pio_claim_sm_mask(pio, 0b1111);
     uint offset = pio_add_program(pio, &ws2812_program);
     ws2812_program_init(pio, 0, offset, WS2812_PIN_STRING_1, 800000, IS_RGBW);
     ws2812_program_init(pio, 1, offset, WS2812_PIN_STRING_2, 800000, IS_RGBW);
     ws2812_program_init(pio, 2, offset, WS2812_PIN_STRING_3, 800000, IS_RGBW);
     ws2812_program_init(pio, 3, offset, WS2812_PIN_STRING_4, 800000, IS_RGBW);
+
+    multicore_launch_core1(main_core1);
 
     init_my_tree();
     // Load any persisted LED position config from flash (falls back to

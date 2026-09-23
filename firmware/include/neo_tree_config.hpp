@@ -74,6 +74,15 @@ void load_pos_config_from_flash();
 // re-sync live LED objects, same as CONFIG_RELOAD.
 bool reset_pos_config_to_default();
 
+// Flash offset (from the start of flash, not XIP_BASE) of the lowest sector
+// reserved for the LED position config at the end of flash. Other persisted
+// settings (see neo_tree_wifi.cpp) reserve sectors immediately below it.
+uint32_t pos_config_flash_offset();
+// Erases and programs `size` bytes (a whole number of sectors) at `offset`,
+// pausing core1 via multicore_lockout for the duration. Must be called from
+// core0 - core1 is the registered lockout victim.
+void flash_write_sectors_locked(uint32_t offset, const uint8_t *data, size_t size);
+
 // RAM-resident working copy - the single source of truth everything reads
 // (lookup_pos_config, RGB_LED_3D::initialize_from_config, etc). No longer
 // placed via a custom linker section - see write_flash_pos_config() for why

@@ -29,10 +29,12 @@ BAUD_MAGIC = 1200  # pico-sdk's PICO_STDIO_USB_RESET_MAGIC_BAUD_RATE default
 
 # Raspberry Pi OS desktop auto-mounts USB mass storage under /media/<user>/;
 # other locations covered in case of a different session/mount manager.
+# The bootloader drive is labelled RPI-RP2 on an RP2040 (Pico W) and RP2350
+# on an RP2350 (Pico 2 W).
 MOUNT_GLOB_PATTERNS = [
-    "/media/*/RPI-RP2",
-    "/run/media/*/RPI-RP2",
-    "/mnt/RPI-RP2",
+    f"{root}/{label}"
+    for label in ("RPI-RP2", "RP2350")
+    for root in ("/media/*", "/run/media/*", "/mnt")
 ]
 
 
@@ -144,20 +146,25 @@ def main():
         print(f"ERROR: {uf2_path} not found", file=sys.stderr)
         return 2
 
-    print(f"[1/5] Checking {SERIAL_PORT} is free...")
-    if not check_port_free():
-        return 1
+    if find_mount() and not os.path.exists(SERIAL_PORT):
+        # Already sitting in BOOTSEL (a blank board, or BOOTSEL held at
+        # plug-in) - there's no app firmware to reset, just flash it.
+        print("[1-2/5] Board is already in BOOTSEL mode, skipping reset")
+    else:
+        print(f"[1/5] Checking {SERIAL_PORT} is free...")
+        if not check_port_free():
+            return 1
 
-    print("[2/5] Triggering BOOTSEL reset (1200-baud touch)...")
-    try:
-        trigger_bootsel()
-    except Exception as e:
-        print(f"ERROR: could not trigger BOOTSEL reset: {e}", file=sys.stderr)
-        return 1
+        print("[2/5] Triggering BOOTSEL reset (1200-baud touch)...")
+        try:
+            trigger_bootsel()
+        except Exception as e:
+            print(f"ERROR: could not trigger BOOTSEL reset: {e}", file=sys.stderr)
+            return 1
 
-    print("[3/5] Waiting for RPI-RP2 drive to mount...")
+    print("[3/5] Waiting for bootloader drive to mount...")
     try:
-        mount = wait_for(find_mount, timeout=15, desc="RPI-RP2 mount")
+        mount = wait_for(find_mount, timeout=15, desc="bootloader drive mount")
     except TimeoutError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1

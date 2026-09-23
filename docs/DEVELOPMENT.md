@@ -33,8 +33,16 @@ Desktop development environment is **set up and verified**:
   builds on the desktop, ships the `.uf2` to the Pi, and flashes + verifies it
   runs, with no physical access to either machine. Built differently than
   originally planned below — see the note at the top of Phase 4 for why.
-- ℹ️ **Board target:** currently `pico_w` (RP2040); project is migrating to
-  `pico2_w` (RP2350). Migration deferred.
+- ℹ️ **Board target:** the tree runs `pico_w` (RP2040); project is migrating to
+  `pico2_w` (RP2350). **As of 2026-09-23** a bare Pico 2 W (no LEDs) is the
+  testbed on the Pi's USB in place of the tree's Pico, building in its own
+  directory (`cmake -B build_pico2w -G Ninja -DPICO_BOARD=pico2_w`, deploy with
+  `tools/deploy.ps1 -Board pico2_w`). Both boards build from the same source.
+- ✅ **WiFi (2026-09-23):** CYW43 init restored (its old intermittent hang was a
+  PIO state-machine race with the WS2812 init — fixed, 20/20 clean boots), and
+  the board joins WiFi as a station with auto-reconnect, credentials
+  provisioned over USB (§7). Power-save is off for latency (~10ms ping).
+  Connection events and the heartbeat report status over serial.
 
 Still to do: camera calibration / 3D coordinate mapping, coordinate-driven
 volumetric rendering, the control interface, and the RP2040→RP2350 migration.
@@ -321,14 +329,22 @@ a technical-design item, out of scope for this workflow doc.
 
 ## 7. Secrets & Config
 
-WiFi credentials (for the Pico's control interface later) and anything else
-sensitive should **never** be committed. Plan:
+WiFi credentials and anything else sensitive should **never** be committed.
 
-- Firmware: keep credentials in an untracked header (e.g. `wifi_config.h` listed
-  in `.gitignore`) with a committed `wifi_config.h.example` template.
+- **Firmware WiFi credentials — decided (2026-09-23): provisioned over USB,
+  never compiled in.** `tools/set_wifi.py` (run on the Pi) prompts for the
+  SSID and a hidden password and sends them over the existing serial protocol
+  (`WIFI_CRED_CHUNK` / `WIFI_CRED_COMMIT`, ≤36-byte messages so each fits one
+  USB packet, acked one at a time). The firmware stores them in their own
+  flash sector directly below the LED position config, where they survive
+  reflashing, and reconnects immediately. Nothing is written to disk on the
+  desktop or Pi, and builds/`.uf2`s carry no secrets. The password sits
+  unencrypted in the Pico's flash — accepted, the board never leaves the house.
+  ```powershell
+  ssh -t treepi "~/workspace/neotree/mapping/.venv/bin/python ~/workspace/neotree/tools/set_wifi.py"
+  # also: --status, --clear, --ssid NAME
+  ```
 - Python: an untracked `config.local.py` / `.env`, with a committed example.
-
-**[DECIDE]** exact mechanism when the WiFi/control phase starts.
 
 ---
 

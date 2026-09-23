@@ -23,16 +23,27 @@
 .PARAMETER PiHost
     SSH host alias for the Pi. Defaults to "treepi" (~/.ssh/config).
 
+.PARAMETER Board
+    Which build to deploy. "pico_w" (default, the tree's RP2040) builds in
+    firmware/build; "pico2_w" (the RP2350 testbed) builds in
+    firmware/build_pico2w, configured with -DPICO_BOARD=pico2_w.
+
 .EXAMPLE
     .\tools\deploy.ps1
+
+.EXAMPLE
+    .\tools\deploy.ps1 -Board pico2_w
 #>
 param(
-    [string]$PiHost = "treepi"
+    [string]$PiHost = "treepi",
+    [ValidateSet("pico_w", "pico2_w")]
+    [string]$Board = "pico_w"
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$BuildDir = Join-Path $RepoRoot "firmware\build"
+$BuildDirName = if ($Board -eq "pico2_w") { "build_pico2w" } else { "build" }
+$BuildDir = Join-Path $RepoRoot "firmware\$BuildDirName"
 $Uf2Path = Join-Path $BuildDir "neo_tree.uf2"
 
 function Fail($msg) {

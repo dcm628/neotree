@@ -125,7 +125,16 @@ static void write_flash_pos_config_raw(const neo_tree_pos_config_data& data)
     static uint8_t staging[CONFIG_FLASH_REGION_SIZE];
     memset(staging, 0xFF, sizeof(staging));
     memcpy(staging, &data, sizeof(data));
+    flash_write_sectors_locked(CONFIG_FLASH_TARGET_OFFSET, staging, CONFIG_FLASH_REGION_SIZE);
+}
 
+uint32_t pos_config_flash_offset()
+{
+    return CONFIG_FLASH_TARGET_OFFSET;
+}
+
+void flash_write_sectors_locked(uint32_t offset, const uint8_t *data, size_t size)
+{
     // Pause core1 for the duration of the erase/program. Both cores
     // execute from flash (XIP) continuously, and core1 in particular is
     // always spinning in its serial-read loop with no idle time.
@@ -138,12 +147,12 @@ static void write_flash_pos_config_raw(const neo_tree_pos_config_data& data)
     multicore_lockout_start_blocking();
     uint32_t interrupts = save_and_disable_interrupts();
 
-    flash_range_erase(CONFIG_FLASH_TARGET_OFFSET, CONFIG_FLASH_REGION_SIZE);
+    flash_range_erase(offset, size);
     // Program the FULL reserved region, not just one page. An earlier
     // version erased a full 4096-byte sector but only programmed back 256
     // bytes (one page) of a 4024-byte struct, leaving most of the LED
     // position array as erased/blank flash after every write.
-    flash_range_program(CONFIG_FLASH_TARGET_OFFSET, staging, CONFIG_FLASH_REGION_SIZE);
+    flash_range_program(offset, data, size);
 
     restore_interrupts(interrupts);
     multicore_lockout_end_blocking();
