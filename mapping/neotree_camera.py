@@ -1,4 +1,5 @@
 import os
+import subprocess
 import warnings
 
 # Set environment variable to suppress warnings globally
@@ -7,6 +8,30 @@ os.environ["PYTHONWARNINGS"] = "ignore:.*iCCP.*:UserWarning"
 import cv2
 import numpy as np
 import time
+
+
+def disable_exposure_dynamic_framerate(camera_id):
+    """
+    Disables the UVC exposure_dynamic_framerate control via v4l2-ctl -
+    OpenCV has no CAP_PROP for it, since it's outside the standard
+    property set it exposes. Confirmed by testing (v4l2-ctl
+    --list-ctrls) that this control defaults OFF on the hardware but was
+    found ON, and while it's on, the camera's firmware silently
+    overrides CAP_PROP_EXPOSURE with its own dynamically-chosen value
+    regardless of what's requested (and regardless of
+    CAP_PROP_AUTO_EXPOSURE=1 "Manual Mode", which is a separate control)
+    - every exposure request after the first one in a process converged
+    to the exact same value no matter what was asked for. Silently
+    no-ops if v4l2-ctl isn't available or the device doesn't expose this
+    control (e.g. a non-UVC or different camera model).
+    """
+    try:
+        subprocess.run(
+            ['v4l2-ctl', '-d', f'/dev/video{camera_id}', '-c', 'exposure_dynamic_framerate=0'],
+            capture_output=True, timeout=2)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
 
 def initialize_video_capture(camera_ids):
     """
@@ -17,6 +42,7 @@ def initialize_video_capture(camera_ids):
     """
     captures = []
     for camera_id in camera_ids:
+        disable_exposure_dynamic_framerate(camera_id)
         cap = cv2.VideoCapture(camera_id, cv2.CAP_V4L2)  # Use V4L2 backend
 
         if not cap.isOpened():
@@ -35,9 +61,23 @@ def initialize_video_capture(camera_ids):
         captures.append(cap)
     return captures
 
-def set_camera_settings(captures, width=1920, height=1080, exposure=666, gain=255, focus=30):
+def set_camera_settings(captures, width=1920, height=1080, exposure=666, gain=255, focus=30, fps=None):
     """
     Set various camera settings for all cameras in the list.
+
+    fps matters more than it looks: confirmed by testing that a
+    requested exposure silently gets clamped down by the camera's own
+    firmware to whatever fits within 1/fps (a frame can never take
+    longer to expose than its own period), *regardless* of
+    CAP_PROP_AUTO_EXPOSURE's manual-mode setting - the readback even lags
+    a few frames before visibly drifting down, so a single immediate
+    get() after set() can appear to confirm a value that isn't really
+    sustained. At the driver's default ~30fps, exposure=666 (66.6ms) was
+    being silently clamped to ~312 (31.2ms) within the first few frames,
+    which had been true for the entire project without anyone noticing -
+    every dwell computed from the assumption that 666 was real was
+    therefore an underestimate of the true frame period. Pass a lower
+    fps (e.g. 10) to actually unlock a longer real exposure.
 
     Explicitly disables auto-exposure and autofocus before setting manual
     values - confirmed via v4l2-ctl that these C920x cameras default to
@@ -83,6 +123,8 @@ def set_camera_settings(captures, width=1920, height=1080, exposure=666, gain=25
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if fps is not None:
+            cap.set(cv2.CAP_PROP_FPS, fps)  # set before exposure - caps the exposure ceiling
         cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # V4L2 UVC: 1 = Manual Mode (3 = auto, the default, was silently winning)
         cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
         cap.set(cv2.CAP_PROP_GAIN, gain)
@@ -100,10 +142,40 @@ def set_camera_settings(captures, width=1920, height=1080, exposure=666, gain=25
         actual_focus = cap.get(cv2.CAP_PROP_FOCUS)
         actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
         actual_fourcc_str = "".join(chr((actual_fourcc >> (8 * i)) & 0xFF) for i in range(4))
-        print(f"Camera {idx}: Width={actual_width}, Height={actual_height}, "
+        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        print(f"Camera {idx}: Width={actual_width}, Height={actual_height}, FPS={actual_fps}, "
               f"AutoExposure={actual_auto_exposure}, Exposure={actual_exposure}, "
               f"Gain={actual_gain}, AutoFocus={actual_autofocus}, Focus={actual_focus}, "
               f"FOURCC={actual_fourcc_str}")
+
+def drain_for(caps, duration_s):
+    """
+    Actively empties each camera's internal V4L2 buffer for duration_s by
+    continuously discarding frames in a round-robin across all cams,
+    instead of blindly time.sleep()ing while the camera keeps streaming
+    unread frames into a growing backlog.
+
+    Confirmed via mapping/investigate_frame_timing.py: cap.read() returns
+    near-instantly (~4-8ms) while popping already-buffered (stale, from
+    before whatever state change just happened) frames, then jumps to a
+    real ~27-31ms block once it's actually waiting on a fresh one - the
+    old pattern (sleep, then a single flush read, then the "real" read)
+    was landing on a still-stale frame at random depending on how deep
+    the backlog happened to be, which is a strong candidate for much of
+    the frame-to-frame detection flakiness seen in testing (the same LED,
+    same physical setup, flipping between ZERO/OK/AMBIG across identical
+    repeated captures). This serves double duty: satisfies the physical
+    settling-time requirement AND guarantees the buffer is empty by the
+    time duration_s elapses, so the very next real read is fresh.
+
+    :param caps: list of cv2.VideoCapture objects to round-robin drain.
+    :param duration_s: total wall-clock time to spend draining.
+    """
+    t_end = time.time() + duration_s
+    while time.time() < t_end:
+        for cap in caps:
+            cap.read()
+
 
 def capture_frame(cap):
     """
