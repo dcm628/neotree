@@ -37,14 +37,17 @@ data class PickerColor(val hue: Float, val saturation: Float, val brightness: Fl
         return Rgb((c.red * 255).toInt(), (c.green * 255).toInt(), (c.blue * 255).toInt()).scaled(brightness)
     }
 
-    /** Same brightness, hue/saturation taken from a preset swatch. */
+    /**
+     * Same brightness, hue/saturation taken from a preset. White keeps the
+     * current hue (its own is meaningless) so the wheel thumb doesn't jump.
+     */
     fun withPreset(preset: Color): PickerColor {
         val hsv = FloatArray(3)
         android.graphics.Color.colorToHSV(
             android.graphics.Color.rgb((preset.red * 255).toInt(), (preset.green * 255).toInt(), (preset.blue * 255).toInt()),
             hsv,
         )
-        return copy(hue = hsv[0], saturation = hsv[1])
+        return if (hsv[1] < 0.1f) copy(saturation = 0f) else copy(hue = hsv[0], saturation = hsv[1])
     }
 }
 

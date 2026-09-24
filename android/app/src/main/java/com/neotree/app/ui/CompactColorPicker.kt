@@ -1,29 +1,20 @@
 package com.neotree.app.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -41,10 +32,9 @@ val COLOR_PRESETS = listOf(
 )
 
 /**
- * Small hue ring + preset dots + saturation and brightness bars, sized to fit
+ * Hue ring with built-in presets + saturation and brightness bars, sized to fit
  * two side by side on a phone.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CompactColorPicker(color: PickerColor, onChange: (PickerColor) -> Unit, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -53,33 +43,33 @@ fun CompactColorPicker(color: PickerColor, onChange: (PickerColor) -> Unit, modi
             centerColor = color.display(),
             onHueChange = { onChange(color.copy(hue = it)) },
             ringWidth = 16.dp,
-            modifier = Modifier.fillMaxWidth(0.85f).align(Alignment.CenterHorizontally),
+            presets = COLOR_PRESETS,
+            onPreset = { onChange(color.withPreset(it)) },
+            modifier = Modifier.fillMaxWidth(),
         )
-        FlowRow(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-        ) {
-            COLOR_PRESETS.forEach { preset ->
-                Box(
-                    Modifier.size(20.dp).clip(CircleShape).background(preset)
-                        .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-                        .clickable { onChange(color.withPreset(preset)) }
-                )
-            }
+        LabeledBar("Saturation") {
+            GradientBar(
+                value = color.saturation, range = 0f..1f,
+                gradient = listOf(Color.White, Color.hsv(color.hue, 1f, 1f)),
+                onChange = { onChange(color.copy(saturation = it)) },
+            )
         }
-        Text("Saturation", style = MaterialTheme.typography.labelSmall)
-        GradientBar(
-            value = color.saturation, range = 0f..1f,
-            gradient = listOf(Color.White, Color.hsv(color.hue, 1f, 1f)),
-            onChange = { onChange(color.copy(saturation = it)) },
-        )
-        Text("Brightness ${(color.brightness * 100).roundToInt()}%", style = MaterialTheme.typography.labelSmall)
-        GradientBar(
-            value = color.brightness, range = 0.02f..1f,
-            gradient = listOf(Color.Black, color.display()),
-            onChange = { onChange(color.copy(brightness = it)) },
-        )
+        LabeledBar("Brightness ${(color.brightness * 100).roundToInt()}%") {
+            GradientBar(
+                value = color.brightness, range = 0.02f..1f,
+                gradient = listOf(Color.Black, color.display()),
+                onChange = { onChange(color.copy(brightness = it)) },
+            )
+        }
+    }
+}
+
+/** Label tucked right against its bar (the bar's touch area has built-in top padding). */
+@Composable
+private fun LabeledBar(label: String, bar: @Composable () -> Unit) {
+    Column {
+        Text(label, style = MaterialTheme.typography.labelSmall, modifier = Modifier.offset(y = 2.dp))
+        bar()
     }
 }
 
