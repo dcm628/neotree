@@ -13,10 +13,9 @@
 // (see the *_frame structs in main.cpp).
 const size_t command_max_len = 256;
 
-// Queue depth (x ~260 bytes each). core0 only drains between LED frames
-// (~30ms each while it pushes all 4 strings out), so this has to absorb a
-// frame's worth of commands from a fast sender - the network server answers
-// QUEUE_FULL beyond that and clients back off.
+// Queue depth (x ~260 bytes each). core0 drains it every loop pass; the depth
+// absorbs bursts (e.g. during a flash write, which pauses core0) - the network
+// server answers QUEUE_FULL beyond that and clients back off.
 const size_t command_queue_capacity = 32;
 
 enum class command_source : uint8_t

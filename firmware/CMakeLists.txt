@@ -31,6 +31,9 @@ set(PICO_BOARD pico_w CACHE STRING "Board type")
 # (tools/set_wifi.py) and stored in flash. This is just the DHCP hostname the
 # board registers with the router.
 set(NEOTREE_HOSTNAME "neotree" CACHE STRING "WiFi DHCP hostname")
+# LED frame rate target. Output takes ~9.3ms per frame (longest string +
+# latch), so anything above ~107 just runs frames back to back.
+set(NEOTREE_FRAME_RATE 60 CACHE STRING "LED frame rate target (fps)")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
@@ -60,6 +63,7 @@ target_sources(neo_tree PRIVATE
                 src/neo_tree_wifi.cpp
                 src/neo_tree_command_queue.cpp
                 src/neo_tree_net_server.cpp
+                src/neo_tree_led_output.cpp
                 )
 
 # Project headers live in include/
@@ -71,6 +75,7 @@ target_include_directories(neo_tree PRIVATE
 target_compile_definitions(neo_tree PRIVATE
         #PIN_DBG1=3
         CYW43_HOST_NAME=\"${NEOTREE_HOSTNAME}\"
+        NEOTREE_FRAME_RATE=${NEOTREE_FRAME_RATE}
         )
 
 target_compile_options(neo_tree PRIVATE
@@ -81,7 +86,7 @@ target_compile_options(neo_tree PRIVATE
 
 target_link_libraries(neo_tree PRIVATE    pico_stdlib
                                             hardware_pio
-                                            # hardware_dma
+                                            hardware_dma
                                             pico_multicore
                                             pico_cyw43_arch_lwip_threadsafe_background
                                             pico_lwip_mdns
