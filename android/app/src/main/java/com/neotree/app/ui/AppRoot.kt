@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -19,9 +20,10 @@ import androidx.compose.ui.Modifier
 import com.neotree.app.TreeViewModel
 
 private const val TAB_HOME = 0
-private const val TAB_DEBUG = 1
+private const val TAB_RENDERER = 1
+private const val TAB_DEBUG = 2
 
-/** Two pages - Home (the controls) and Debug - switched from a bottom bar. */
+/** Three pages - Home (the controls), Renderer (3D view) and Debug - switched from a bottom bar. */
 @Composable
 fun AppRoot(vm: TreeViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(TAB_HOME) }
@@ -38,6 +40,12 @@ fun AppRoot(vm: TreeViewModel) {
                     label = { Text("Home") },
                 )
                 NavigationBarItem(
+                    selected = tab == TAB_RENDERER,
+                    onClick = { tab = TAB_RENDERER },
+                    icon = { Icon(Icons.Filled.Star, contentDescription = null) },
+                    label = { Text("Renderer") },
+                )
+                NavigationBarItem(
                     selected = tab == TAB_DEBUG,
                     onClick = { tab = TAB_DEBUG },
                     icon = { Icon(Icons.Filled.Build, contentDescription = null) },
@@ -48,6 +56,7 @@ fun AppRoot(vm: TreeViewModel) {
     ) { padding ->
         when (tab) {
             TAB_HOME -> HomeScreen(vm, padding, onOpenDebug = { tab = TAB_DEBUG })
+            TAB_RENDERER -> RendererScreen(vm, padding)
             else -> DebugScreen(vm, padding)
         }
     }

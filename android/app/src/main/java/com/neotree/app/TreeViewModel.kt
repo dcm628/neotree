@@ -11,6 +11,10 @@ import com.neotree.app.net.TreeConnection
 import com.neotree.app.net.TreeDiscovery
 import com.neotree.app.net.TreeProtocol
 import com.neotree.app.net.TreeStatus
+import com.neotree.app.render.DarkFrameSource
+import com.neotree.app.render.LedFrameSource
+import com.neotree.app.render.LedLayout
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -346,6 +350,27 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
                 if (connection.send(m) == AckStatus.QUEUED) ok++ else break
             }
             _status.value = "String test: $ok of ${messages.size} messages sent"
+        }
+    }
+
+    // ---- renderer page ----
+
+    /** LED positions from the bundled tree_positions.csv - null while loading, a failure if it couldn't be read. */
+    private val _ledLayout = MutableStateFlow<Result<LedLayout>?>(null)
+    val ledLayout: StateFlow<Result<LedLayout>?> = _ledLayout.asStateFlow()
+
+    /**
+     * The renderer page's engine output. All dark for now, which is exactly
+     * what the engine renders until it has scene content; to be replaced by
+     * frames streamed from the tree. The page only reads the interface.
+     */
+    val rendererFrames: LedFrameSource = DarkFrameSource(TreeProtocol.STRING_LENGTHS.sum())
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            _ledLayout.value = runCatching {
+                LedLayout.parseCsv(app.assets.open(LedLayout.ASSET_NAME).bufferedReader().use { it.readText() })
+            }
         }
     }
 

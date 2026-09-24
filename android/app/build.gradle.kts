@@ -35,6 +35,37 @@ android {
     }
 }
 
+// The Renderer tab's LED positions are the simulator's own file,
+// sim/data/tree_positions.csv (written by mapping/generate_sim_positions.py),
+// copied into the APK's assets at build time - regenerating the CSV updates
+// the app on its next build.
+abstract class CopyTreePositions : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val positionsCsv: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun copy() {
+        val out = outputDir.get().asFile
+        out.deleteRecursively()
+        out.mkdirs()
+        positionsCsv.get().asFile.copyTo(out.resolve("tree_positions.csv"))
+    }
+}
+
+val copyTreePositions = tasks.register<CopyTreePositions>("copyTreePositions") {
+    positionsCsv.set(layout.projectDirectory.file("../../sim/data/tree_positions.csv"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(copyTreePositions, CopyTreePositions::outputDir)
+    }
+}
+
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
