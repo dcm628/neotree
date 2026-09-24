@@ -21,7 +21,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
@@ -140,6 +139,7 @@ private fun ColorCard(vm: TreeViewModel) {
     val brightness by vm.brightness.collectAsState()
     val live by vm.live.collectAsState()
     val lastTarget by vm.lastTarget.collectAsState()
+    val lightsOn by vm.lightsOn.collectAsState()
     val picked = Color.hsv(hue, saturation, 1f)
 
     Card(Modifier.fillMaxWidth()) {
@@ -177,14 +177,17 @@ private fun ColorCard(vm: TreeViewModel) {
                 Switch(checked = live, onCheckedChange = vm::setLive)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (live && lastTarget != ColorTarget.NONE) "Live: changes update the ${targetName(lastTarget)}"
-                    else "Live updates " + if (live) "on" else "off",
+                    when {
+                        !lightsOn -> "Lights are off – pick a color now, it applies once they're back on"
+                        live && lastTarget != ColorTarget.NONE -> "Live: changes update the ${targetName(lastTarget)}"
+                        else -> "Live updates " + if (live) "on" else "off"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = vm::fillTree, modifier = Modifier.weight(1f)) { Text("Fill tree") }
-                OutlinedButton(onClick = vm::setBackground, modifier = Modifier.weight(1f)) { Text("Background") }
+                Button(onClick = vm::fillTree, modifier = Modifier.weight(1f), enabled = lightsOn) { Text("Fill tree") }
+                OutlinedButton(onClick = vm::setBackground, modifier = Modifier.weight(1f), enabled = lightsOn) { Text("Background") }
             }
         }
     }
@@ -254,6 +257,7 @@ private fun LabeledGradientSlider(
 @Composable
 private fun RegionCard(vm: TreeViewModel) {
     val region by vm.region.collectAsState()
+    val lightsOn by vm.lightsOn.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Region", style = MaterialTheme.typography.titleMedium)
@@ -287,7 +291,7 @@ private fun RegionCard(vm: TreeViewModel) {
                 )
                 Text("Everything outside shows the background color", style = MaterialTheme.typography.bodyMedium)
             }
-            Button(onClick = vm::paintRegion, modifier = Modifier.fillMaxWidth()) { Text("Paint region") }
+            Button(onClick = vm::paintRegion, modifier = Modifier.fillMaxWidth(), enabled = lightsOn) { Text("Paint region") }
         }
     }
 }
@@ -295,6 +299,7 @@ private fun RegionCard(vm: TreeViewModel) {
 @Composable
 private fun AdvancedCard(vm: TreeViewModel) {
     var expanded by rememberSaveable { mutableStateOf(false) }
+    val lightsOn by vm.lightsOn.collectAsState()
     var indexText by remember { mutableStateOf("0") }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -312,8 +317,8 @@ private fun AdvancedCard(vm: TreeViewModel) {
                 )
                 val index = indexText.toIntOrNull()?.takeIf { it in 0..999 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { index?.let(vm::setSingleLed) }, enabled = index != null) { Text("Set to color") }
-                    OutlinedButton(onClick = { index?.let(vm::clearSingleLed) }, enabled = index != null) { Text("Clear") }
+                    Button(onClick = { index?.let(vm::setSingleLed) }, enabled = index != null && lightsOn) { Text("Set to color") }
+                    OutlinedButton(onClick = { index?.let(vm::clearSingleLed) }, enabled = index != null && lightsOn) { Text("Clear") }
                 }
             }
         }

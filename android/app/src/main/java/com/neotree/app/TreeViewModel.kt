@@ -37,12 +37,13 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     val connection = TreeConnection(viewModelScope)
 
     // Picker state: hue 0-360, saturation 0-1. Brightness 0-1 scales every
-    // color sent - also the family-friendly guard against full-white power draw.
+    // color sent. No power limit needed: the tree's supply was measured at
+    // 221W at the wall with all 1000 LEDs full white (2026-09-24).
     private val _hue = MutableStateFlow(prefs.getFloat("hue", 120f))
     val hue: StateFlow<Float> = _hue.asStateFlow()
     private val _saturation = MutableStateFlow(prefs.getFloat("saturation", 1f))
     val saturation: StateFlow<Float> = _saturation.asStateFlow()
-    private val _brightness = MutableStateFlow(prefs.getFloat("brightness", 0.5f))
+    private val _brightness = MutableStateFlow(prefs.getFloat("brightness", 1f))
     val brightness: StateFlow<Float> = _brightness.asStateFlow()
     private val _region = MutableStateFlow(RegionSettings())
     val region: StateFlow<RegionSettings> = _region.asStateFlow()
@@ -69,7 +70,9 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            for (message in liveUpdates) connection.send(message)
+            // Re-checked at send time: an update still pending when the lights
+            // are switched off must not change the colors being preserved.
+            for (message in liveUpdates) if (_lightsOn.value) connection.send(message)
         }
         viewModelScope.launch {
             connection.state.collect { s ->
@@ -175,9 +178,13 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     fun paintRegion() = apply(ColorTarget.REGION)
 
     fun setLights(on: Boolean) {
+        // Flip immediately (not on ACK) so live updates stop the moment
+        // "off" is tapped; revert if the tree didn't take it.
+        val previous = _lightsOn.value
+        _lightsOn.value = on
         viewModelScope.launch {
             val status = connection.send(TreeProtocol.treeOutput(on))
-            if (status == AckStatus.QUEUED) _lightsOn.value = on
+            if (status != AckStatus.QUEUED) _lightsOn.value = previous
             _status.value = when (status) {
                 AckStatus.QUEUED -> if (on) "Lights on ✓" else "Lights off ✓"
                 null -> "Not connected to the tree"
@@ -186,10 +193,28 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setSingleLed(index: Int) = sendNow("LED $index", TreeProtocol.singleLed(index, outputColor()))
-    fun clearSingleLed(index: Int) = sendNow("LED $index cleared", TreeProtocol.singleLed(index, Rgb.BLACK))
+    fun setSingleLed(index: Int) {
+        if (lightsOffBlocks()) return
+        sendNow("LED $index", TreeProtocol.singleLed(index, outputColor()))
+    }
+
+    fun clearSingleLed(index: Int) {
+        if (lightsOffBlocks()) return
+        sendNow("LED $index cleared", TreeProtocol.singleLed(index, Rgb.BLACK))
+    }
+
+    // While the lights are off, nothing on this phone changes the tree's
+    // colors, so turning them back on restores exactly what was showing.
+    // The pickers still move (to choose a color in advance); they just
+    // don't send.
+    private fun lightsOffBlocks(): Boolean {
+        if (_lightsOn.value) return false
+        _status.value = "Lights are off – turn them on to change colors"
+        return true
+    }
 
     private fun apply(target: ColorTarget) {
+        if (lightsOffBlocks()) return
         _lastTarget.value = target
         val label = when (target) {
             ColorTarget.FILL -> "Tree filled"
@@ -219,7 +244,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun reapplyLive() {
-        if (!_live.value) return
+        if (!_live.value || !_lightsOn.value) return
         val message = messageFor(_lastTarget.value) ?: return
         liveUpdates.trySend(message)
     }
