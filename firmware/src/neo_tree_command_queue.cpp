@@ -4,9 +4,7 @@
 
 #include "pico/util/queue.h"
 
-// 16 x ~260 bytes. Commands are small and core0 drains several per loop, so
-// this only fills if core0 stalls (e.g. during a flash write).
-static const uint command_queue_depth = 16;
+static const uint command_queue_depth = command_queue_capacity;
 
 static queue_t command_queue;
 // Diagnostic only - increments from different contexts aren't atomic, so it

@@ -18,6 +18,8 @@
 #include "dcm_physics_math.hpp"
 #include "neo_tree_wifi.hpp"
 #include "neo_tree_command_queue.hpp"
+#include "neo_tree_protocol.hpp"
+#include "neo_tree_net_server.hpp"
 
 mutex core0_data_update;
 
@@ -1109,37 +1111,6 @@ void write_my_tree()
     write_string(3);
 }
 
-enum class serial_msg_type : uint8_t
-{
-    NOOP,
-    SINGLE_LED_UPDATE,
-    COLOR_GROUP_RGB_UPDATE,
-    ALL_LED_UPDATE,
-    LED_POS_UPDATE_CARTESIAN,
-    LED_POS_UPDATE_CYLINDRICAL,
-    CONFIG_RELOAD,
-    RUN_SWEEP_SEQUENCE,
-    // Appended rather than inserted, to keep existing numeric values
-    // (and therefore wire compatibility) unchanged.
-    READ_POS_CONFIG,
-    SET_VOLUME_CARTESIAN,
-    SET_VOLUME_CYLINDRICAL,
-    // One-shot: overwrites both flash and the live tree with the
-    // compiled-in default position config (mapping/
-    // generate_pos_config_header.py) - the fast path for pushing a full
-    // coordinate update (reflash with freshly generated data, then send
-    // this) instead of replaying ~1000 individual position writes.
-    RESET_POS_CONFIG_TO_DEFAULT,
-    // Sets the PRIMARY/base color for every LED (same payload shape as
-    // ALL_LED_UPDATE, which only ever touches the secondary overlay) - the
-    // color shown when a LED isn't currently lit by anything else, e.g.
-    // outside a SET_VOLUME_* window with clear_outside_volume set.
-    ALL_LED_UPDATE_BASE,
-    // WiFi provisioning (tools/set_wifi.py): credentials sent in <=32-byte
-    // pieces, then a commit that writes them to flash - see neo_tree_wifi.hpp.
-    WIFI_CRED_CHUNK,
-    WIFI_CRED_COMMIT,
-};
 
 uint8_t sleep_val = 25;
 // Was 40 - too small to hold a COLOR_GROUP_RGB_UPDATE message (up to
@@ -1242,6 +1213,53 @@ struct wifi_cred_commit_frame
     uint8_t s_msg_type;
     wifi_cred_commit_t s_msg;
 }__packed;
+
+bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
+{
+    if (len == 0)
+    {
+        return false;
+    }
+    switch (static_cast<serial_msg_type>(msg[0]))
+    {
+    case serial_msg_type::NOOP:
+    case serial_msg_type::RESET_POS_CONFIG_TO_DEFAULT:
+        return len == 1;
+    case serial_msg_type::SINGLE_LED_UPDATE:
+        return len == sizeof(single_led_update_frame);
+    case serial_msg_type::COLOR_GROUP_RGB_UPDATE:
+    {
+        // Variable length: type, count, then count entries.
+        if (len < 2 || msg[1] > max_group_update_entries)
+        {
+            return false;
+        }
+        return len == 2 + msg[1] * sizeof(group_led_entry_t);
+    }
+    case serial_msg_type::ALL_LED_UPDATE:
+    case serial_msg_type::ALL_LED_UPDATE_BASE:
+        return len == sizeof(all_led_update_frame);
+    case serial_msg_type::LED_POS_UPDATE_CARTESIAN:
+        return len == sizeof(single_led_pos_cartesian_update_frame);
+    case serial_msg_type::LED_POS_UPDATE_CYLINDRICAL:
+        return len == sizeof(single_led_pos_cylindrical_update_frame);
+    case serial_msg_type::CONFIG_RELOAD:
+        return len == sizeof(config_reload_frame);
+    case serial_msg_type::READ_POS_CONFIG:
+        return len == sizeof(read_pos_config_request_frame);
+    case serial_msg_type::SET_VOLUME_CARTESIAN:
+        return len == sizeof(set_volume_cartesian_frame);
+    case serial_msg_type::SET_VOLUME_CYLINDRICAL:
+        return len == sizeof(set_volume_cylindrical_frame);
+    case serial_msg_type::WIFI_CRED_CHUNK:
+        return len == sizeof(wifi_cred_chunk_frame);
+    case serial_msg_type::WIFI_CRED_COMMIT:
+        return len == sizeof(wifi_cred_commit_frame);
+    default:
+        // Includes RUN_SWEEP_SEQUENCE, which process_msg() never implemented.
+        return false;
+    }
+}
 
 union single_led_update_msg
 {
@@ -1464,6 +1482,7 @@ void main_core1()
     if (wifi_ok)
     {
         wifi_start();
+        net_server_start();
     }
     // Watchdog heartbeat for core1 itself, mirroring the core0 one, so we
     // can see whether this loop is actually cycling (and how fast) once
@@ -1480,14 +1499,17 @@ void main_core1()
         if (now_us > (last_core1_heartbeat_us + core1_heartbeat_interval_us))
         {
             last_core1_heartbeat_us = now_us;
-            printf("core1 alive: loop_count=%u cmd_queue=%u dropped=%u cyw43_init=%d wifi: %s\n",
+            printf("core1 alive: loop_count=%u cmd_queue=%u dropped=%u net_clients=%u net_cmds=%u "
+                   "cyw43_init=%d wifi: %s\n",
                    (uint32_t)core1_loop_count, (unsigned)command_queue_level(),
-                   (unsigned)command_queue_dropped(), (int)cyw43_init_result,
+                   (unsigned)command_queue_dropped(), (unsigned)net_server_client_count(),
+                   (unsigned)net_server_commands_received(), (int)cyw43_init_result,
                    wifi_ok ? wifi_status_str() : "n/a");
         }
         if (wifi_ok)
         {
             wifi_poll();
+            net_server_poll();
         }
         // Onboard LED blinks at 1Hz while core1 is cycling and the CYW43 is
         // up. The LED hangs off the CYW43, so each write is an SPI
@@ -1509,7 +1531,10 @@ uint64_t initial_startup_delay = 1'500'00;
 volatile uint64_t latest_abs_time_check = 0;
 uint64_t led_loop_counter = 0;
 const uint32_t loop_duration_micros = 1'000'000 / target_loop_rate;
-const int max_commands_per_loop = 8;
+// Drain everything queued each pass: handlers take microseconds, while the
+// LED write between passes takes ~30ms, so capping this below the queue
+// depth just let a fast sender fill the queue.
+const int max_commands_per_loop = command_queue_capacity;
 
 // Watchdog heartbeat - prints uptime over serial every 5s regardless of
 // whether any command has been received, so liveness of the main core0

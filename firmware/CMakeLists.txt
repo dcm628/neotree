@@ -59,6 +59,7 @@ target_sources(neo_tree PRIVATE
                 src/neo_tree_effects.cpp
                 src/neo_tree_wifi.cpp
                 src/neo_tree_command_queue.cpp
+                src/neo_tree_net_server.cpp
                 )
 
 # Project headers live in include/

@@ -12,6 +12,9 @@
 #define MEM_ALIGNMENT               4
 #define MEM_SIZE                    4000
 #define MEMP_NUM_TCP_SEG            32
+// Command-server clients (net_server_max_clients = 4) plus headroom for
+// connections lingering in TIME_WAIT.
+#define MEMP_NUM_TCP_PCB            8
 #define MEMP_NUM_ARP_QUEUE          10
 #define PBUF_POOL_SIZE              24
 #define LWIP_ARP                    1
