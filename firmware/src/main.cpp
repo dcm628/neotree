@@ -17,6 +17,7 @@
 #include "neo_tree_config.hpp"
 #include "dcm_physics_math.hpp"
 #include "neo_tree_wifi.hpp"
+#include "neo_tree_command_queue.hpp"
 
 mutex core0_data_update;
 
@@ -1146,17 +1147,20 @@ uint8_t sleep_val = 25;
 // message type shares this one fixed-size buffer, so bumping it just gives
 // the smaller messages more headroom - trivial extra RAM (2 buffers x a
 // few hundred bytes) on an RP2040.
-#define SERIAL_BUFFER_SIZE 256
-uint8_t serial_buf[SERIAL_BUFFER_SIZE] = {};    // 
-uint8_t serial_buf_copy[SERIAL_BUFFER_SIZE] = {};    // 
-uint8_t buf_copy_lock = 0;  // 0 = unlocked, 1 = locked, 2 = ready to read
-uint8_t buf_index = 0;
+#define SERIAL_BUFFER_SIZE command_max_len
+// core1-only: accumulates one serial read burst.
+uint8_t serial_buf[SERIAL_BUFFER_SIZE] = {};
+// core0-only: the message process_msg() is currently handling, copied out of
+// the command queue (zero-padded past its length).
+uint8_t serial_buf_copy[SERIAL_BUFFER_SIZE] = {};
+size_t buf_index = 0;   // size_t: a uint8_t wrapped to 0 on a 256-byte burst
 int16_t temp_char = -1; // init to a no bytes value
+// Runs on core1. Serial has no framing, so each read burst is treated as one
+// message (see max_group_update_entries in dcm_rgb.hpp for why senders keep
+// messages within one USB packet).
 void serial_read_buffer()
 {
-    buf_copy_lock = 1;
-    while ((temp_char = getchar_timeout_us(0)) >= 0
-            && buf_index < SERIAL_BUFFER_SIZE)
+    while (buf_index < SERIAL_BUFFER_SIZE && (temp_char = getchar_timeout_us(0)) >= 0)
     {
         //add to buffer
         serial_buf[buf_index] = temp_char;
@@ -1164,23 +1168,21 @@ void serial_read_buffer()
     }
     if (buf_index != 0)
     {
-        // we did read something into buffer
-        temp_char = -1; // reset temp_char - don't think it's actually necessary but won't hurt
-        memcpy(serial_buf_copy,serial_buf, SERIAL_BUFFER_SIZE);
-        memset(serial_buf,0,SERIAL_BUFFER_SIZE);    // zero buffer
         // Don't echo credential bytes back to whoever has the port open.
-        if (serial_buf_copy[0] != static_cast<uint8_t>(serial_msg_type::WIFI_CRED_CHUNK))
+        if (serial_buf[0] != static_cast<uint8_t>(serial_msg_type::WIFI_CRED_CHUNK))
         {
             for (size_t i = 0; i < buf_index; i++)
             {
-                printf("%d\n", serial_buf_copy[i]);
+                printf("%d\n", serial_buf[i]);
             }
         }
-        temp_char = -1; // reset temp_char - don't think it's actually necessary but won't hurt
-        buf_index = 0;  // reset buffer to beginning
-        buf_copy_lock = 2;
+        if (!command_queue_push(command_source::usb_serial, 0, serial_buf, buf_index))
+        {
+            printf("command queue full - dropped serial message type %d\n", serial_buf[0]);
+        }
+        memset(serial_buf, 0, SERIAL_BUFFER_SIZE);
+        buf_index = 0;
     }
-    else buf_copy_lock = 0;
 }
 uint32_t msg_process_counter = 0;
 serial_msg_type new_msg = serial_msg_type::NOOP;
@@ -1289,8 +1291,8 @@ union set_volume_cylindrical_msg
 
 void process_msg()
 {
-    // call within a buffer lock check
-    // First byte is msg_type
+    // core0 only - handles the message the main loop just copied into
+    // serial_buf_copy from the command queue. First byte is msg_type
     new_msg = static_cast<serial_msg_type>(serial_buf_copy[0]);
 /*     if (new_msg == serial_msg_type::SINGLE_LED_UPDATE)
     {
@@ -1478,8 +1480,9 @@ void main_core1()
         if (now_us > (last_core1_heartbeat_us + core1_heartbeat_interval_us))
         {
             last_core1_heartbeat_us = now_us;
-            printf("core1 alive: loop_count=%u buf_copy_lock=%d cyw43_init=%d wifi: %s\n",
-                   (uint32_t)core1_loop_count, (int)buf_copy_lock, (int)cyw43_init_result,
+            printf("core1 alive: loop_count=%u cmd_queue=%u dropped=%u cyw43_init=%d wifi: %s\n",
+                   (uint32_t)core1_loop_count, (unsigned)command_queue_level(),
+                   (unsigned)command_queue_dropped(), (int)cyw43_init_result,
                    wifi_ok ? wifi_status_str() : "n/a");
         }
         if (wifi_ok)
@@ -1496,10 +1499,7 @@ void main_core1()
             led_on = !led_on;
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_on);
         }
-        if (buf_copy_lock == 0)
-        {
-            serial_read_buffer();
-        }
+        serial_read_buffer();
     }
 }
 
@@ -1509,6 +1509,7 @@ uint64_t initial_startup_delay = 1'500'00;
 volatile uint64_t latest_abs_time_check = 0;
 uint64_t led_loop_counter = 0;
 const uint32_t loop_duration_micros = 1'000'000 / target_loop_rate;
+const int max_commands_per_loop = 8;
 
 // Watchdog heartbeat - prints uptime over serial every 5s regardless of
 // whether any command has been received, so liveness of the main core0
@@ -1538,6 +1539,7 @@ int main() {
     ws2812_program_init(pio, 2, offset, WS2812_PIN_STRING_3, 800000, IS_RGBW);
     ws2812_program_init(pio, 3, offset, WS2812_PIN_STRING_4, 800000, IS_RGBW);
 
+    command_queue_init();   // core1's serial reader pushes into it from the start
     multicore_launch_core1(main_core1);
 
     init_my_tree();
@@ -1566,10 +1568,13 @@ int main() {
             printf("uptime s: %u marker: 081f4c04 led_loop_counter: %u\n",
                    (uint32_t)(latest_abs_time_check / 1'000'000), (uint32_t)led_loop_counter);
         }
-        if (buf_copy_lock == 2)
+        // Bounded per pass so a burst of commands can't starve the LED refresh.
+        static command_t cmd;   // static: ~260 bytes, keep it off core0's stack
+        for (int i = 0; i < max_commands_per_loop && command_queue_pop(&cmd); i++)
         {
+            memcpy(serial_buf_copy, cmd.data, SERIAL_BUFFER_SIZE);
+            memset(cmd.data, 0, sizeof(cmd.data));  // may hold WiFi credential bytes
             process_msg();
-            buf_copy_lock = 0;
         }
         if (latest_abs_time_check > (initial_abs_time_check + (loop_duration_micros * led_loop_counter)))
         {
