@@ -42,10 +42,17 @@ enum class serial_msg_type : uint8_t
     // LED each frame without touching any LED's base/overlay colors, so on
     // restores exactly what was showing.
     TREE_OUTPUT,
+    // Diagnostic: [type][led_output_mode] - how frames are sent to the
+    // strings (neo_tree_led_output.hpp). Not persisted; boots in PARALLEL_DMA.
+    LED_OUTPUT_MODE,
+    // Diagnostic: [type][fast_slew 0/1][drive 0-3 = 2/4/8/12mA][stagger in
+    // 10ns units][frame rate fps, 0 = unchanged] - output tuning
+    // (led_output_tuning_t + the frame rate target). Not persisted.
+    LED_OUTPUT_TUNING,
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::TREE_OUTPUT) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::LED_OUTPUT_TUNING) + 1;
 
 // Set by TREE_OUTPUT (core0), read by the LED output path and reported to
 // network clients in HELLO (core1).

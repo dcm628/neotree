@@ -25,6 +25,10 @@ mutex core0_data_update;
 
 
 volatile bool tree_output_enabled = true;
+// LED frame rate target. Defaults to NEOTREE_FRAME_RATE from CMake (60);
+// adjustable live with LED_OUTPUT_TUNING. Above ~107 frames just run back to
+// back, limited by the output itself (~9.3ms per frame).
+volatile uint32_t target_loop_rate = NEOTREE_FRAME_RATE;
 
 uint8_t sleep_val = 25;
 // Was 40 - too small to hold a COLOR_GROUP_RGB_UPDATE message (up to
@@ -170,7 +174,10 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
     case serial_msg_type::WIFI_CRED_COMMIT:
         return len == sizeof(wifi_cred_commit_frame);
     case serial_msg_type::TREE_OUTPUT:
+    case serial_msg_type::LED_OUTPUT_MODE:
         return len == 2;
+    case serial_msg_type::LED_OUTPUT_TUNING:
+        return len == 6;
     default:
         // Includes RUN_SWEEP_SEQUENCE, which process_msg() never implemented.
         return false;
@@ -363,6 +370,40 @@ void process_msg()
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
+    case serial_msg_type::LED_OUTPUT_MODE:
+        if (serial_buf_copy[1] < led_output_mode_count)
+        {
+            led_output_set_mode(static_cast<led_output_mode>(serial_buf_copy[1]));
+            printf("led output mode %u\n", serial_buf_copy[1]);
+        }
+        else
+        {
+            printf("led output mode %u invalid\n", serial_buf_copy[1]);
+        }
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::LED_OUTPUT_TUNING:
+    {
+        led_output_tuning_t t;
+        t.fast_slew = serial_buf_copy[1] != 0;
+        t.drive_strength = serial_buf_copy[2] & 0x3;
+        t.stagger_ns = serial_buf_copy[3] * 10u;
+        t.phase_map = serial_buf_copy[5];
+        led_output_set_tuning(t);
+        if (serial_buf_copy[4] != 0)
+        {
+            target_loop_rate = serial_buf_copy[4];
+        }
+        static const unsigned drive_ma[4] = {2, 4, 8, 12};
+        printf("led output tuning: slew %s drive %umA stagger %uns target %u fps phases %u %u %u %u\n",
+               t.fast_slew ? "fast" : "slow", drive_ma[t.drive_strength], (unsigned)t.stagger_ns,
+               (unsigned)target_loop_rate, t.phase_map & 3u, (t.phase_map >> 2) & 3u, (t.phase_map >> 4) & 3u,
+               (t.phase_map >> 6) & 3u);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    }
 
     default:
         // not a valid msg_type
@@ -447,15 +488,12 @@ void main_core1()
     }
 }
 
-// NEOTREE_FRAME_RATE comes from CMake (default 60); a higher value just runs
-// frames back to back, limited by the output itself (~9.3ms per frame).
-uint32_t target_loop_rate = NEOTREE_FRAME_RATE;
 bool frame_prepared = false;
+uint64_t next_frame_us = 0;
 volatile uint64_t initial_abs_time_check = 0;
 uint64_t initial_startup_delay = 1'500'00;
 volatile uint64_t latest_abs_time_check = 0;
 uint64_t led_loop_counter = 0;
-const uint32_t loop_duration_micros = 1'000'000 / target_loop_rate;
 // Drain everything queued each pass: handlers take microseconds, and LED
 // output runs on DMA, so there's no reason to leave commands waiting.
 const int max_commands_per_loop = command_queue_capacity;
@@ -500,6 +538,7 @@ int main() {
     while(get_absolute_time() < (initial_abs_time_check + initial_startup_delay)){;}
     //redo initial time check for loop timer
     initial_abs_time_check = get_absolute_time();
+    next_frame_us = initial_abs_time_check;
     while(1)
     {
         latest_abs_time_check = get_absolute_time();
@@ -507,11 +546,16 @@ int main() {
         {
             last_uptime_print_us = latest_abs_time_check;
             led_output_stats_t out = led_output_take_stats();
-            printf("uptime s: %u marker: 081f4c04 led_loop_counter: %u target_fps: %u "
+            printf("uptime s: %u marker: 081f4c04 led_loop_counter: %u target_fps: %u output_mode: %u "
                    "prepare_us: %u (max %u) output_us: %u (max %u)\n",
                    (uint32_t)(latest_abs_time_check / 1'000'000), (uint32_t)led_loop_counter,
-                   (unsigned)target_loop_rate, (unsigned)out.last_prepare_us, (unsigned)out.max_prepare_us,
+                   (unsigned)target_loop_rate, (unsigned)led_output_get_mode(),
+                   (unsigned)out.last_prepare_us, (unsigned)out.max_prepare_us,
                    (unsigned)out.last_output_us, (unsigned)out.max_output_us);
+            printf("led output faults per string - underflow: %u %u %u %u overflow: %u %u %u %u\n",
+                   (unsigned)out.underflows[0], (unsigned)out.underflows[1], (unsigned)out.underflows[2],
+                   (unsigned)out.underflows[3], (unsigned)out.overflows[0], (unsigned)out.overflows[1],
+                   (unsigned)out.overflows[2], (unsigned)out.overflows[3]);
         }
         // Bounded per pass so a burst of commands can't starve the LED refresh.
         static command_t cmd;   // static: ~260 bytes, keep it off core0's stack
@@ -524,8 +568,7 @@ int main() {
         // Frame pacing: when the next frame is due, pack it (cheap), then start
         // it as soon as the previous one has fully gone out and latched. The
         // output itself runs on DMA, so this loop never blocks on it.
-        if (!frame_prepared &&
-            latest_abs_time_check > (initial_abs_time_check + (loop_duration_micros * led_loop_counter)))
+        if (!frame_prepared && latest_abs_time_check >= next_frame_us)
         {
             led_output_prepare_frame();
             frame_prepared = true;
@@ -538,6 +581,14 @@ int main() {
             led_output_start_frame();
             frame_prepared = false;
             led_loop_counter++;
+            // Schedule from the ideal time so the rate doesn't drift, but never
+            // "catch up" with a burst after a stall (or at a rate the output
+            // can't reach) - just run frames back to back.
+            next_frame_us += 1'000'000 / target_loop_rate;
+            if (next_frame_us < latest_abs_time_check)
+            {
+                next_frame_us = latest_abs_time_check;
+            }
         }
     }
 

@@ -197,6 +197,12 @@ clock out in **parallel**, so the output floor is ~7.5 ms + reset ≈ **>100 fps
 achievable**. Real frame rate will be gated by render compute, not output.
 Target a fixed cadence (e.g. 30–60 fps) for predictable animation timing.
 
+**As built (2026-09-24):** output runs on DMA with the CPU free. Strings go
+out in two phases, {1,2} then {3,4}, taking 15 ms per frame (~65 fps max).
+The target is 60 fps. All four in parallel (9 ms) glitched on the real tree.
+See [`LED_OUTPUT.md`](./LED_OUTPUT.md) for measurements, what was ruled out,
+and how to revisit.
+
 ---
 
 ## 5. Subsystem B — Map (3D LED localization)
