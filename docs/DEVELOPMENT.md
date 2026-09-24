@@ -43,6 +43,18 @@ Desktop development environment is **set up and verified**:
   the board joins WiFi as a station with auto-reconnect, credentials
   provisioned over USB (§7). Power-save is off for latency (~10ms ping).
   Connection events and the heartbeat report status over serial.
+- ✅ **WiFi control, phase A (2026-09-23):**
+  - The tree runs a TCP command server (port 7777) and answers to
+    `neotree.local`. From Python, `mapping/neotree_net.connect("neotree.local")`
+    works with every `neotree_serial.write_tree_*` helper.
+  - The Android app lives in `android/`. Build and install from the desktop
+    (the phone must be paired for wireless debugging in Android Studio):
+    ```powershell
+    $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+    cd android; .\gradlew.bat assembleDebug
+    & "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" install -r app\build\outputs\apk\debug\app-debug.apk
+    ```
+  - A cold build takes ~2.5 min; incremental builds take seconds.
 
 Still to do: camera calibration / 3D coordinate mapping, coordinate-driven
 volumetric rendering, the control interface, and the RP2040→RP2350 migration.

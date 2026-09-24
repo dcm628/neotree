@@ -371,8 +371,22 @@ concurrent clients, and exactly which state persists.
 
 ## 8. Subsystem C — Control (remote interface)
 
-**State:** the Pico is on WiFi with auto-reconnect and USB-provisioned
-credentials (2026-09-23). The protocol server, modes and app are not started.
+**State (2026-09-23): phase A working on the Pico 2 W testbed.**
+
+- The Pico is on WiFi with auto-reconnect and USB-provisioned credentials.
+- **Command server:** TCP port 7777, up to 4 clients, the existing binary
+  color commands length-prefixed and ACKed per message
+  (`firmware/include/neo_tree_net_server.hpp`). It shares the command queue
+  with USB serial.
+- **Discovery:** mDNS answers for `neotree.local` and advertises
+  `_neotree._tcp`.
+- **Clients:**
+  - The Android app v1 (`android/`) finds the tree, and offers fill,
+    background, off, region painting and single LEDs, with live sliders.
+  - `mapping/neotree_net.py` lets the existing Python helpers drive the tree
+    over WiFi.
+- **Not yet done:** modes, persistence and the stream channel (phase B).
+  LED output is untested visually, since the testbed has no LEDs.
 
 ### 8.1 Goals
 
@@ -472,8 +486,8 @@ Proposed monorepo shape:
 | Map onto Pico | ❌ | header or flash upload (§7.3) |
 | WiFi link | ✅ station mode, auto-reconnect, USB-provisioned creds (Pico 2 W testbed) | keep |
 | Animation modes in firmware | ❌ live in Pi Python scripts | self-describing modes on the Pico (§7.4) |
-| Control protocol | ❌ not started | command + stream channels on the Pico (§7.4) |
-| Control app | ❌ | native Android app (§8) |
+| Control protocol | ✅ command channel (TCP 7777) + mDNS discovery; stream channel not yet | command + stream channels on the Pico (§7.4) |
+| Control app | ✅ v1: discovery + color control (android/) | native Android app (§8) |
 
 ---
 
