@@ -43,4 +43,15 @@
 #define DHCP_DOES_ARP_CHECK         0
 #define LWIP_DHCP_DOES_ACD_CHECK    0
 
+// mDNS responder (neo_tree_net_server.cpp): answers for <hostname>.local and
+// advertises the command server as _neotree._tcp for Android service
+// discovery. Needs IGMP to join the mDNS multicast group, and the netif
+// extended callback so it re-announces whenever the link/IP changes.
+#define LWIP_MDNS_RESPONDER             1
+#define LWIP_IGMP                       1
+#define LWIP_NUM_NETIF_CLIENT_DATA      1
+#define LWIP_NETIF_EXT_STATUS_CALLBACK  1
+#define MDNS_MAX_SERVICES               1
+#define MEMP_NUM_SYS_TIMEOUT            (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 8)
+
 #endif

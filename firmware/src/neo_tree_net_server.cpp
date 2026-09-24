@@ -6,6 +6,7 @@
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
 #include "lwip/ip_addr.h"
+#include "lwip/apps/mdns.h"
 
 #include "neo_tree_command_queue.hpp"
 #include "neo_tree_protocol.hpp"
@@ -288,6 +289,14 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
     return ERR_OK;
 }
 
+// TXT record: lets a client check the protocol version before connecting.
+static void mdns_txt(struct mdns_service *service, void *txt_userdata)
+{
+    char txt[16];
+    int n = snprintf(txt, sizeof(txt), "proto=%u", net_protocol_version);
+    mdns_resp_add_service_txtitem(service, txt, static_cast<u8_t>(n));
+}
+
 // ---- public ----
 
 bool net_server_start()
@@ -312,8 +321,21 @@ bool net_server_start()
     {
         tcp_close(pcb);
     }
+    // Discovery: <hostname>.local plus a _neotree._tcp service record that
+    // points at the command port. Announces automatically each time the link
+    // comes up (MDNS_RESP_USENETIF_EXTCALLBACK).
+    bool mdns_ok = false;
+    if (ok)
+    {
+        struct netif *sta = &cyw43_state.netif[CYW43_ITF_STA];
+        mdns_resp_init();
+        mdns_ok = mdns_resp_add_netif(sta, CYW43_HOST_NAME) == ERR_OK &&
+                  mdns_resp_add_service(sta, "neotree", "_neotree", DNSSD_PROTO_TCP, net_server_port,
+                                        mdns_txt, nullptr) >= 0;
+    }
     cyw43_arch_lwip_end();
-    printf("net: command server %s on port %u\n", ok ? "listening" : "FAILED to start", net_server_port);
+    printf("net: command server %s on port %u, mDNS %s (%s.local, _neotree._tcp)\n",
+           ok ? "listening" : "FAILED to start", net_server_port, mdns_ok ? "on" : "FAILED", CYW43_HOST_NAME);
     return ok;
 }
 
