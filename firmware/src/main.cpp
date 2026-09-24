@@ -475,6 +475,7 @@ void main_core1()
                    (unsigned)nd.write_failures, (int)nd.last_write_error, (unsigned)nd.output_failures,
                    (unsigned)nd.overflow_closes);
             net_server_print_lwip_stats();
+            wifi_print_trace();
         }
         if (wifi_ok)
         {

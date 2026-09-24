@@ -43,6 +43,25 @@ Desktop development environment is **set up and verified**:
   the board joins WiFi as a station with auto-reconnect, credentials
   provisioned over USB (§7). Power-save is off for latency (~10ms ping).
   Connection events and the heartbeat report status over serial.
+- ✅ **Power-up to online (2026-09-24): was 17–36s, now ~4.3s typical and ~8s
+  worst.**
+  - What the heartbeat's `wifi trace` line showed: the delay wasn't DHCP.
+    - The first WPA join after a quick reboot fails ~2.9s in; the router is
+      still holding the session the Pico never closed. This happens when the
+      tree ran only seconds before the reboot. After ~60s up, the first join
+      succeeds.
+    - A fixed 10s retry wait then dominated.
+    - One join in 8 hung silently until a 30s timeout.
+    - lwIP's first DHCP DISCOVER usually went unanswered, costing its ~2s
+      retry timer.
+  - Fixes (`firmware/src/neo_tree_wifi.cpp`):
+    - Retry after 1s for the first 3 failures, then every 10s.
+    - An 8s timeout on the join phase.
+    - One fresh DISCOVER 0.5s after joining if no OFFER has arrived.
+  - Measured over 14 reboots: median 8.2s after a quick restart, 4.2–4.3s after
+    a minute of uptime.
+  - The trace prints in every heartbeat: `C` connect attempt, `L` link status,
+    `N` DHCP nudge, `D<state>/<tries>` lwIP DHCP.
 - ✅ **WiFi control, phase A (2026-09-23):**
   - The tree runs a TCP command server (port 7777) and answers to
     `neotree.local`. From Python, `mapping/neotree_net.connect("neotree.local")`

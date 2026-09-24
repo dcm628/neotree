@@ -8,6 +8,8 @@
 #include "pico/cyw43_arch.h"
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/dhcp.h"
+#include "lwip/prot/dhcp.h"
 #include "lwip/dns.h"
 
 #include "neo_tree_config.hpp"
@@ -51,8 +53,24 @@ static bool record_valid(const wifi_credentials_record *r)
 // How long a connect attempt gets to reach CYW43_LINK_UP before it's
 // abandoned and retried (join + WPA handshake + DHCP normally take 2-5s).
 static const uint64_t connect_timeout_us = 30'000'000;
-// Minimum gap between connect attempts after a failure or drop.
-static const uint64_t retry_interval_us = 10'000'000;
+// A join (association + WPA handshake) resolves either way in ~3s. One
+// still "joining" after this is stuck - seen once in 8 boots, silently
+// hanging until the 30s timeout above - so it's retried sooner.
+static const uint64_t join_timeout_us = 8'000'000;
+// lwIP sends its first DHCP DISCOVER the instant the link comes up, and in 6
+// of 8 boots it went unanswered (likely sent just before the AP forwards
+// traffic), costing lwIP's ~2s retry timer. If no OFFER has arrived this
+// long after joining, send one fresh DISCOVER straight away.
+static const uint64_t dhcp_nudge_us = 500'000;
+// Gap before the next connect attempt after a failure or timeout: short for
+// the first few, then backing off so a genuinely wrong password doesn't hammer
+// the router. The first join after every reboot fails (measured 2026-09-24:
+// 8/8 boots, WPA handshake failure ~2.9s in, retry succeeds) - most likely
+// the router still holding the session the Pico never closed before it
+// reset. A fixed 10s wait here made every boot take ~17-18s to get online.
+static const uint32_t quick_retries = 3;
+static const uint64_t quick_retry_us = 1'000'000;
+static const uint64_t slow_retry_us = 10'000'000;
 
 // core1's working copy, loaded from flash at start and after each commit.
 static wifi_credentials_record active = {};
@@ -64,9 +82,16 @@ static uint64_t connect_started_us = 0;
 // fails or times out, so the printed "retrying in" matches reality.
 static uint64_t retry_not_before_us = 0;
 static uint64_t link_up_since_us = 0;
+static uint64_t joined_us = 0;       // when the link last reached NOIP (joined, no IP yet)
+static bool dhcp_nudged = false;
 static int last_link_status = CYW43_LINK_DOWN;
 static uint32_t attempts_since_up = 0;
 static uint32_t connect_count = 0;
+
+static uint64_t retry_delay_us()
+{
+    return attempts_since_up <= quick_retries ? quick_retry_us : slow_retry_us;
+}
 
 // Set by core0 after a commit has been written to flash.
 static volatile bool credentials_changed = false;
@@ -81,7 +106,9 @@ static const char *link_status_name(int status)
     case CYW43_LINK_UP: return "up";
     case CYW43_LINK_FAIL: return "failed";
     case CYW43_LINK_NONET: return "network not found";
-    case CYW43_LINK_BADAUTH: return "bad password";
+    // The driver reports any WPA handshake failure this way, not only a
+    // wrong password.
+    case CYW43_LINK_BADAUTH: return "authentication failed";
     default: return "unknown";
     }
 }
@@ -142,10 +169,72 @@ static void load_credentials()
     }
 }
 
+// ---- connection trace (diagnostic) ----
+// The first ~24 connection events since boot, timestamped, printed in every
+// heartbeat - a one-off printf at boot is lost while USB re-enumerates.
+//   C<n>      connect attempt n started
+//   L<s>      link status changed to s (1 joining, 2 joined/no IP, 3 up,
+//             negative = failure)
+//   N1        re-sent the DHCP DISCOVER (no OFFER 0.5s after joining)
+//   D<s>/<t>  lwIP DHCP state s after t tries (6 selecting = DISCOVER sent,
+//             waiting for OFFER; 1 requesting = REQUEST sent, waiting for
+//             ACK; 10 bound)
+struct trace_entry
+{
+    uint32_t t_ms;
+    char kind;
+    int8_t a;
+    uint8_t b;
+};
+static const uint32_t trace_max = 24;
+static trace_entry trace[trace_max];
+static uint32_t trace_len = 0;
+static int last_dhcp_state = -1;
+static int last_dhcp_tries = -1;
+
+static void trace_add(char kind, int a, int b = 0)
+{
+    if (trace_len < trace_max)
+    {
+        trace[trace_len++] = {(uint32_t)(time_us_64() / 1000), kind, (int8_t)a, (uint8_t)b};
+    }
+}
+
+static void trace_dhcp()
+{
+    const struct dhcp *d = netif_dhcp_data(&cyw43_state.netif[CYW43_ITF_STA]);
+    if (d != nullptr && (d->state != last_dhcp_state || d->tries != last_dhcp_tries))
+    {
+        last_dhcp_state = d->state;
+        last_dhcp_tries = d->tries;
+        trace_add('D', d->state, d->tries);
+    }
+}
+
+void wifi_print_trace()
+{
+    char line[400];
+    int n = snprintf(line, sizeof(line), "wifi trace (ms since boot):");
+    for (uint32_t i = 0; i < trace_len && n < (int)sizeof(line) - 16; i++)
+    {
+        const trace_entry &e = trace[i];
+        if (e.kind == 'D')
+        {
+            n += snprintf(line + n, sizeof(line) - n, " %u:D%d/%u", (unsigned)e.t_ms, e.a, e.b);
+        }
+        else
+        {
+            n += snprintf(line + n, sizeof(line) - n, " %u:%c%d", (unsigned)e.t_ms, e.kind, e.a);
+        }
+    }
+    printf("%s\n", line);
+}
+
 static void begin_connect()
 {
     connect_started_us = time_us_64();
     attempts_since_up++;
+    trace_add('C', attempts_since_up);
     bool open_network = (active.password_len == 0);
     printf("wifi: connecting to '%s' (%s, attempt %u)\n", active.ssid, open_network ? "open" : "WPA2",
            (unsigned)attempts_since_up);
@@ -155,8 +244,8 @@ static void begin_connect()
     if (err != 0)
     {
         printf("wifi: connect to '%s' failed to start (err=%d), retrying in %us\n", active.ssid, err,
-               (unsigned)(retry_interval_us / 1'000'000));
-        retry_not_before_us = connect_started_us + retry_interval_us;
+               (unsigned)(retry_delay_us() / 1000000));
+        retry_not_before_us = connect_started_us + retry_delay_us();
     }
 }
 
@@ -199,6 +288,29 @@ void wifi_poll()
     }
     uint64_t now_us = time_us_64();
     int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+    if (status != last_link_status)
+    {
+        trace_add('L', status);
+        if (status == CYW43_LINK_NOIP)
+        {
+            joined_us = now_us;
+            dhcp_nudged = false;
+        }
+    }
+    trace_dhcp();
+    if (status == CYW43_LINK_NOIP && !dhcp_nudged && now_us - joined_us >= dhcp_nudge_us)
+    {
+        dhcp_nudged = true;
+        struct netif *sta = &cyw43_state.netif[CYW43_ITF_STA];
+        cyw43_arch_lwip_begin();
+        const struct dhcp *d = netif_dhcp_data(sta);
+        if (d != nullptr && d->state == DHCP_STATE_SELECTING)
+        {
+            dhcp_network_changed_link_up(sta);   // fresh DISCOVER, same transaction
+            trace_add('N', 1);
+        }
+        cyw43_arch_lwip_end();
+    }
 
     if (status == CYW43_LINK_UP && last_link_status != CYW43_LINK_UP)
     {
@@ -222,17 +334,24 @@ void wifi_poll()
         // FAIL/NONET/BADAUTH are terminal for this attempt.
         printf("wifi: connect to '%s' failed after %ums: %s, retrying in %us\n", active.ssid,
                (unsigned)((now_us - connect_started_us) / 1000), link_status_name(status),
-               (unsigned)(retry_interval_us / 1'000'000));
+               (unsigned)(retry_delay_us() / 1000000));
         connect_in_progress = false;
-        retry_not_before_us = now_us + retry_interval_us;
+        retry_not_before_us = now_us + retry_delay_us();
+    }
+    else if (connect_in_progress && status == CYW43_LINK_JOIN && (now_us - connect_started_us) > join_timeout_us)
+    {
+        printf("wifi: join to '%s' stuck after %us, retrying in %us\n", active.ssid,
+               (unsigned)(join_timeout_us / 1000000), (unsigned)(retry_delay_us() / 1000000));
+        connect_in_progress = false;
+        retry_not_before_us = now_us + retry_delay_us();
     }
     else if (connect_in_progress && (now_us - connect_started_us) > connect_timeout_us)
     {
         printf("wifi: connect to '%s' timed out after %us (stuck at: %s), retrying in %us\n", active.ssid,
                (unsigned)(connect_timeout_us / 1'000'000), link_status_name(status),
-               (unsigned)(retry_interval_us / 1'000'000));
+               (unsigned)(retry_delay_us() / 1000000));
         connect_in_progress = false;
-        retry_not_before_us = now_us + retry_interval_us;
+        retry_not_before_us = now_us + retry_delay_us();
     }
     last_link_status = status;
 

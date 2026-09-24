@@ -23,6 +23,10 @@ void wifi_poll();
 // connects=1". Returned buffer is static - valid until the next call.
 const char *wifi_status_str();
 
+// Prints the boot connection trace (connect attempts, link and DHCP state
+// changes, timestamped) - for diagnosing slow connects after power-up.
+void wifi_print_trace();
+
 // ---- core0 (serial message handlers, called from process_msg()) ----
 
 // Credentials arrive in pieces because every serial message has to fit in a
