@@ -35,12 +35,10 @@ import kotlin.math.sin
  * - Each saturated preset is a short arc segment just inside the ring, at its
  *   own hue angle - tap it to pick exactly that color.
  * - Unsaturated presets (white) sit as a small dot in the very centre.
- * - The disk between shows the currently picked color.
  */
 @Composable
 fun HueWheel(
     hue: Float,
-    centerColor: Color,
     onHueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
     ringWidth: Dp = 36.dp,
@@ -99,8 +97,7 @@ fun HueWheel(
             drawTab(hsv[0], TAB_SPAN_DEG, g, color, Stroke(g.tabThickness))
         }
 
-        // Picked color, then the white preset dot in the very centre.
-        drawCircle(centerColor, radius = g.disk)
+        // White preset dot in the very centre.
         if (centerPreset != null) {
             drawCircle(centerPreset, radius = g.centerDot)
             drawCircle(Color.Black.copy(alpha = 0.35f), radius = g.centerDot, style = Stroke(outlinePx))
@@ -122,11 +119,10 @@ private class WheelGeometry(size: Size, ringWidth: Dp, density: Density) {
     val outer = min(size.width, size.height) / 2f
     val ringMid = outer - ringPx / 2f
     val ringInner = outer - ringPx
-    val tabThickness = with(density) { 12.dp.toPx() }
+    val tabThickness = with(density) { 18.dp.toPx() }
     val tabMid = ringInner - with(density) { 4.dp.toPx() } - tabThickness / 2f
     val tabInner = tabMid - tabThickness / 2f
-    val disk = tabInner - with(density) { 6.dp.toPx() }
-    val centerDot = with(density) { 11.dp.toPx() }
+    val centerDot = with(density) { 14.dp.toPx() }
     val slop = with(density) { 4.dp.toPx() }
 }
 
@@ -163,8 +159,8 @@ private fun hsvOf(c: Color): FloatArray {
 // coordinates (y down), so hue = angle.
 private val HUE_SWEEP = (0..6).map { Color.hsv(it * 60f % 360f, 1f, 1f) }
 
-// Tab arc length in degrees. The closest presets are orange (25°) and amber
-// (42°), 17° apart, so 12° leaves a visible gap between them. Taps pick the
-// nearest tab within TAB_HIT_DEG of the touch angle.
-private const val TAB_SPAN_DEG = 12f
-private const val TAB_HIT_DEG = 12f
+// Tab arc length in degrees. The closest presets are red (0°) and orange
+// (25°), so 20° leaves a visible gap between them. Taps pick the nearest tab
+// within TAB_HIT_DEG of the touch angle.
+private const val TAB_SPAN_DEG = 20f
+private const val TAB_HIT_DEG = 14f

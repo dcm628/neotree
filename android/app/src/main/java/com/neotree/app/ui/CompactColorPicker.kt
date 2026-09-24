@@ -27,7 +27,7 @@ import com.neotree.app.PickerColor
 import kotlin.math.roundToInt
 
 val COLOR_PRESETS = listOf(
-    Color(0xFFFF0000), Color(0xFFFF6A00), Color(0xFFFFB300), Color(0xFF00FF00), Color(0xFF00FFD0),
+    Color(0xFFFF0000), Color(0xFFFF6A00), Color(0xFFFFFF00), Color(0xFF00FF00), Color(0xFF00FFD0),
     Color(0xFF0040FF), Color(0xFF8000FF), Color(0xFFFF00A0), Color(0xFFFFFFFF),
 )
 
@@ -40,9 +40,8 @@ fun CompactColorPicker(color: PickerColor, onChange: (PickerColor) -> Unit, modi
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         HueWheel(
             hue = color.hue,
-            centerColor = color.display(),
             onHueChange = { onChange(color.copy(hue = it)) },
-            ringWidth = 16.dp,
+            ringWidth = 20.dp,
             presets = COLOR_PRESETS,
             onPreset = { onChange(color.withPreset(it)) },
             modifier = Modifier.fillMaxWidth(),

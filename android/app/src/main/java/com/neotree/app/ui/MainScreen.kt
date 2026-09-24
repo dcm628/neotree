@@ -164,7 +164,7 @@ private fun ConnectionDialog(vm: TreeViewModel, onDismiss: () -> Unit) {
 
 @Composable
 private fun PickerCardTitle(title: String) {
-    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 5.dp))
 }
 
 /** Always the base color - shown wherever nothing is painted. Applies as you move it. */
@@ -173,7 +173,7 @@ private fun BackgroundCard(vm: TreeViewModel, modifier: Modifier) {
     val color by vm.background.collectAsState()
     val lightsOn by vm.lightsOn.collectAsState()
     Card(modifier) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.padding(horizontal = 5.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             PickerCardTitle("Background")
             CompactColorPicker(color, vm::setBackgroundColor)
             Button(
@@ -193,7 +193,7 @@ private fun PaintCard(vm: TreeViewModel, modifier: Modifier) {
     val target by vm.paintTarget.collectAsState()
     val lightsOn by vm.lightsOn.collectAsState()
     Card(modifier) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.padding(horizontal = 5.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             PickerCardTitle("Paint")
             CompactColorPicker(color, vm::setPaintColor)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
