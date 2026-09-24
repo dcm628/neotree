@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -30,6 +31,7 @@ fun HueWheel(
     centerColor: Color,
     onHueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    ringWidth: Dp = 36.dp,
 ) {
     val onChange by rememberUpdatedState(onHueChange)
     // Sweep gradients run clockwise from 3 o'clock, matching atan2 in screen
@@ -55,17 +57,17 @@ fun HueWheel(
                 }
             }
     ) {
-        val ringWidth = 36.dp.toPx()
-        val radius = min(size.width, size.height) / 2f - ringWidth / 2f
-        drawCircle(brush = Brush.sweepGradient(sweep, center), radius = radius, style = Stroke(ringWidth))
-        drawCircle(color = centerColor, radius = radius - ringWidth / 2f - 12.dp.toPx())
+        val ringPx = ringWidth.toPx()
+        val radius = min(size.width, size.height) / 2f - ringPx / 2f
+        drawCircle(brush = Brush.sweepGradient(sweep, center), radius = radius, style = Stroke(ringPx))
+        drawCircle(color = centerColor, radius = radius - ringPx / 2f - ringPx / 3f)
 
         // Thumb on the ring at the current hue.
         val rad = Math.toRadians(hue.toDouble())
         val thumb = Offset(center.x + radius * cos(rad).toFloat(), center.y + radius * sin(rad).toFloat())
-        drawCircle(Color.White, radius = ringWidth / 2f + 2.dp.toPx(), center = thumb)
-        drawCircle(Color.hsv(hue, 1f, 1f), radius = ringWidth / 2f - 3.dp.toPx(), center = thumb)
-        drawCircle(Color.Black.copy(alpha = 0.4f), radius = ringWidth / 2f + 2.dp.toPx(), center = thumb, style = Stroke(1.dp.toPx()))
+        drawCircle(Color.White, radius = ringPx / 2f + 2.dp.toPx(), center = thumb)
+        drawCircle(Color.hsv(hue, 1f, 1f), radius = ringPx / 2f - 3.dp.toPx(), center = thumb)
+        drawCircle(Color.Black.copy(alpha = 0.4f), radius = ringPx / 2f + 2.dp.toPx(), center = thumb, style = Stroke(1.dp.toPx()))
     }
 }
 

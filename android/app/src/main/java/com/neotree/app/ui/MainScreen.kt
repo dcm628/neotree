@@ -1,12 +1,11 @@
 package com.neotree.app.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -28,8 +28,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,26 +41,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.neotree.app.ColorTarget
+import com.neotree.app.PaintTarget
 import com.neotree.app.TreeViewModel
 import com.neotree.app.net.TreeConnection
 import kotlin.math.roundToInt
-
-private val PRESETS = listOf(
-    Color(0xFFFF0000), Color(0xFFFF6A00), Color(0xFFFFB300), Color(0xFF00FF00),
-    Color(0xFF00FFD0), Color(0xFF0040FF), Color(0xFF8000FF), Color(0xFFFF00A0),
-    Color(0xFFFFFFFF),
-)
 
 // Slider ranges for the region band. Heights cover the mapped tree
 // (roughly -120 to 2000mm) with margin.
 private val HEIGHT_RANGE = -200f..2100f
 private val ANGLE_RANGE = 0f..360f
+
+// Compact buttons for the half-width picker cards.
+private val SMALL_BUTTON_PADDING = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
 
 @Composable
 fun MainScreen(vm: TreeViewModel) {
@@ -71,198 +65,166 @@ fun MainScreen(vm: TreeViewModel) {
             modifier = Modifier
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("NeoTree", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            ConnectionCard(vm)
-            LightsCard(vm)
-            ColorCard(vm)
+            Header(vm)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BackgroundCard(vm, Modifier.weight(1f))
+                PaintCard(vm, Modifier.weight(1f))
+            }
             RegionCard(vm)
             AdvancedCard(vm)
         }
     }
 }
 
+/** NeoTree title, compact connection status (tap for details), lights switch. */
 @Composable
-private fun ConnectionCard(vm: TreeViewModel) {
+private fun Header(vm: TreeViewModel) {
+    val state by vm.connection.state.collectAsState()
+    val lightsOn by vm.lightsOn.collectAsState()
+    var showDetails by rememberSaveable { mutableStateOf(false) }
+
+    val (dot, label) = when (state) {
+        is TreeConnection.State.Connected -> Color(0xFF2E7D32) to "Connected"
+        is TreeConnection.State.Connecting -> Color(0xFFF9A825) to "Connecting"
+        is TreeConnection.State.Failed -> Color(0xFFC62828) to "Offline"
+        TreeConnection.State.Disconnected -> Color.Gray to "Offline"
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("NeoTree", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(10.dp))
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .clickable { showDetails = true }
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
+            Spacer(Modifier.width(5.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium)
+        }
+        Spacer(Modifier.weight(1f))
+        Text("Lights", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.width(6.dp))
+        Switch(
+            checked = lightsOn,
+            onCheckedChange = vm::setLights,
+            enabled = state is TreeConnection.State.Connected,
+        )
+    }
+    if (showDetails) ConnectionDialog(vm, onDismiss = { showDetails = false })
+}
+
+@Composable
+private fun ConnectionDialog(vm: TreeViewModel, onDismiss: () -> Unit) {
     val state by vm.connection.state.collectAsState()
     val status by vm.status.collectAsState()
     val manualHost by vm.manualHost.collectAsState()
-    var editingHost by rememberSaveable { mutableStateOf(false) }
     var hostText by rememberSaveable(manualHost) { mutableStateOf(manualHost) }
 
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            val (dot, text) = when (val s = state) {
-                is TreeConnection.State.Connected -> Color(0xFF2E7D32) to "Connected to ${s.host}"
-                is TreeConnection.State.Connecting -> Color(0xFFF9A825) to "Connecting to ${s.host}…"
-                is TreeConnection.State.Failed -> Color(0xFFC62828) to "${s.host}: ${s.reason}"
-                TreeConnection.State.Disconnected -> Color.Gray to "Not connected"
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(12.dp).clip(CircleShape).background(dot))
-                Spacer(Modifier.width(8.dp))
-                Text(text, style = MaterialTheme.typography.bodyLarge)
-            }
-            if (status.isNotEmpty()) {
-                Text(status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { vm.reconnectNow() }) { Text("Reconnect") }
-                TextButton(onClick = { editingHost = !editingHost }) {
-                    Text(if (manualHost.isEmpty()) "Enter address" else "Address: $manualHost")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Connection") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    when (val s = state) {
+                        is TreeConnection.State.Connected -> "Connected to ${s.host}:${s.port}"
+                        is TreeConnection.State.Connecting -> "Connecting to ${s.host}…"
+                        is TreeConnection.State.Failed -> "${s.host}: ${s.reason}"
+                        TreeConnection.State.Disconnected -> "Not connected"
+                    }
+                )
+                if (status.isNotEmpty()) {
+                    Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            }
-            if (editingHost) {
                 OutlinedTextField(
                     value = hostText,
                     onValueChange = { hostText = it },
-                    label = { Text("Tree address (blank = find automatically)") },
+                    label = { Text("Address (blank = find automatically)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Button(onClick = {
-                    vm.setManualHost(hostText)
-                    editingHost = false
-                    vm.reconnectNow()
-                }) { Text("Save & connect") }
             }
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                vm.setManualHost(hostText)
+                vm.reconnectNow()
+                onDismiss()
+            }) { Text("Reconnect") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
 }
 
 @Composable
-private fun ColorCard(vm: TreeViewModel) {
-    val hue by vm.hue.collectAsState()
-    val saturation by vm.saturation.collectAsState()
-    val brightness by vm.brightness.collectAsState()
-    val live by vm.live.collectAsState()
-    val lastTarget by vm.lastTarget.collectAsState()
+private fun PickerCardTitle(title: String, subtitle: String) {
+    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** Always the base color - shown wherever nothing is painted. Applies as you move it. */
+@Composable
+private fun BackgroundCard(vm: TreeViewModel, modifier: Modifier) {
+    val color by vm.background.collectAsState()
     val lightsOn by vm.lightsOn.collectAsState()
-    val picked = Color.hsv(hue, saturation, 1f)
-
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Color", style = MaterialTheme.typography.titleMedium)
-            HueWheel(
-                hue = hue,
-                centerColor = picked,
-                onHueChange = vm::setHue,
-                modifier = Modifier.fillMaxWidth(0.75f).align(Alignment.CenterHorizontally),
-            )
-            Row(
-                Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                PRESETS.forEach { preset ->
-                    Box(
-                        Modifier.size(40.dp).clip(CircleShape).background(preset)
-                            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-                            .clickable { vm.pickPreset(preset) }
-                    )
-                }
-            }
-            LabeledGradientSlider(
-                label = "Saturation",
-                value = saturation, range = 0f..1f, onChange = vm::setSaturation,
-                gradient = listOf(Color.White, Color.hsv(hue, 1f, 1f)),
-            )
-            LabeledGradientSlider(
-                label = "Brightness ${(brightness * 100).roundToInt()}%",
-                value = brightness, range = 0.02f..1f, onChange = vm::setBrightness,
-                gradient = listOf(Color.Black, picked),
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = live, onCheckedChange = vm::setLive)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when {
-                        !lightsOn -> "Lights are off – pick a color now, it applies once they're back on"
-                        live && lastTarget != ColorTarget.NONE -> "Live: changes update the ${targetName(lastTarget)}"
-                        else -> "Live updates " + if (live) "on" else "off"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = vm::fillTree, modifier = Modifier.weight(1f), enabled = lightsOn) { Text("Fill tree") }
-                OutlinedButton(onClick = vm::setBackground, modifier = Modifier.weight(1f), enabled = lightsOn) { Text("Background") }
-            }
+    Card(modifier) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            PickerCardTitle("Background", "Where nothing is painted")
+            CompactColorPicker(color, vm::setBackgroundColor)
+            Button(
+                onClick = vm::applyBackground,
+                enabled = lightsOn,
+                contentPadding = SMALL_BUTTON_PADDING,
+                modifier = Modifier.fillMaxWidth().height(34.dp),
+            ) { Text("Apply", style = MaterialTheme.typography.labelMedium) }
         }
     }
 }
 
+/** The overlay color, on the whole tree or the region. Re-applies as you move it. */
 @Composable
-private fun LightsCard(vm: TreeViewModel) {
+private fun PaintCard(vm: TreeViewModel, modifier: Modifier) {
+    val color by vm.paint.collectAsState()
+    val target by vm.paintTarget.collectAsState()
     val lightsOn by vm.lightsOn.collectAsState()
-    val state by vm.connection.state.collectAsState()
-    val connected = state is TreeConnection.State.Connected
-    Card(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("Lights", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    if (lightsOn) "On" else "Off – colors are kept for when you turn them back on",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+    Card(modifier) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            PickerCardTitle("Paint", "Whole tree or a region")
+            CompactColorPicker(color, vm::setPaintColor)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TargetButton("Fill", target == PaintTarget.FILL, lightsOn, vm::paintFill, Modifier.weight(1f))
+                TargetButton("Region", target == PaintTarget.REGION, lightsOn, vm::paintRegion, Modifier.weight(1f))
             }
-            Switch(checked = lightsOn, onCheckedChange = vm::setLights, enabled = connected)
         }
     }
 }
 
-private fun targetName(t: ColorTarget) = when (t) {
-    ColorTarget.FILL -> "whole tree"
-    ColorTarget.BACKGROUND -> "background"
-    ColorTarget.REGION -> "region"
-    ColorTarget.NONE -> ""
-}
-
+/** Filled when it's the current paint target (what the picker re-applies to), outlined otherwise. */
 @Composable
-private fun LabeledGradientSlider(
-    label: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
-    onChange: (Float) -> Unit,
-    gradient: List<Color>,
-) {
-    Column {
-        Text(label, style = MaterialTheme.typography.labelLarge)
-        Box(Modifier.fillMaxWidth().height(40.dp), contentAlignment = Alignment.Center) {
-            Box(
-                Modifier.fillMaxWidth().padding(horizontal = 10.dp).height(12.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Brush.horizontalGradient(gradient))
-            )
-            Slider(
-                value = value,
-                onValueChange = onChange,
-                valueRange = range,
-                colors = SliderDefaults.colors(
-                    activeTrackColor = Color.Transparent,
-                    inactiveTrackColor = Color.Transparent,
-                    activeTickColor = Color.Transparent,
-                    inactiveTickColor = Color.Transparent,
-                ),
-            )
-        }
+private fun TargetButton(label: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier) {
+    val m = modifier.height(34.dp)
+    val text: @Composable () -> Unit = { Text(label, style = MaterialTheme.typography.labelMedium) }
+    if (active) {
+        Button(onClick = onClick, enabled = enabled, contentPadding = SMALL_BUTTON_PADDING, modifier = m) { text() }
+    } else {
+        OutlinedButton(onClick = onClick, enabled = enabled, contentPadding = SMALL_BUTTON_PADDING, modifier = m) { text() }
     }
 }
 
 @Composable
 private fun RegionCard(vm: TreeViewModel) {
     val region by vm.region.collectAsState()
-    val lightsOn by vm.lightsOn.collectAsState()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Region", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Paints the LEDs inside a height band and angle slice with the color above.",
+                "The height band and angle slice that Paint → Region colors.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -291,7 +253,6 @@ private fun RegionCard(vm: TreeViewModel) {
                 )
                 Text("Everything outside shows the background color", style = MaterialTheme.typography.bodyMedium)
             }
-            Button(onClick = vm::paintRegion, modifier = Modifier.fillMaxWidth(), enabled = lightsOn) { Text("Paint region") }
         }
     }
 }
@@ -317,8 +278,12 @@ private fun AdvancedCard(vm: TreeViewModel) {
                 )
                 val index = indexText.toIntOrNull()?.takeIf { it in 0..999 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { index?.let(vm::setSingleLed) }, enabled = index != null && lightsOn) { Text("Set to color") }
-                    OutlinedButton(onClick = { index?.let(vm::clearSingleLed) }, enabled = index != null && lightsOn) { Text("Clear") }
+                    Button(onClick = { index?.let(vm::setSingleLed) }, enabled = index != null && lightsOn) {
+                        Text("Set to paint color")
+                    }
+                    OutlinedButton(onClick = { index?.let(vm::clearSingleLed) }, enabled = index != null && lightsOn) {
+                        Text("Clear")
+                    }
                 }
             }
         }

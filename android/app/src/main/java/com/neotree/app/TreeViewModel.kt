@@ -20,8 +20,33 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** What the "live" controls re-apply as they move. */
-enum class ColorTarget { NONE, FILL, BACKGROUND, REGION }
+/** What the Paint picker applies to. */
+enum class PaintTarget { NONE, FILL, REGION }
+
+/**
+ * A picker's color: hue 0-360, saturation 0-1, brightness 0-1. No power
+ * limit on brightness: the tree's supply measured 221W at the wall with all
+ * 1000 LEDs full white (2026-09-24).
+ */
+data class PickerColor(val hue: Float, val saturation: Float, val brightness: Float) {
+    /** Hue + saturation at full value - what the UI shows as "the color". */
+    fun display(): Color = Color.hsv(hue, saturation, 1f)
+
+    fun toRgb(): Rgb {
+        val c = display()
+        return Rgb((c.red * 255).toInt(), (c.green * 255).toInt(), (c.blue * 255).toInt()).scaled(brightness)
+    }
+
+    /** Same brightness, hue/saturation taken from a preset swatch. */
+    fun withPreset(preset: Color): PickerColor {
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(
+            android.graphics.Color.rgb((preset.red * 255).toInt(), (preset.green * 255).toInt(), (preset.blue * 255).toInt()),
+            hsv,
+        )
+        return copy(hue = hsv[0], saturation = hsv[1])
+    }
+}
 
 data class RegionSettings(
     val heightMinMm: Float = 0f,
@@ -36,43 +61,41 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     private val discovery = TreeDiscovery(app)
     val connection = TreeConnection(viewModelScope)
 
-    // Picker state: hue 0-360, saturation 0-1. Brightness 0-1 scales every
-    // color sent. No power limit needed: the tree's supply was measured at
-    // 221W at the wall with all 1000 LEDs full white (2026-09-24).
-    private val _hue = MutableStateFlow(prefs.getFloat("hue", 120f))
-    val hue: StateFlow<Float> = _hue.asStateFlow()
-    private val _saturation = MutableStateFlow(prefs.getFloat("saturation", 1f))
-    val saturation: StateFlow<Float> = _saturation.asStateFlow()
-    private val _brightness = MutableStateFlow(prefs.getFloat("brightness", 1f))
-    val brightness: StateFlow<Float> = _brightness.asStateFlow()
+    // Two independent pickers: Background always sets every LED's base color;
+    // Paint sets the overlay, on the whole tree (FILL) or a region (REGION).
+    private val _background = MutableStateFlow(loadColor("bg", PickerColor(30f, 0.9f, 1f)))
+    val background: StateFlow<PickerColor> = _background.asStateFlow()
+    private val _paint = MutableStateFlow(loadColor("paint", PickerColor(120f, 1f, 1f)))
+    val paint: StateFlow<PickerColor> = _paint.asStateFlow()
+    private val _paintTarget = MutableStateFlow(PaintTarget.NONE)
+    val paintTarget: StateFlow<PaintTarget> = _paintTarget.asStateFlow()
     private val _region = MutableStateFlow(RegionSettings())
     val region: StateFlow<RegionSettings> = _region.asStateFlow()
-    private val _live = MutableStateFlow(true)
-    val live: StateFlow<Boolean> = _live.asStateFlow()
-    private val _lastTarget = MutableStateFlow(ColorTarget.NONE)
-    val lastTarget: StateFlow<ColorTarget> = _lastTarget.asStateFlow()
     private val _status = MutableStateFlow("")
     val status: StateFlow<String> = _status.asStateFlow()
     private val _manualHost = MutableStateFlow(prefs.getString("manual_host", "") ?: "")
     val manualHost: StateFlow<String> = _manualHost.asStateFlow()
-
-    // Live drags produce far more updates than the tree needs; a conflated
-    // channel keeps only the newest pending one, so the tree always catches
-    // up to where the finger is instead of replaying every step.
-    private val liveUpdates = Channel<ByteArray>(Channel.CONFLATED)
-    private var connectJob: Job? = null
-    private var foreground = false
 
     // Global lights on/off as last known: from the tree's greeting on
     // connect, then from this phone's own toggles.
     private val _lightsOn = MutableStateFlow(true)
     val lightsOn: StateFlow<Boolean> = _lightsOn.asStateFlow()
 
+    // Picker drags produce far more updates than the tree needs; conflated
+    // channels keep only the newest pending one per picker, so the tree
+    // always catches up to where the finger is instead of replaying every step.
+    private val backgroundLive = Channel<ByteArray>(Channel.CONFLATED)
+    private val paintLive = Channel<ByteArray>(Channel.CONFLATED)
+    private var connectJob: Job? = null
+    private var foreground = false
+
     init {
-        viewModelScope.launch {
-            // Re-checked at send time: an update still pending when the lights
-            // are switched off must not change the colors being preserved.
-            for (message in liveUpdates) if (_lightsOn.value) connection.send(message)
+        // Lights re-checked at send time: an update still pending when the
+        // lights are switched off must not change the colors being preserved.
+        for (channel in listOf(backgroundLive, paintLive)) {
+            viewModelScope.launch {
+                for (message in channel) if (_lightsOn.value) connection.send(message)
+            }
         }
         viewModelScope.launch {
             connection.state.collect { s ->
@@ -80,6 +103,8 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    // ---- connection ----
 
     /** Called when the app comes to the foreground: (re)connect and stay connected. */
     fun onForeground() {
@@ -145,37 +170,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         _status.value = "Couldn't find the tree on this WiFi"
     }
 
-    // ---- controls ----
-
-    fun setHue(value: Float) { _hue.value = value; prefs.edit().putFloat("hue", value).apply(); reapplyLive() }
-    fun setSaturation(value: Float) { _saturation.value = value; prefs.edit().putFloat("saturation", value).apply(); reapplyLive() }
-    fun setBrightness(value: Float) { _brightness.value = value; prefs.edit().putFloat("brightness", value).apply(); reapplyLive() }
-    fun setRegion(value: RegionSettings) { _region.value = value; if (_lastTarget.value == ColorTarget.REGION) reapplyLive() }
-    fun setLive(value: Boolean) { _live.value = value }
-
-    fun pickPreset(color: Color) {
-        val hsv = FloatArray(3)
-        android.graphics.Color.colorToHSV(
-            android.graphics.Color.rgb((color.red * 255).toInt(), (color.green * 255).toInt(), (color.blue * 255).toInt()),
-            hsv,
-        )
-        _hue.value = hsv[0]
-        _saturation.value = hsv[1]
-        prefs.edit().putFloat("hue", hsv[0]).putFloat("saturation", hsv[1]).apply()
-        reapplyLive()
-    }
-
-    /** The picked color at full value - what the UI swatch shows. */
-    fun pickedColor(): Color = Color.hsv(_hue.value, _saturation.value, 1f)
-
-    private fun outputColor(): Rgb {
-        val c = pickedColor()
-        return Rgb((c.red * 255).toInt(), (c.green * 255).toInt(), (c.blue * 255).toInt()).scaled(_brightness.value)
-    }
-
-    fun fillTree() = apply(ColorTarget.FILL)
-    fun setBackground() = apply(ColorTarget.BACKGROUND)
-    fun paintRegion() = apply(ColorTarget.REGION)
+    // ---- lights ----
 
     fun setLights(on: Boolean) {
         // Flip immediately (not on ACK) so live updates stop the moment
@@ -193,16 +188,6 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setSingleLed(index: Int) {
-        if (lightsOffBlocks()) return
-        sendNow("LED $index", TreeProtocol.singleLed(index, outputColor()))
-    }
-
-    fun clearSingleLed(index: Int) {
-        if (lightsOffBlocks()) return
-        sendNow("LED $index cleared", TreeProtocol.singleLed(index, Rgb.BLACK))
-    }
-
     // While the lights are off, nothing on this phone changes the tree's
     // colors, so turning them back on restores exactly what was showing.
     // The pickers still move (to choose a color in advance); they just
@@ -213,24 +198,51 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 
-    private fun apply(target: ColorTarget) {
-        if (lightsOffBlocks()) return
-        _lastTarget.value = target
-        val label = when (target) {
-            ColorTarget.FILL -> "Tree filled"
-            ColorTarget.BACKGROUND -> "Background set"
-            ColorTarget.REGION -> "Region painted"
-            ColorTarget.NONE -> return
-        }
-        sendNow(label, messageFor(target) ?: return)
+    // ---- background picker: always the base color, applied live ----
+
+    fun setBackgroundColor(value: PickerColor) {
+        _background.value = value
+        saveColor("bg", value)
+        if (_lightsOn.value) backgroundLive.trySend(TreeProtocol.baseAll(value.toRgb()))
     }
 
-    private fun messageFor(target: ColorTarget): ByteArray? {
-        val c = outputColor()
+    fun applyBackground() {
+        if (lightsOffBlocks()) return
+        sendNow("Background set", TreeProtocol.baseAll(_background.value.toRgb()))
+    }
+
+    // ---- paint picker: the overlay, on the whole tree or a region ----
+
+    fun setPaintColor(value: PickerColor) {
+        _paint.value = value
+        saveColor("paint", value)
+        reapplyPaint()
+    }
+
+    fun setRegion(value: RegionSettings) {
+        _region.value = value
+        if (_paintTarget.value == PaintTarget.REGION) reapplyPaint()
+    }
+
+    fun paintFill() = applyPaint(PaintTarget.FILL, "Tree filled")
+    fun paintRegion() = applyPaint(PaintTarget.REGION, "Region painted")
+
+    private fun applyPaint(target: PaintTarget, label: String) {
+        if (lightsOffBlocks()) return
+        _paintTarget.value = target
+        sendNow(label, paintMessage(target) ?: return)
+    }
+
+    private fun reapplyPaint() {
+        if (!_lightsOn.value) return
+        paintLive.trySend(paintMessage(_paintTarget.value) ?: return)
+    }
+
+    private fun paintMessage(target: PaintTarget): ByteArray? {
+        val c = _paint.value.toRgb()
         return when (target) {
-            ColorTarget.FILL -> TreeProtocol.fillAll(c)
-            ColorTarget.BACKGROUND -> TreeProtocol.baseAll(c)
-            ColorTarget.REGION -> {
+            PaintTarget.FILL -> TreeProtocol.fillAll(c)
+            PaintTarget.REGION -> {
                 val r = _region.value
                 TreeProtocol.volumeCylindrical(
                     zMinMm = r.heightMinMm.toInt(), zMaxMm = r.heightMaxMm.toInt(),
@@ -239,15 +251,23 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
                     c = c, clearOutside = r.clearOutside,
                 )
             }
-            ColorTarget.NONE -> null
+            PaintTarget.NONE -> null
         }
     }
 
-    private fun reapplyLive() {
-        if (!_live.value || !_lightsOn.value) return
-        val message = messageFor(_lastTarget.value) ?: return
-        liveUpdates.trySend(message)
+    // ---- single LED (advanced), in the paint color ----
+
+    fun setSingleLed(index: Int) {
+        if (lightsOffBlocks()) return
+        sendNow("LED $index", TreeProtocol.singleLed(index, _paint.value.toRgb()))
     }
+
+    fun clearSingleLed(index: Int) {
+        if (lightsOffBlocks()) return
+        sendNow("LED $index cleared", TreeProtocol.singleLed(index, Rgb.BLACK))
+    }
+
+    // ---- helpers ----
 
     private fun sendNow(label: String, message: ByteArray) {
         viewModelScope.launch {
@@ -257,6 +277,20 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
                 else -> "$label: tree rejected the command"
             }
         }
+    }
+
+    private fun loadColor(key: String, default: PickerColor) = PickerColor(
+        prefs.getFloat("${key}_hue", default.hue),
+        prefs.getFloat("${key}_sat", default.saturation),
+        prefs.getFloat("${key}_bright", default.brightness),
+    )
+
+    private fun saveColor(key: String, c: PickerColor) {
+        prefs.edit()
+            .putFloat("${key}_hue", c.hue)
+            .putFloat("${key}_sat", c.saturation)
+            .putFloat("${key}_bright", c.brightness)
+            .apply()
     }
 
     override fun onCleared() {
