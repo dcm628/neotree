@@ -49,4 +49,19 @@ void net_server_poll();
 uint32_t net_server_client_count();
 uint32_t net_server_commands_received();
 
+// Cumulative since boot, for diagnosing connection problems.
+struct net_server_diag_t
+{
+    uint32_t accepts;
+    uint32_t accept_errors;     // lwIP handed on_accept an error (e.g. out of memory)
+    uint32_t write_failures;    // tcp_write failed with something other than ERR_MEM - frame dropped
+    uint32_t writes_deferred;   // frames queued because lwIP was out of memory (retried, not lost)
+    uint32_t overflow_closes;   // clients closed because their reply backlog overflowed
+    uint32_t output_failures;   // tcp_output failed
+    int32_t last_write_error;   // lwIP err_t of the most recent write failure
+};
+net_server_diag_t net_server_diag();
+// One heartbeat line of lwIP heap/pool usage and allocation failures.
+void net_server_print_lwip_stats();
+
 #endif

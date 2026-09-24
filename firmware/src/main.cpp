@@ -468,6 +468,13 @@ void main_core1()
                    (unsigned)command_queue_dropped(), (unsigned)net_server_client_count(),
                    (unsigned)net_server_commands_received(), (int)cyw43_init_result,
                    wifi_ok ? wifi_status_str() : "n/a");
+            net_server_diag_t nd = net_server_diag();
+            printf("net diag: accepts=%u accept_errors=%u writes_deferred=%u write_failures=%u (last err %d) "
+                   "output_failures=%u overflow_closes=%u\n",
+                   (unsigned)nd.accepts, (unsigned)nd.accept_errors, (unsigned)nd.writes_deferred,
+                   (unsigned)nd.write_failures, (int)nd.last_write_error, (unsigned)nd.output_failures,
+                   (unsigned)nd.overflow_closes);
+            net_server_print_lwip_stats();
         }
         if (wifi_ok)
         {

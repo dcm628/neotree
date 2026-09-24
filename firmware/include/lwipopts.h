@@ -10,7 +10,13 @@
 #define LWIP_NETCONN                0
 #define MEM_LIBC_MALLOC             0
 #define MEM_ALIGNMENT               4
-#define MEM_SIZE                    4000
+// lwIP heap (TX pbufs). With TCP_OVERSIZE = TCP_MSS (required here by
+// LWIP_NETIF_TX_SINGLE_PBUF), a tcp_write onto an empty send queue allocates
+// a full ~1.5KB pbuf, however small the data. At the old 4000 bytes, two
+// clients flooding commands held ~3.7KB, and a third client's HELLO failed
+// with ERR_MEM (measured 2026-09-24). 16KB covers every client slot plus mDNS
+// with room to spare.
+#define MEM_SIZE                    16384
 #define MEMP_NUM_TCP_SEG            32
 // Command-server clients (net_server_max_clients = 4) plus headroom for
 // connections lingering in TIME_WAIT.
@@ -29,9 +35,10 @@
 #define LWIP_NETIF_LINK_CALLBACK    1
 #define LWIP_NETIF_HOSTNAME         1
 #define LWIP_NETIF_TX_SINGLE_PBUF   1
-#define MEM_STATS                   0
+#define LWIP_STATS                  1   // heap + pool usage, for net diagnostics
+#define MEM_STATS                   1
 #define SYS_STATS                   0
-#define MEMP_STATS                  0
+#define MEMP_STATS                  1
 #define LINK_STATS                  0
 #define LWIP_CHKSUM_ALGORITHM       3
 #define LWIP_IPV4                   1

@@ -108,17 +108,28 @@ Then re-test all-parallel with the diagnostics below.
   Most of the USB cost is the legacy per-byte `printf` echo of every received
   serial byte.
 
-## Open issue found during these tests
+## Issue found during these tests - fixed
 
-A new TCP client connecting **while other clients were flooding commands**
-never received its HELLO (twice in two runs). Sequential connects while idle
-work, including slot eviction. Suspected cause: lwIP's 4KB send heap
-(`MEM_SIZE`) fills with busy clients' queued ACK frames. `tcp_write()` then
-fails with ERR_MEM, and the server drops the frame silently.
+A new TCP client connecting **while other clients flooded commands** never
+received its HELLO. Instrumented and confirmed:
+- `tcp_write` failed with ERR_MEM.
+- lwIP's heap peaked at 3,772 of 4,000 bytes.
 
-The same failure would drop ACKs under load and make the app declare the tree
-unresponsive. To confirm and fix:
-- Count `tcp_write` failures.
-- Raise `MEM_SIZE` (the RP2350 has RAM to spare).
-- Retry unsent frames from lwIP's sent/poll callbacks instead of dropping
-  them.
+With `TCP_OVERSIZE = TCP_MSS` (required by `LWIP_NETIF_TX_SINGLE_PBUF`), a
+write onto an empty send queue allocates a full ~1.5KB pbuf, so two busy
+clients starve a third. The server used to drop failed writes silently. That
+would also lose ACKs under load and desync clients.
+
+Fixes:
+- `MEM_SIZE` 4000 -> 16384. The peak is now 6.9KB with all 4 slots flooding,
+  with no errors, and new clients get their HELLO in 11-26ms.
+- The server never drops a reply. On ERR_MEM the frame goes into a per-client
+  pending buffer (128B). It's retried in order from lwIP's sent callback and
+  a 1s poll. Verified with the old heap: a deferred HELLO arrived 0.8s after
+  memory freed.
+- If a client's backlog overflows (it isn't reading), the connection is
+  closed cleanly so it can reconnect.
+
+The heartbeat line `net diag:` shows deferred and failed writes and overflow
+closes. The line `lwip:` shows heap and pool usage and allocation errors
+(`LWIP_STATS` is on).
