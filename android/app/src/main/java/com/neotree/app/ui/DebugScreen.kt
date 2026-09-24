@@ -141,6 +141,8 @@ private fun ConnectionCard(vm: TreeViewModel) {
     val message by vm.status.collectAsState()
     val manualHost by vm.manualHost.collectAsState()
     var hostText by rememberSaveable(manualHost) { mutableStateOf(manualHost) }
+    // Rarely needed (discovery finds the tree), so tucked away by default.
+    var editingAddress by rememberSaveable { mutableStateOf(false) }
     Section("Connection") {
         val (text, color) = when (val s = state) {
             is TreeConnection.State.Connected -> "Connected to ${s.host}:${s.port}" to Color.Unspecified
@@ -152,17 +154,30 @@ private fun ConnectionCard(vm: TreeViewModel) {
         if (message.isNotEmpty()) {
             Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        OutlinedTextField(
-            value = hostText,
-            onValueChange = { hostText = it },
-            label = { Text("Address (blank = find automatically)") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        TextButton(onClick = {
-            vm.setManualHost(hostText)
-            vm.reconnectNow()
-        }) { Text("Save & reconnect") }
+        if (manualHost.isNotEmpty() && !editingAddress) {
+            Text(
+                "Using fixed address $manualHost (discovery off)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(onClick = { editingAddress = !editingAddress }) {
+            Text(if (editingAddress) "Hide address" else "Set address manually")
+        }
+        if (editingAddress) {
+            OutlinedTextField(
+                value = hostText,
+                onValueChange = { hostText = it },
+                label = { Text("Address (blank = find automatically)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(onClick = {
+                vm.setManualHost(hostText)
+                vm.reconnectNow()
+                editingAddress = false
+            }) { Text("Save & reconnect") }
+        }
     }
 }
 
