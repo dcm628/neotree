@@ -66,7 +66,11 @@ target_sources(neo_tree PRIVATE
                 src/neo_tree_led_output.cpp
                 src/neo_tree_event_log.cpp
                 src/neo_tree_status.cpp
+                src/neo_tree_engine.cpp
                 )
+
+# The rendering engine (portable library shared with the host simulator).
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../engine ${CMAKE_CURRENT_BINARY_DIR}/engine)
 
 # Project headers live in include/
 target_include_directories(neo_tree PRIVATE
@@ -87,6 +91,7 @@ target_compile_options(neo_tree PRIVATE
 )
 
 target_link_libraries(neo_tree PRIVATE    pico_stdlib
+                                            neotree_engine
                                             hardware_pio
                                             hardware_dma
                                             hardware_watchdog

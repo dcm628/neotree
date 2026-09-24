@@ -243,6 +243,11 @@ Goal: build the firmware on the good desktop instead of the weak laptop.
 5. **One-time sanity flash by hand** (BOOTSEL + drag the .uf2, or `picotool` over
    USB) to prove the desktop build runs on the tree before automating deploy.
 
+**Host simulator (2026-09-24):** the rendering engine also builds for Windows
+(`sim/`, `docs/RENDERER.md` §11) with WinLibs GCC, installed per user via
+`winget install --id BrechtSanders.WinLibs.POSIX.UCRT --exact --scope user`.
+Build and test with `toolsuild_sim.ps1`; details in `sim/README.md`.
+
 ### Phase 4 — Remote deploy pipeline (desktop build → Pi flashes Pico) — ✅ done
 
 Goal: after editing firmware on the desktop, one command builds and flashes the
@@ -337,6 +342,7 @@ Do these once the core loop works; none are blockers.
 |---|---|---|
 | Edit firmware | Desktop (local VSCode) | Pico extension, CMake, ARM GCC |
 | Build firmware → `.uf2` | Desktop | Pico SDK |
+| Build + run host simulator | Desktop | WinLibs GCC, CMake, raylib (`tools/build_sim.ps1`) |
 | Flash Pico | Pi 4 | picotool over USB |
 | Edit Python | Desktop (Remote-SSH) | VSCode Python ext (remote) |
 | Run mapping / cameras | Pi 4 | Python venv, OpenCV |

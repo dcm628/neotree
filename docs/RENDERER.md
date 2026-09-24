@@ -1,6 +1,6 @@
 # NeoTree Rendering Engine — Design
 
-**Status:** Design agreed, pending sign-off (no code yet) · **Owner:** Dan · **Last updated:** 2026-09-24
+**Status:** Design agreed · M1 (engine skeleton + simulator) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
 
 **Related:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) §6 defers volumetric
 rendering to this document. [`LED_OUTPUT.md`](./LED_OUTPUT.md) covers the
@@ -411,7 +411,7 @@ Wall-clock behavior (e.g. "turn on at dusk") belongs to a later scheduler
 
 ## 11. Host simulator **[DECIDED]**
 
-The engine is **portable C++17** with no Pico SDK dependencies, behind a small
+The engine is **portable C++20** (matching the firmware) with no Pico SDK dependencies, behind a small
 platform interface (logging, LED geometry input, output sink). It builds into
 the firmware and into host tools on Windows.
 
@@ -509,7 +509,7 @@ configuration (stack editing, layer/entity/rule settings, presets, shows).
 
 | # | Milestone | Proof |
 |---|---|---|
-| M1 | Engine skeleton (portable library), host build, headless CLI, viewer skeleton, LED geometry module (real + synthetic positions) | Viewer shows the tree's point cloud; CLI runs an empty scene at thousands of fps |
+| M1 ✅ | Engine skeleton (portable library), host build, headless CLI, viewer skeleton, LED geometry module (real + synthetic positions) | Viewer shows the tree's point cloud; CLI runs an empty scene at thousands of fps |
 | M2 | Compositor: solid, pixel, field layers; masks; blends; master stage. Canvas mode; base scene = Canvas; existing messages translated to layer edits | Tree looks and behaves exactly as today; frame timing on the Debug page |
 | M3 | Entities: shapes, falloff, integration, global forces, boundaries, surface constraint, z-culling | Gravity and launch sweeps recreated as entity demos, on the tree and in the sim |
 | M4 | Collision groups, response table, events, rules/actions, templates, emitters, runaway protection | Snow and fireworks demos; ball-collision spawn chain stays bounded |
@@ -518,7 +518,42 @@ configuration (stack editing, layer/entity/rule settings, presets, shows).
 | M7 | Direct entity control from the phone, stream channel, paintbrush | Flick a ball from the phone into the tree |
 | M8+ | App: full scene configuration (layers, entities, rules, forces, lifecycle), built as needed | A new effect built entirely from the app |
 
-## 15. Memory estimate
+## 15. Progress log
+
+### M1 — done 2026-09-24
+
+- `engine/`: `Engine` (advance/run_ticks/render), `SimClock` (exact fixed
+  ticks, no drift), `Rng` (xoshiro128**, pinned sequence), `Pool` (handles
+  with generations), `LedGeometry` (cartesian/cylindrical/normalized, z-sorted
+  index, `in_z_range`). 23 unit tests.
+- `sim/`: `neotree_sim` (headless), `neotree_view` (raylib), position file from
+  `mapping/generate_sim_positions.py`. Built with WinLibs GCC via
+  `tools/build_sim.ps1`; see `sim/README.md`.
+- Firmware: the engine links in (`firmware/src/neo_tree_engine.cpp`), builds
+  its geometry from the stored map at boot and on map reloads, and runs every
+  frame with its output discarded. Timing is in the status JSON under
+  `engine`.
+
+Measured:
+
+| | |
+|---|---|
+| Firmware RAM (bss) | 140 KB → 183 KB of 520 KB (+43 KB: geometry 31 KB, frame 12 KB) |
+| Firmware code | +5.7 KB |
+| Geometry build on the Pico (1000 LEDs, 233 positioned) | ~66–69 ms, at boot only |
+| Empty tick / empty render on the Pico | ~3 µs / ~52 µs |
+| Host: 8 h of sim time, rendering every frame | 0.13 s wall (~220,000× real time) |
+| Host: 8 h of sim time, no rendering | 3 ms wall |
+
+**Found, to investigate at the start of M2:** core0 is periodically
+interrupted or stalled. The existing LED frame prep (normally ~148 µs) peaks at
+1.2–2.2 ms in most 5 s windows, and the engine's timing caught outliers of 17
+and 42 ms (15 frames over 2 ms in the first 75 s after boot). The engine code
+itself takes no locks and does no I/O, so these are time spent elsewhere. It's
+invisible with static colors but would show as stutter once the engine drives
+animation.
+
+## 16. Memory estimate
 
 | Item | Size |
 |---|---|

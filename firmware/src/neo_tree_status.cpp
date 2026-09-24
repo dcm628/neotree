@@ -8,6 +8,7 @@
 
 #include "neo_tree_command_queue.hpp"
 #include "neo_tree_event_log.hpp"
+#include "neo_tree_engine.hpp"
 #include "neo_tree_led_output.hpp"
 #include "neo_tree_net_server.hpp"
 #include "neo_tree_protocol.hpp"
@@ -132,6 +133,16 @@ static size_t build_locked(char *out, size_t cap)
           (unsigned)led.underflows_total[1], (unsigned)led.underflows_total[2], (unsigned)led.underflows_total[3],
           (unsigned)led.overflows_total[0], (unsigned)led.overflows_total[1], (unsigned)led.overflows_total[2],
           (unsigned)led.overflows_total[3]);
+
+    engine_host_stats_t eng = engine_host_stats();
+    j.raw(",\"engine\":{\"ticks\":%llu,\"ticks_dropped\":%llu,\"frames\":%llu,\"advance_us\":%u,"
+          "\"max_advance_us\":%u,\"render_us\":%u,\"max_render_us\":%u,\"max_advance_at_ms\":%u,\"max_render_at_ms\":%u,"
+          "\"slow_frames\":%u,\"geometry_us\":%u,\"leds\":%u,\"positioned\":%u}",
+          (unsigned long long)eng.ticks, (unsigned long long)eng.ticks_dropped, (unsigned long long)eng.frames,
+          (unsigned)eng.last_advance_us, (unsigned)eng.max_advance_us, (unsigned)eng.last_render_us,
+          (unsigned)eng.max_render_us, (unsigned)eng.max_advance_at_ms, (unsigned)eng.max_render_at_ms,
+          (unsigned)eng.slow_frames, (unsigned)eng.geometry_build_us, (unsigned)eng.leds,
+          (unsigned)eng.positioned);
 
     j.raw(",\"queue\":{\"level\":%u,\"dropped\":%u},\"core1_loops\":%u", (unsigned)command_queue_level(),
           (unsigned)command_queue_dropped(), (unsigned)core1_loop_counter);

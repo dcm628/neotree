@@ -23,6 +23,7 @@
 #include "neo_tree_led_output.hpp"
 #include "neo_tree_event_log.hpp"
 #include "neo_tree_status.hpp"
+#include "neo_tree_engine.hpp"
 
 mutex core0_data_update;
 
@@ -346,12 +347,14 @@ void process_msg()
         memcpy(temp_config_reload_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
         // do update stuff
         RGB_LED_3D::initialize_from_config();
+        engine_host_reload_geometry();
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
     case serial_msg_type::RESET_POS_CONFIG_TO_DEFAULT:
         reset_pos_config_to_default();
         RGB_LED_3D::initialize_from_config();
+        engine_host_reload_geometry();
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
@@ -577,6 +580,7 @@ int main() {
     // existed but nothing ever loaded it back.
     load_pos_config_from_flash();
     RGB_LED_3D::initialize_from_config();
+    engine_host_init();
     // grab first loop a abs time
     initial_abs_time_check = get_absolute_time();
     // adding a wait loop before starting the main while loop
@@ -617,6 +621,9 @@ int main() {
         // output itself runs on DMA, so this loop never blocks on it.
         if (!frame_prepared && latest_abs_time_check >= next_frame_us)
         {
+            // M1: the engine runs every frame for timing, but its output
+            // isn't used yet - the frame below still comes from RGB_LED_3D.
+            engine_host_frame(latest_abs_time_check);
             led_output_prepare_frame();
             frame_prepared = true;
         }
