@@ -295,6 +295,11 @@ LED points vs. maintain a voxel grid and interpolate LED colors from it (the
 latter decouples sim resolution from LED count and is likely better for
 simulations); **[OPEN]** fixed-point vs. float math on the M33.
 
+**Update 2026-09-24:** the rendering design doc is [`RENDERER.md`](./RENDERER.md)
+(layered compositor + entity simulation + stackable modes). It answers the three
+questions above: metric mm in float, direct evaluation at LED points (voxel
+grid later as a layer type), float math.
+
 ---
 
 ## 7. Interfaces & Data Contracts
