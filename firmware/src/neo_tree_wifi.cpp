@@ -205,6 +205,9 @@ void wifi_poll()
         connect_count++;
         link_up_since_us = now_us;
         connect_in_progress = false;
+        // Re-assert power-save off on every join, not just at start - latency
+        // was seen back at power-save levels after the router dropped us.
+        cyw43_wifi_pm(&cyw43_state, CYW43_NONE_PM);
         print_connected_report((uint32_t)((now_us - connect_started_us) / 1000));
         attempts_since_up = 0;
     }
@@ -250,8 +253,11 @@ const char *wifi_status_str()
     {
         int32_t rssi = 0;
         cyw43_wifi_get_rssi(&cyw43_state, &rssi);
-        snprintf(buf, sizeof(buf), "up %s ssid=%s rssi=%d connects=%u", sta_ip_str(), active.ssid, (int)rssi,
-                 (unsigned)connect_count);
+        // Low nibble of the packed PM value is the mode: 0 = power-save off.
+        uint32_t pm = 0xFFFFFFFF;
+        cyw43_wifi_get_pm(&cyw43_state, &pm);
+        snprintf(buf, sizeof(buf), "up %s ssid=%s rssi=%d pm=0x%x connects=%u", sta_ip_str(), active.ssid,
+                 (int)rssi, (unsigned)pm, (unsigned)connect_count);
     }
     else
     {
