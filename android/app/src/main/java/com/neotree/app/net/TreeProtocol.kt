@@ -24,6 +24,16 @@ object TreeProtocol {
     private const val ALL_LED_UPDATE = 3
     private const val SET_VOLUME_CYLINDRICAL = 10
     private const val ALL_LED_UPDATE_BASE = 12
+    private const val TREE_OUTPUT = 15
+
+    /** HELLO flags byte (optional third byte): bit 0 = lights on. */
+    const val HELLO_FLAG_OUTPUT_ON = 0x01
+
+    /**
+     * Global lights on/off. Off blanks every LED without touching any colors,
+     * so on restores exactly what was showing.
+     */
+    fun treeOutput(on: Boolean): ByteArray = message(2) { put(TREE_OUTPUT.toByte()); put(if (on) 1 else 0) }
 
     /** Overlay color on one LED. Black clears its overlay, showing its base color. */
     fun singleLed(index: Int, c: Rgb): ByteArray =

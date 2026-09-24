@@ -282,7 +282,8 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
     newpcb->keep_intvl = keepalive_interval_ms;
     newpcb->keep_cnt = keepalive_count;
 
-    uint8_t hello[2] = {static_cast<uint8_t>(net_reply_type::HELLO), net_protocol_version};
+    uint8_t hello[3] = {static_cast<uint8_t>(net_reply_type::HELLO), net_protocol_version,
+                        static_cast<uint8_t>(tree_output_enabled ? hello_flag_output_on : 0)};
     send_frame(c, hello, sizeof(hello));
     tcp_output(newpcb);
     log_event(net_event_type::CONNECTED, slot_index(c), &newpcb->remote_ip, newpcb->remote_port);

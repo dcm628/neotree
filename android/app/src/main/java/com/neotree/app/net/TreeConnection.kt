@@ -30,7 +30,8 @@ class TreeConnection(private val scope: CoroutineScope) {
     sealed interface State {
         data object Disconnected : State
         data class Connecting(val host: String) : State
-        data class Connected(val host: String, val port: Int) : State
+        /** lightsOn is null if the tree's firmware doesn't report it. */
+        data class Connected(val host: String, val port: Int, val lightsOn: Boolean?) : State
         data class Failed(val host: String, val reason: String) : State
     }
 
@@ -71,7 +72,8 @@ class TreeConnection(private val scope: CoroutineScope) {
                 output = s.getOutputStream()
                 acks = Channel(Channel.UNLIMITED)
                 readerJob = scope.launch(Dispatchers.IO) { readLoop(s, input, host) }
-                _state.value = State.Connected(host, port)
+                val lightsOn = if (hello.size >= 3) (hello[2].toInt() and TreeProtocol.HELLO_FLAG_OUTPUT_ON) != 0 else null
+                _state.value = State.Connected(host, port, lightsOn)
                 true
             } catch (e: IOException) {
                 _state.value = State.Failed(host, e.message ?: e.javaClass.simpleName)

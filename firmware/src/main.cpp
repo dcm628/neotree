@@ -33,8 +33,13 @@ mutex core0_data_update;
 #define WS2812_PIN_STRING_3 6
 #define WS2812_PIN_STRING_4 7
 
+volatile bool tree_output_enabled = true;
+
 static inline void put_pixel(uint8_t sm, uint32_t pixel_grb) {
-    pio_sm_put_blocking(pio0, sm, pixel_grb << 8u);
+    // Lights off (TREE_OUTPUT) still clocks a full frame out, just zeros -
+    // the LEDs latch whatever they were last sent, so they have to be
+    // actively written dark, and keep being written so they stay dark.
+    pio_sm_put_blocking(pio0, sm, (tree_output_enabled ? pixel_grb : 0u) << 8u);
 }
 
 static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
@@ -1255,6 +1260,8 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
         return len == sizeof(wifi_cred_chunk_frame);
     case serial_msg_type::WIFI_CRED_COMMIT:
         return len == sizeof(wifi_cred_commit_frame);
+    case serial_msg_type::TREE_OUTPUT:
+        return len == 2;
     default:
         // Includes RUN_SWEEP_SEQUENCE, which process_msg() never implemented.
         return false;
@@ -1438,6 +1445,12 @@ void process_msg()
         break;
     case serial_msg_type::WIFI_CRED_COMMIT:
         wifi_handle_cred_commit(&reinterpret_cast<const wifi_cred_commit_frame *>(serial_buf_copy)->s_msg);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::TREE_OUTPUT:
+        tree_output_enabled = (serial_buf_copy[1] != 0);
+        printf("tree output %s\n", tree_output_enabled ? "ON" : "OFF");
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;

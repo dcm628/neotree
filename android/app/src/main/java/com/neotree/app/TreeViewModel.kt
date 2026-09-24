@@ -62,9 +62,19 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     private var connectJob: Job? = null
     private var foreground = false
 
+    // Global lights on/off as last known: from the tree's greeting on
+    // connect, then from this phone's own toggles.
+    private val _lightsOn = MutableStateFlow(true)
+    val lightsOn: StateFlow<Boolean> = _lightsOn.asStateFlow()
+
     init {
         viewModelScope.launch {
             for (message in liveUpdates) connection.send(message)
+        }
+        viewModelScope.launch {
+            connection.state.collect { s ->
+                if (s is TreeConnection.State.Connected && s.lightsOn != null) _lightsOn.value = s.lightsOn
+            }
         }
     }
 
@@ -164,9 +174,16 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     fun setBackground() = apply(ColorTarget.BACKGROUND)
     fun paintRegion() = apply(ColorTarget.REGION)
 
-    fun allOff() {
-        _lastTarget.value = ColorTarget.NONE
-        sendNow("Off", TreeProtocol.fillAll(Rgb.BLACK))
+    fun setLights(on: Boolean) {
+        viewModelScope.launch {
+            val status = connection.send(TreeProtocol.treeOutput(on))
+            if (status == AckStatus.QUEUED) _lightsOn.value = on
+            _status.value = when (status) {
+                AckStatus.QUEUED -> if (on) "Lights on ✓" else "Lights off ✓"
+                null -> "Not connected to the tree"
+                else -> "Lights: tree rejected the command (older firmware?)"
+            }
+        }
     }
 
     fun setSingleLed(index: Int) = sendNow("LED $index", TreeProtocol.singleLed(index, outputColor()))

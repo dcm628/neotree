@@ -38,10 +38,18 @@ enum class serial_msg_type : uint8_t
     // pieces, then a commit that writes them to flash - see neo_tree_wifi.hpp.
     WIFI_CRED_CHUNK,
     WIFI_CRED_COMMIT,
+    // Global lights on/off: [type][1 = on, 0 = off]. Off sends zeros to every
+    // LED each frame without touching any LED's base/overlay colors, so on
+    // restores exactly what was showing.
+    TREE_OUTPUT,
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::WIFI_CRED_COMMIT) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::TREE_OUTPUT) + 1;
+
+// Set by TREE_OUTPUT (core0), read by the LED output path and reported to
+// network clients in HELLO (core1).
+extern volatile bool tree_output_enabled;
 
 // True if len is a valid size for this message (byte 0 = type). Implemented
 // in main.cpp, next to the frame structs it checks against.

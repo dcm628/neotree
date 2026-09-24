@@ -276,6 +276,22 @@ def write_tree_reset_pos_config_to_default(ser):
     ser.write(packed_data)
     print("Sent reset_pos_config_to_default")
 
+TREE_OUTPUT_MSG_TYPE = 15
+
+def write_tree_output(ser, on):
+    """
+    Global lights on/off. Off writes zeros to every LED each frame but leaves
+    every LED's base and overlay colors untouched, so turning back on
+    restores exactly what was showing.
+
+    :param ser: The serial object (or neotree_net connection) to write to.
+    :param on: True for lights on, False for off.
+    :return: None
+    """
+    packed_data = struct.pack('<BB', TREE_OUTPUT_MSG_TYPE, 1 if on else 0)
+    ser.write(packed_data)
+    print(f"Sent tree output {'on' if on else 'off'}")
+
 def cleanup_serial():
     """
     Closes the serial port connection if it is open.

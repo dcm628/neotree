@@ -11,13 +11,16 @@
 //   (byte 0 = serial_msg_type, see neo_tree_protocol.hpp). The server checks
 //   it and pushes it onto the shared command queue.
 // Tree -> client: byte 0 >= 0x80 identifies the reply:
-//   HELLO  [0x81][protocol_version]            sent once on connect
+//   HELLO  [0x81][protocol_version][flags]     sent once on connect
+//          flags bit 0: lights on (TREE_OUTPUT). Older clients that only
+//          read the first two bytes are unaffected.
 //   ACK    [0x80][command type][net_status]    one per received command
 // ACK means "accepted onto the command queue", not "already applied".
 
 const uint16_t net_server_port = 7777;
 const uint8_t net_protocol_version = 1;
 const size_t net_server_max_clients = 4;
+const uint8_t hello_flag_output_on = 0x01;
 
 enum class net_reply_type : uint8_t
 {

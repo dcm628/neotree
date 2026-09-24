@@ -77,6 +77,7 @@ fun MainScreen(vm: TreeViewModel) {
         ) {
             Text("NeoTree", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             ConnectionCard(vm)
+            LightsCard(vm)
             ColorCard(vm)
             RegionCard(vm)
             AdvancedCard(vm)
@@ -143,14 +144,13 @@ private fun ColorCard(vm: TreeViewModel) {
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(48.dp).clip(CircleShape).background(picked)
-                        .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-                )
-                Spacer(Modifier.width(12.dp))
-                Text("Color", style = MaterialTheme.typography.titleMedium)
-            }
+            Text("Color", style = MaterialTheme.typography.titleMedium)
+            HueWheel(
+                hue = hue,
+                centerColor = picked,
+                onHueChange = vm::setHue,
+                modifier = Modifier.fillMaxWidth(0.75f).align(Alignment.CenterHorizontally),
+            )
             Row(
                 Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -163,11 +163,6 @@ private fun ColorCard(vm: TreeViewModel) {
                     )
                 }
             }
-            LabeledGradientSlider(
-                label = "Hue",
-                value = hue, range = 0f..360f, onChange = vm::setHue,
-                gradient = (0..6).map { Color.hsv(it * 60f % 360f, 1f, 1f) },
-            )
             LabeledGradientSlider(
                 label = "Saturation",
                 value = saturation, range = 0f..1f, onChange = vm::setSaturation,
@@ -191,11 +186,29 @@ private fun ColorCard(vm: TreeViewModel) {
                 Button(onClick = vm::fillTree, modifier = Modifier.weight(1f)) { Text("Fill tree") }
                 OutlinedButton(onClick = vm::setBackground, modifier = Modifier.weight(1f)) { Text("Background") }
             }
-            Button(
-                onClick = vm::allOff,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF424242), contentColor = Color.White),
-            ) { Text("All off") }
+        }
+    }
+}
+
+@Composable
+private fun LightsCard(vm: TreeViewModel) {
+    val lightsOn by vm.lightsOn.collectAsState()
+    val state by vm.connection.state.collectAsState()
+    val connected = state is TreeConnection.State.Connected
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Lights", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (lightsOn) "On" else "Off – colors are kept for when you turn them back on",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = lightsOn, onCheckedChange = vm::setLights, enabled = connected)
         }
     }
 }
