@@ -13,6 +13,7 @@
 #include "lwip/dns.h"
 
 #include "neo_tree_config.hpp"
+#include "neo_tree_event_log.hpp"
 
 // ---- Persisted credentials ----
 
@@ -211,23 +212,79 @@ static void trace_dhcp()
     }
 }
 
-void wifi_print_trace()
+void wifi_format_trace(char *out, size_t cap)
 {
-    char line[400];
-    int n = snprintf(line, sizeof(line), "wifi trace (ms since boot):");
-    for (uint32_t i = 0; i < trace_len && n < (int)sizeof(line) - 16; i++)
+    int n = 0;
+    out[0] = '\0';
+    for (uint32_t i = 0; i < trace_len && n < (int)cap - 16; i++)
     {
         const trace_entry &e = trace[i];
         if (e.kind == 'D')
         {
-            n += snprintf(line + n, sizeof(line) - n, " %u:D%d/%u", (unsigned)e.t_ms, e.a, e.b);
+            n += snprintf(out + n, cap - n, "%s%u:D%d/%u", i ? " " : "", (unsigned)e.t_ms, e.a, e.b);
         }
         else
         {
-            n += snprintf(line + n, sizeof(line) - n, " %u:%c%d", (unsigned)e.t_ms, e.kind, e.a);
+            n += snprintf(out + n, cap - n, "%s%u:%c%d", i ? " " : "", (unsigned)e.t_ms, e.kind, e.a);
         }
     }
-    printf("%s\n", line);
+}
+
+void wifi_print_trace()
+{
+    char line[400];
+    wifi_format_trace(line, sizeof(line));
+    printf("wifi trace (ms since boot): %s\n", line);
+}
+
+// ---- cached metrics for the status snapshot ----
+// Refreshed from wifi_poll() once a second, so the status builder (which runs
+// in lwIP IRQ context for network requests) never has to talk to the WiFi
+// chip itself.
+static wifi_snapshot_t snapshot = {};
+static uint64_t last_snapshot_us = 0;
+static const uint64_t snapshot_interval_us = 1'000'000;
+
+static void refresh_snapshot(uint64_t now_us, int status)
+{
+    wifi_snapshot_t s = {};
+    s.configured = configured;
+    s.link_status = status;
+    s.link_name = link_status_name(status);
+    snprintf(s.ssid, sizeof(s.ssid), "%s", active.ssid);
+    s.connects = connect_count;
+    s.attempts = attempts_since_up;
+    cyw43_wifi_get_mac(&cyw43_state, CYW43_ITF_STA, s.mac);
+    if (status == CYW43_LINK_UP)
+    {
+        s.up_for_s = (uint32_t)((now_us - link_up_since_us) / 1'000'000);
+        cyw43_wifi_get_rssi(&cyw43_state, &s.rssi);
+        cyw43_wifi_get_bssid(&cyw43_state, s.bssid);
+        uint32_t channel_info[3] = {};
+        cyw43_ioctl(&cyw43_state, CYW43_IOCTL_GET_CHANNEL, sizeof(channel_info), (uint8_t *)channel_info,
+                    CYW43_ITF_STA);
+        s.channel = channel_info[0];
+        cyw43_arch_lwip_begin();
+        const struct netif *n = &cyw43_state.netif[CYW43_ITF_STA];
+        snprintf(s.ip, sizeof(s.ip), "%s", ip4addr_ntoa(netif_ip4_addr(n)));
+        snprintf(s.gateway, sizeof(s.gateway), "%s", ip4addr_ntoa(netif_ip4_gw(n)));
+        snprintf(s.dns, sizeof(s.dns), "%s", ipaddr_ntoa(dns_getserver(0)));
+        cyw43_arch_lwip_end();
+    }
+    snapshot = s;
+    last_snapshot_us = now_us;
+}
+
+wifi_snapshot_t wifi_snapshot()
+{
+    return snapshot;
+}
+
+static volatile bool reconnect_requested = false;
+
+void wifi_request_reconnect()
+{
+    reconnect_requested = true;
 }
 
 static void begin_connect()
@@ -236,15 +293,15 @@ static void begin_connect()
     attempts_since_up++;
     trace_add('C', attempts_since_up);
     bool open_network = (active.password_len == 0);
-    printf("wifi: connecting to '%s' (%s, attempt %u)\n", active.ssid, open_network ? "open" : "WPA2",
-           (unsigned)attempts_since_up);
+    event_logf("wifi connecting to '%s' (%s, attempt %u)", active.ssid, open_network ? "open" : "WPA2",
+               (unsigned)attempts_since_up);
     int err = cyw43_arch_wifi_connect_async(active.ssid, open_network ? nullptr : active.password,
                                             open_network ? CYW43_AUTH_OPEN : CYW43_AUTH_WPA2_AES_PSK);
     connect_in_progress = (err == 0);
     if (err != 0)
     {
-        printf("wifi: connect to '%s' failed to start (err=%d), retrying in %us\n", active.ssid, err,
-               (unsigned)(retry_delay_us() / 1000000));
+        event_logf("wifi connect failed to start (err=%d), retrying in %us", err,
+                   (unsigned)(retry_delay_us() / 1000000));
         retry_not_before_us = connect_started_us + retry_delay_us();
     }
 }
@@ -260,7 +317,7 @@ void wifi_start()
     load_credentials();
     if (!configured)
     {
-        printf("wifi: no credentials stored (provision with tools/set_wifi.py), staying offline\n");
+        event_logf("wifi: no credentials stored (provision with tools/set_wifi.py)");
         return;
     }
     begin_connect();
@@ -276,18 +333,36 @@ void wifi_poll()
         connect_in_progress = false;
         last_link_status = CYW43_LINK_DOWN;
         attempts_since_up = 0;
-        printf("wifi: credentials changed%s\n", configured ? "" : ", now offline");
+        event_logf("wifi credentials changed%s", configured ? "" : ", now offline");
         if (configured)
         {
             begin_connect();
         }
     }
-    if (!configured)
+    if (reconnect_requested && configured)
     {
-        return;
+        reconnect_requested = false;
+        event_logf("wifi reconnect requested - leaving '%s'", active.ssid);
+        cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+        connect_in_progress = false;
+        last_link_status = CYW43_LINK_DOWN;
+        attempts_since_up = 0;
+        begin_connect();
     }
     uint64_t now_us = time_us_64();
+    if (!configured)
+    {
+        if (now_us - last_snapshot_us >= snapshot_interval_us)
+        {
+            refresh_snapshot(now_us, CYW43_LINK_DOWN);
+        }
+        return;
+    }
     int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+    if (status != last_link_status || now_us - last_snapshot_us >= snapshot_interval_us)
+    {
+        refresh_snapshot(now_us, status);
+    }
     if (status != last_link_status)
     {
         trace_add('L', status);
@@ -320,36 +395,41 @@ void wifi_poll()
         // Re-assert power-save off on every join, not just at start - latency
         // was seen back at power-save levels after the router dropped us.
         cyw43_wifi_pm(&cyw43_state, CYW43_NONE_PM);
-        print_connected_report((uint32_t)((now_us - connect_started_us) / 1000));
+        uint32_t connect_ms = (uint32_t)((now_us - connect_started_us) / 1000);
+        print_connected_report(connect_ms);
+        refresh_snapshot(now_us, status);
+        // Fits event_text_max: the SSID is in the status snapshot anyway.
+        event_logf("wifi up: %s ch %u rssi %d in %ums (attempt %u)", snapshot.ip, (unsigned)snapshot.channel,
+                   (int)snapshot.rssi, (unsigned)connect_ms, (unsigned)attempts_since_up);
         attempts_since_up = 0;
     }
     else if (status != CYW43_LINK_UP && last_link_status == CYW43_LINK_UP)
     {
-        printf("wifi: lost connection to '%s' after %us up (now: %s), reconnecting\n", active.ssid,
-               (unsigned)((now_us - link_up_since_us) / 1'000'000), link_status_name(status));
+        event_logf("wifi lost after %us up (now: %s), reconnecting",
+                   (unsigned)((now_us - link_up_since_us) / 1000000), link_status_name(status));
         connect_in_progress = false;
     }
     else if (connect_in_progress && status < 0)
     {
         // FAIL/NONET/BADAUTH are terminal for this attempt.
-        printf("wifi: connect to '%s' failed after %ums: %s, retrying in %us\n", active.ssid,
-               (unsigned)((now_us - connect_started_us) / 1000), link_status_name(status),
-               (unsigned)(retry_delay_us() / 1000000));
+        event_logf("wifi connect failed after %ums: %s, retrying in %us",
+                   (unsigned)((now_us - connect_started_us) / 1000), link_status_name(status),
+                   (unsigned)(retry_delay_us() / 1000000));
         connect_in_progress = false;
         retry_not_before_us = now_us + retry_delay_us();
     }
     else if (connect_in_progress && status == CYW43_LINK_JOIN && (now_us - connect_started_us) > join_timeout_us)
     {
-        printf("wifi: join to '%s' stuck after %us, retrying in %us\n", active.ssid,
-               (unsigned)(join_timeout_us / 1000000), (unsigned)(retry_delay_us() / 1000000));
+        event_logf("wifi join stuck after %us, retrying in %us", (unsigned)(join_timeout_us / 1000000),
+                   (unsigned)(retry_delay_us() / 1000000));
         connect_in_progress = false;
         retry_not_before_us = now_us + retry_delay_us();
     }
     else if (connect_in_progress && (now_us - connect_started_us) > connect_timeout_us)
     {
-        printf("wifi: connect to '%s' timed out after %us (stuck at: %s), retrying in %us\n", active.ssid,
-               (unsigned)(connect_timeout_us / 1'000'000), link_status_name(status),
-               (unsigned)(retry_delay_us() / 1000000));
+        event_logf("wifi connect timed out after %us (stuck at: %s), retrying in %us",
+                   (unsigned)(connect_timeout_us / 1000000), link_status_name(status),
+                   (unsigned)(retry_delay_us() / 1000000));
         connect_in_progress = false;
         retry_not_before_us = now_us + retry_delay_us();
     }
@@ -444,6 +524,7 @@ void wifi_handle_cred_commit(const wifi_cred_commit_t *commit)
         clear_staged();
         credentials_changed = true;
         printf("WIFI_CRED cleared\n");
+        event_logf("wifi credentials cleared over USB");
         return;
     }
     if (commit->ssid_len != staged_received[0] || commit->password_len != staged_received[1])
@@ -474,4 +555,5 @@ void wifi_handle_cred_commit(const wifi_cred_commit_t *commit)
     }
     credentials_changed = true;
     printf("WIFI_CRED saved ssid_len=%u password_len=%u\n", commit->ssid_len, commit->password_len);
+    event_logf("wifi credentials saved over USB");
 }

@@ -10,6 +10,7 @@ Each write() is one command message. It is sent with a uint16 little-endian
 length prefix and, by default, waits for the tree's ACK (raising on a
 rejection). Protocol details: firmware/include/neo_tree_net_server.hpp.
 """
+import json
 import socket
 import struct
 import time
@@ -19,6 +20,11 @@ PROTOCOL_VERSION = 1
 
 REPLY_ACK = 0x80
 REPLY_HELLO = 0x81
+REPLY_STATUS = 0x82
+
+STATUS_REQUEST_MSG_TYPE = 18
+REBOOT_MSG_TYPE = 19
+WIFI_RECONNECT_MSG_TYPE = 20
 
 STATUS_NAMES = {
     0: "QUEUED",
@@ -36,6 +42,7 @@ class NeotreeNetError(Exception):
 class NeotreeNet:
     def __init__(self, host, port=DEFAULT_PORT, timeout=3.0, wait_for_ack=True):
         self.wait_for_ack = wait_for_ack
+        self.last_status = None
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         hello = self.read_frame()
@@ -64,11 +71,26 @@ class NeotreeNet:
         self.sock.sendall(struct.pack("<H", len(payload)) + payload)
 
     def read_ack(self):
-        """Returns (command_type, status_name)."""
-        frame = self.read_frame()
-        if len(frame) != 3 or frame[0] != REPLY_ACK:
-            raise NeotreeNetError(f"expected ACK, got {frame!r}")
-        return frame[1], STATUS_NAMES.get(frame[2], f"status {frame[2]}")
+        """Returns (command_type, status_name). A STATUS frame arriving first
+        (the reply to STATUS_REQUEST, sent just before its ACK) is kept in
+        self.last_status."""
+        while True:
+            frame = self.read_frame()
+            if frame and frame[0] == REPLY_STATUS:
+                self.last_status = json.loads(frame[1:].decode("utf-8", errors="replace"))
+                continue
+            if len(frame) != 3 or frame[0] != REPLY_ACK:
+                raise NeotreeNetError(f"expected ACK, got {frame!r}")
+            return frame[1], STATUS_NAMES.get(frame[2], f"status {frame[2]}")
+
+    def get_status(self):
+        """The tree's JSON snapshot of its internals (see
+        firmware/include/neo_tree_status.hpp), as a dict."""
+        self.last_status = None
+        self.write(bytes([STATUS_REQUEST_MSG_TYPE]))
+        if self.last_status is None:
+            raise NeotreeNetError("no STATUS reply (tree out of memory? try again)")
+        return self.last_status
 
     def write(self, payload, queue_full_retries=20, queue_full_backoff_s=0.005):
         """pyserial-compatible: send one command message.

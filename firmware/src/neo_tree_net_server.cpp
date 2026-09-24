@@ -12,6 +12,8 @@
 
 #include "neo_tree_command_queue.hpp"
 #include "neo_tree_protocol.hpp"
+#include "neo_tree_status.hpp"
+#include "neo_tree_event_log.hpp"
 
 // Everything below except net_server_start()/net_server_poll() runs as lwIP
 // callbacks, which in threadsafe_background mode execute in a low-priority
@@ -216,6 +218,25 @@ static err_t drop_overflowed_client(client_slot *c)
     return ERR_ABRT;
 }
 
+// Answers a STATUS_REQUEST with a STATUS frame ([len][0x82][JSON]) right here
+// on core1 - it doesn't touch core0's state machine, so it isn't queued. One
+// all-or-nothing tcp_write so a partial frame can never corrupt the stream;
+// if it can't go now it's dropped (the client polls again), and skipped
+// while ACKs are backlogged so it can't starve them.
+static void send_status(client_slot *c)
+{
+    static uint8_t frame[3 + status_json_max];   // static: IRQ context, one core
+    size_t json_len = status_build_json(reinterpret_cast<char *>(frame + 3), status_json_max);
+    size_t payload_len = 1 + json_len;
+    frame[0] = payload_len & 0xFF;
+    frame[1] = payload_len >> 8;
+    frame[2] = static_cast<uint8_t>(net_reply_type::STATUS);
+    if (c->pending_len > 0 || tcp_write(c->pcb, frame, 2 + payload_len, TCP_WRITE_FLAG_COPY) != ERR_OK)
+    {
+        diag.status_dropped = diag.status_dropped + 1;
+    }
+}
+
 static net_status handle_command(client_slot *c)
 {
     uint8_t type = c->msg[0];
@@ -231,6 +252,11 @@ static net_status handle_command(client_slot *c)
     if (!protocol_msg_len_ok(c->msg, c->msg_len))
     {
         return net_status::BAD_LENGTH;
+    }
+    if (type == static_cast<uint8_t>(serial_msg_type::STATUS_REQUEST))
+    {
+        send_status(c);   // then the usual ACK, so every command still gets one
+        return net_status::QUEUED;
     }
     if (!command_queue_push(command_source::network, slot_index(c) + 1, c->msg, c->msg_len))
     {
@@ -481,11 +507,11 @@ void net_server_poll()
         }
         if (e.type == net_event_type::ERRORED)
         {
-            printf("net: client slot %u %s\n", e.slot, what);
+            event_logf("net: client slot %u %s", e.slot, what);
         }
         else
         {
-            printf("net: client %s:%u slot %u %s\n", ipaddr_ntoa(&e.addr), e.port, e.slot, what);
+            event_logf("net: client %s:%u slot %u %s", ipaddr_ntoa(&e.addr), e.port, e.slot, what);
         }
         event_tail = (event_tail + 1) % event_log_size;
     }
@@ -516,6 +542,7 @@ net_server_diag_t net_server_diag()
     d.last_write_error = diag.last_write_error;
     d.writes_deferred = diag.writes_deferred;
     d.overflow_closes = diag.overflow_closes;
+    d.status_dropped = diag.status_dropped;
     return d;
 }
 

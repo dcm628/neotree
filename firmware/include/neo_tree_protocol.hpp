@@ -49,10 +49,17 @@ enum class serial_msg_type : uint8_t
     // 10ns units][frame rate fps, 0 = unchanged] - output tuning
     // (led_output_tuning_t + the frame rate target). Not persisted.
     LED_OUTPUT_TUNING,
+    // [type]: JSON snapshot of the tree's internals (neo_tree_status.hpp) -
+    // over the network a STATUS reply frame, over USB serial a "status:" line.
+    STATUS_REQUEST,
+    // [type]: reboot via the watchdog (~250ms after, so the ACK gets out).
+    REBOOT,
+    // [type]: leave the WiFi network and rejoin.
+    WIFI_RECONNECT,
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::LED_OUTPUT_TUNING) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::WIFI_RECONNECT) + 1;
 
 // Set by TREE_OUTPUT (core0), read by the LED output path and reported to
 // network clients in HELLO (core1).

@@ -15,6 +15,8 @@
 //          flags bit 0: lights on (TREE_OUTPUT). Older clients that only
 //          read the first two bytes are unaffected.
 //   ACK    [0x80][command type][net_status]    one per received command
+//   STATUS [0x82][JSON]                        reply to STATUS_REQUEST (neo_tree_status.hpp),
+//                                              sent just before that command's ACK
 // ACK means "accepted onto the command queue", not "already applied".
 
 const uint16_t net_server_port = 7777;
@@ -26,6 +28,7 @@ enum class net_reply_type : uint8_t
 {
     ACK = 0x80,
     HELLO = 0x81,
+    STATUS = 0x82,   // [0x82][JSON] - reply to STATUS_REQUEST, sent before its ACK
 };
 
 enum class net_status : uint8_t
@@ -57,6 +60,7 @@ struct net_server_diag_t
     uint32_t write_failures;    // tcp_write failed with something other than ERR_MEM - frame dropped
     uint32_t writes_deferred;   // frames queued because lwIP was out of memory (retried, not lost)
     uint32_t overflow_closes;   // clients closed because their reply backlog overflowed
+    uint32_t status_dropped;    // STATUS replies not sent (lwIP out of memory, or replies backlogged)
     uint32_t output_failures;   // tcp_output failed
     int32_t last_write_error;   // lwIP err_t of the most recent write failure
 };

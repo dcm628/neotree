@@ -5,7 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import com.neotree.app.ui.MainScreen
+import com.neotree.app.ui.AppRoot
 import com.neotree.app.ui.theme.NeoTreeTheme
 
 class MainActivity : ComponentActivity() {
@@ -16,7 +16,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             NeoTreeTheme {
-                MainScreen(vm)
+                AppRoot(vm)
             }
         }
     }

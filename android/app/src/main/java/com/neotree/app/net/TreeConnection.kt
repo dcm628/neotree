@@ -8,6 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,12 +19,24 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import org.json.JSONObject
+
+/** A STATUS reply: the tree's JSON snapshot (firmware neo_tree_status.hpp). */
+data class TreeStatus(val json: JSONObject, val receivedAtMs: Long)
+
+/** One line of the app-side debug log: a command sent, or a connection event. */
+data class LogEntry(
+    val timeMs: Long,
+    val text: String,
+    val ok: Boolean,
+)
 
 /**
  * One TCP connection to the tree's command server
  * (firmware/include/neo_tree_net_server.hpp). Frames are
  * [uint16 LE length][payload] both ways: the tree greets with HELLO, then
- * answers every command with an ACK carrying an AckStatus.
+ * answers every command with an ACK carrying an AckStatus. A STATUS_REQUEST
+ * also gets a STATUS frame, just before its ACK.
  */
 class TreeConnection(private val scope: CoroutineScope) {
 
@@ -37,6 +50,19 @@ class TreeConnection(private val scope: CoroutineScope) {
 
     private val _state = MutableStateFlow<State>(State.Disconnected)
     val state: StateFlow<State> = _state.asStateFlow()
+
+    private val _status = MutableStateFlow<TreeStatus?>(null)
+    /** Latest STATUS reply (null until one arrives). */
+    val status: StateFlow<TreeStatus?> = _status.asStateFlow()
+
+    private val _log = MutableStateFlow<List<LogEntry>>(emptyList())
+    /** Recent commands and connection events, newest first. */
+    val log: StateFlow<List<LogEntry>> = _log.asStateFlow()
+
+    private fun log(text: String, ok: Boolean = true) {
+        // update{} is atomic - sends, the reader and connects all log from different threads.
+        _log.update { (listOf(LogEntry(System.currentTimeMillis(), text, ok)) + it).take(LOG_MAX) }
+    }
 
     private var socket: Socket? = null
     private var output: OutputStream? = null
@@ -74,9 +100,12 @@ class TreeConnection(private val scope: CoroutineScope) {
                 readerJob = scope.launch(Dispatchers.IO) { readLoop(s, input, host) }
                 val lightsOn = if (hello.size >= 3) (hello[2].toInt() and TreeProtocol.HELLO_FLAG_OUTPUT_ON) != 0 else null
                 _state.value = State.Connected(host, port, lightsOn)
+                log("connected to $host:$port (protocol v$version)")
                 true
             } catch (e: IOException) {
-                _state.value = State.Failed(host, e.message ?: e.javaClass.simpleName)
+                val reason = e.message ?: e.javaClass.simpleName
+                _state.value = State.Failed(host, reason)
+                log("connect to $host failed: $reason", ok = false)
                 false
             }
         }
@@ -88,25 +117,42 @@ class TreeConnection(private val scope: CoroutineScope) {
      */
     suspend fun send(message: ByteArray): AckStatus? = sendLock.withLock {
         withContext(Dispatchers.IO) {
+            val name = TreeProtocol.typeName(message.firstOrNull()?.toInt()?.and(0xFF) ?: -1)
+            val started = System.nanoTime()
+            fun rttMs() = (System.nanoTime() - started) / 1_000_000
             repeat(QUEUE_FULL_RETRIES + 1) { attempt ->
-                val out = output ?: return@withContext null
+                val out = output ?: run {
+                    log("$name (${message.size}B): not connected", ok = false)
+                    return@withContext null
+                }
                 try {
                     val len = message.size
                     out.write(byteArrayOf((len and 0xFF).toByte(), (len shr 8).toByte()) + message)
                     out.flush()
                 } catch (e: IOException) {
+                    log("$name (${message.size}B): send failed", ok = false)
                     fail("send failed: ${e.message}")
                     return@withContext null
                 }
                 val ack = withTimeoutOrNull(ACK_TIMEOUT_MS) { acks.receive() }
                 if (ack == null) {
+                    log("$name (${message.size}B): no ACK in ${ACK_TIMEOUT_MS}ms", ok = false)
                     fail("tree stopped answering")
                     return@withContext null
                 }
                 val status = ack.second
-                if (status != AckStatus.QUEUE_FULL) return@withContext status
+                if (status != AckStatus.QUEUE_FULL) {
+                    // The debug page polls STATUS every second - only log those when they fail.
+                    val routinePoll = name == "STATUS" && status == AckStatus.QUEUED
+                    if (!routinePoll) {
+                        val retries = if (attempt > 0) ", $attempt queue-full retries" else ""
+                        log("$name (${message.size}B): $status in ${rttMs()}ms$retries", ok = status == AckStatus.QUEUED)
+                    }
+                    return@withContext status
+                }
                 delay(5L * (attempt + 1))
             }
+            log("$name (${message.size}B): QUEUE_FULL after $QUEUE_FULL_RETRIES retries", ok = false)
             AckStatus.QUEUE_FULL
         }
     }
@@ -124,20 +170,27 @@ class TreeConnection(private val scope: CoroutineScope) {
         val host = (state.value as? State.Connected)?.host ?: return
         close()
         _state.value = State.Failed(host, reason)
+        log("connection to $host dropped: $reason", ok = false)
     }
 
     private suspend fun readLoop(s: Socket, input: InputStream, host: String) {
         try {
             while (true) {
                 val frame = readFrame(input)
-                if (frame.size == 3 && (frame[0].toInt() and 0xFF) == TreeProtocol.REPLY_ACK) {
+                val type = frame.firstOrNull()?.toInt()?.and(0xFF)
+                if (frame.size == 3 && type == TreeProtocol.REPLY_ACK) {
                     acks.send((frame[1].toInt() and 0xFF) to AckStatus.from(frame[2].toInt() and 0xFF))
+                } else if (type == TreeProtocol.REPLY_STATUS) {
+                    runCatching { JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8)) }
+                        .onSuccess { _status.value = TreeStatus(it, System.currentTimeMillis()) }
+                        .onFailure { log("STATUS reply wasn't valid JSON (${frame.size}B)", ok = false) }
                 }
             }
         } catch (e: IOException) {
             if (socket === s) {
                 close()
                 _state.value = State.Failed(host, "connection lost")
+                log("connection to $host lost", ok = false)
             }
         }
     }
@@ -164,5 +217,6 @@ class TreeConnection(private val scope: CoroutineScope) {
         const val HELLO_TIMEOUT_MS = 3000
         const val ACK_TIMEOUT_MS = 2000L
         const val QUEUE_FULL_RETRIES = 20
+        const val LOG_MAX = 150
     }
 }

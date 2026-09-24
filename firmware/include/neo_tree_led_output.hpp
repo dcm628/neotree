@@ -80,9 +80,14 @@ struct led_output_stats_t
     // DMA wrote into a full FIFO (a dropped word).
     uint32_t underflows[led_output_num_strings];
     uint32_t overflows[led_output_num_strings];
+    // Same, cumulative since boot (never reset).
+    uint32_t underflows_total[led_output_num_strings];
+    uint32_t overflows_total[led_output_num_strings];
 };
 // Returns the stats and resets the maxima, so each call reports the worst
 // case since the previous one (the heartbeat calls it every 5s).
 led_output_stats_t led_output_take_stats();
+// Same stats without resetting the per-window maxima (for the status snapshot).
+led_output_stats_t led_output_peek_stats();
 
 #endif

@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -19,7 +18,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -27,7 +25,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RangeSlider
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -58,33 +55,31 @@ private val ANGLE_RANGE = 0f..360f
 // Compact buttons for the half-width picker cards.
 private val SMALL_BUTTON_PADDING = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
 
+/** The home page: lights, color pickers, region, single LED. */
 @Composable
-fun MainScreen(vm: TreeViewModel) {
-    Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Header(vm)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BackgroundCard(vm, Modifier.weight(1f))
-                PaintCard(vm, Modifier.weight(1f))
-            }
-            RegionCard(vm)
-            AdvancedCard(vm)
+fun HomeScreen(vm: TreeViewModel, contentPadding: PaddingValues, onOpenDebug: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .padding(contentPadding)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Header(vm, onOpenDebug)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BackgroundCard(vm, Modifier.weight(1f))
+            PaintCard(vm, Modifier.weight(1f))
         }
+        RegionCard(vm)
+        AdvancedCard(vm)
     }
 }
 
-/** NeoTree title, compact connection status (tap for details), lights switch. */
+/** NeoTree title, compact connection status (tap for the debug page), lights switch. */
 @Composable
-private fun Header(vm: TreeViewModel) {
+private fun Header(vm: TreeViewModel, onOpenDebug: () -> Unit) {
     val state by vm.connection.state.collectAsState()
     val lightsOn by vm.lightsOn.collectAsState()
-    var showDetails by rememberSaveable { mutableStateOf(false) }
 
     val (dot, label) = when (state) {
         is TreeConnection.State.Connected -> Color(0xFF2E7D32) to "Connected"
@@ -98,7 +93,7 @@ private fun Header(vm: TreeViewModel) {
         Row(
             Modifier
                 .clip(RoundedCornerShape(12.dp))
-                .clickable { showDetails = true }
+                .clickable(onClick = onOpenDebug)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -116,50 +111,6 @@ private fun Header(vm: TreeViewModel) {
             enabled = state is TreeConnection.State.Connected,
         )
     }
-    if (showDetails) ConnectionDialog(vm, onDismiss = { showDetails = false })
-}
-
-@Composable
-private fun ConnectionDialog(vm: TreeViewModel, onDismiss: () -> Unit) {
-    val state by vm.connection.state.collectAsState()
-    val status by vm.status.collectAsState()
-    val manualHost by vm.manualHost.collectAsState()
-    var hostText by rememberSaveable(manualHost) { mutableStateOf(manualHost) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Connection") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    when (val s = state) {
-                        is TreeConnection.State.Connected -> "Connected to ${s.host}:${s.port}"
-                        is TreeConnection.State.Connecting -> "Connecting to ${s.host}…"
-                        is TreeConnection.State.Failed -> "${s.host}: ${s.reason}"
-                        TreeConnection.State.Disconnected -> "Not connected"
-                    }
-                )
-                if (status.isNotEmpty()) {
-                    Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                OutlinedTextField(
-                    value = hostText,
-                    onValueChange = { hostText = it },
-                    label = { Text("Address (blank = find automatically)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                vm.setManualHost(hostText)
-                vm.reconnectNow()
-                onDismiss()
-            }) { Text("Reconnect") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-    )
 }
 
 @Composable

@@ -10,6 +10,7 @@ import com.neotree.app.net.Rgb
 import com.neotree.app.net.TreeConnection
 import com.neotree.app.net.TreeDiscovery
 import com.neotree.app.net.TreeProtocol
+import com.neotree.app.net.TreeStatus
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -105,6 +106,9 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
                 if (s is TreeConnection.State.Connected && s.lightsOn != null) _lightsOn.value = s.lightsOn
             }
         }
+        viewModelScope.launch {
+            connection.status.collect { trackRates(it) }
+        }
     }
 
     // ---- connection ----
@@ -115,11 +119,13 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         if (connectJob?.isActive != true) {
             connectJob = viewModelScope.launch { connectLoop() }
         }
+        updatePolling()
     }
 
     /** Called when the app is backgrounded: free this phone's slot on the tree. */
     fun onBackground() {
         foreground = false
+        updatePolling()
         connectJob?.cancel()
         connection.close()
     }
@@ -270,6 +276,79 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         sendNow("LED $index cleared", TreeProtocol.singleLed(index, Rgb.BLACK))
     }
 
+    // ---- debug page ----
+
+    /** Rates worked out from the change in the tree's counters between two STATUS replies. */
+    data class DebugRates(val fps: Double, val core1LoopsPerSec: Double)
+
+    private val _debugRates = MutableStateFlow<DebugRates?>(null)
+    val debugRates: StateFlow<DebugRates?> = _debugRates.asStateFlow()
+    private var previousStatus: TreeStatus? = null
+    private var debugVisible = false
+    private var pollJob: Job? = null
+
+    private fun trackRates(s: TreeStatus?) {
+        val prev = previousStatus
+        previousStatus = s
+        if (s == null || prev == null) return
+        val dtSec = (s.json.optLong("uptime_ms") - prev.json.optLong("uptime_ms")) / 1000.0
+        // A reboot resets the counters (uptime goes backwards) - wait for the next pair.
+        if (dtSec <= 0.0) return
+        val frames = s.json.optJSONObject("led")?.optLong("frames") ?: return
+        val prevFrames = prev.json.optJSONObject("led")?.optLong("frames") ?: return
+        val loops = s.json.optLong("core1_loops") - prev.json.optLong("core1_loops")
+        _debugRates.value = DebugRates((frames - prevFrames) / dtSec, loops / dtSec)
+    }
+
+    /** The debug page polls STATUS once a second while it's on screen (and the app is). */
+    fun setDebugVisible(visible: Boolean) {
+        debugVisible = visible
+        updatePolling()
+    }
+
+    private fun updatePolling() {
+        if (debugVisible && foreground) {
+            if (pollJob?.isActive != true) {
+                pollJob = viewModelScope.launch {
+                    while (true) {
+                        if (connection.state.value is TreeConnection.State.Connected) {
+                            connection.send(TreeProtocol.statusRequest())
+                        }
+                        delay(STATUS_POLL_MS)
+                    }
+                }
+            }
+        } else {
+            pollJob?.cancel()
+            pollJob = null
+        }
+    }
+
+    fun ping() {
+        viewModelScope.launch {
+            val started = System.nanoTime()
+            val status = connection.send(TreeProtocol.noop())
+            val ms = (System.nanoTime() - started) / 1_000_000
+            _status.value = if (status == AckStatus.QUEUED) "Ping: ${ms}ms round trip" else "Ping failed"
+        }
+    }
+
+    fun rebootTree() = sendNow("Reboot", TreeProtocol.reboot())
+    fun reconnectTreeWifi() = sendNow("WiFi reconnect", TreeProtocol.wifiReconnect())
+
+    /** Lights strings 1-4 dim red/green/blue/white - checks string order, shows glitches. */
+    fun runStringTest() {
+        if (lightsOffBlocks()) return
+        viewModelScope.launch {
+            val messages = TreeProtocol.stringTestPattern()
+            var ok = 0
+            for (m in messages) {
+                if (connection.send(m) == AckStatus.QUEUED) ok++ else break
+            }
+            _status.value = "String test: $ok of ${messages.size} messages sent"
+        }
+    }
+
     // ---- helpers ----
 
     private fun sendNow(label: String, message: ByteArray) {
@@ -302,6 +381,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val DISCOVERY_TIMEOUT_MS = 4000L
+        const val STATUS_POLL_MS = 1000L
         // Radius is a uint16 on the wire; putShort keeps the bit pattern, so
         // 0xFFFF arrives as 65535 = "any radius".
         const val UNLIMITED_RADIUS_MM = 0xFFFF

@@ -26,6 +26,32 @@ const char *wifi_status_str();
 // Prints the boot connection trace (connect attempts, link and DHCP state
 // changes, timestamped) - for diagnosing slow connects after power-up.
 void wifi_print_trace();
+// Same trace as one string (no prefix), for the status snapshot.
+void wifi_format_trace(char *out, size_t cap);
+
+// WiFi metrics cached by wifi_poll() once a second - safe to read from any
+// core or IRQ context (a torn read is possible but harmless for diagnostics).
+struct wifi_snapshot_t
+{
+    bool configured;
+    int link_status;          // CYW43_LINK_*
+    const char *link_name;
+    char ssid[33];
+    char ip[16];
+    char gateway[16];
+    char dns[16];
+    int32_t rssi;             // dBm, when up
+    uint32_t channel;
+    uint8_t bssid[6];         // the access point
+    uint8_t mac[6];           // this board
+    uint32_t connects;        // successful connects since boot
+    uint32_t attempts;        // attempts since the last successful connect
+    uint32_t up_for_s;
+};
+wifi_snapshot_t wifi_snapshot();
+
+// Any core: ask core1 to leave the network and rejoin (debug control).
+void wifi_request_reconnect();
 
 // ---- core0 (serial message handlers, called from process_msg()) ----
 

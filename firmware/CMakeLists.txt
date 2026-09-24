@@ -64,6 +64,8 @@ target_sources(neo_tree PRIVATE
                 src/neo_tree_command_queue.cpp
                 src/neo_tree_net_server.cpp
                 src/neo_tree_led_output.cpp
+                src/neo_tree_event_log.cpp
+                src/neo_tree_status.cpp
                 )
 
 # Project headers live in include/
@@ -87,6 +89,7 @@ target_compile_options(neo_tree PRIVATE
 target_link_libraries(neo_tree PRIVATE    pico_stdlib
                                             hardware_pio
                                             hardware_dma
+                                            hardware_watchdog
                                             pico_multicore
                                             pico_cyw43_arch_lwip_threadsafe_background
                                             pico_lwip_mdns

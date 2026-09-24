@@ -9,6 +9,7 @@
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
 #include "hardware/sync.h"
+#include "hardware/watchdog.h"
 #include "pico/multicore.h"
 #include "pico/cyw43_arch.h"
 // my code files
@@ -20,6 +21,8 @@
 #include "neo_tree_protocol.hpp"
 #include "neo_tree_net_server.hpp"
 #include "neo_tree_led_output.hpp"
+#include "neo_tree_event_log.hpp"
+#include "neo_tree_status.hpp"
 
 mutex core0_data_update;
 
@@ -29,6 +32,8 @@ volatile bool tree_output_enabled = true;
 // adjustable live with LED_OUTPUT_TUNING. Above ~107 frames just run back to
 // back, limited by the output itself (~9.3ms per frame).
 volatile uint32_t target_loop_rate = NEOTREE_FRAME_RATE;
+// core1 main-loop iterations, for the status snapshot (its rate shows core1 load).
+volatile uint32_t core1_loop_counter = 0;
 
 uint8_t sleep_val = 25;
 // Was 40 - too small to hold a COLOR_GROUP_RGB_UPDATE message (up to
@@ -178,6 +183,10 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
         return len == 2;
     case serial_msg_type::LED_OUTPUT_TUNING:
         return len == 6;
+    case serial_msg_type::STATUS_REQUEST:
+    case serial_msg_type::REBOOT:
+    case serial_msg_type::WIFI_RECONNECT:
+        return len == 1;
     default:
         // Includes RUN_SWEEP_SEQUENCE, which process_msg() never implemented.
         return false;
@@ -366,7 +375,7 @@ void process_msg()
         break;
     case serial_msg_type::TREE_OUTPUT:
         tree_output_enabled = (serial_buf_copy[1] != 0);
-        printf("tree output %s\n", tree_output_enabled ? "ON" : "OFF");
+        event_logf("tree output %s", tree_output_enabled ? "ON" : "OFF");
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
@@ -374,7 +383,7 @@ void process_msg()
         if (serial_buf_copy[1] < led_output_mode_count)
         {
             led_output_set_mode(static_cast<led_output_mode>(serial_buf_copy[1]));
-            printf("led output mode %u\n", serial_buf_copy[1]);
+            event_logf("led output mode %u", serial_buf_copy[1]);
         }
         else
         {
@@ -396,14 +405,38 @@ void process_msg()
             target_loop_rate = serial_buf_copy[4];
         }
         static const unsigned drive_ma[4] = {2, 4, 8, 12};
-        printf("led output tuning: slew %s drive %umA stagger %uns target %u fps phases %u %u %u %u\n",
-               t.fast_slew ? "fast" : "slow", drive_ma[t.drive_strength], (unsigned)t.stagger_ns,
-               (unsigned)target_loop_rate, t.phase_map & 3u, (t.phase_map >> 2) & 3u, (t.phase_map >> 4) & 3u,
-               (t.phase_map >> 6) & 3u);
+        event_logf("output tuning: %s slew %umA stagger %uns %ufps phases %u%u%u%u",
+                   t.fast_slew ? "fast" : "slow", drive_ma[t.drive_strength], (unsigned)t.stagger_ns,
+                   (unsigned)target_loop_rate, t.phase_map & 3u, (t.phase_map >> 2) & 3u, (t.phase_map >> 4) & 3u,
+                   (t.phase_map >> 6) & 3u);
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
     }
+    case serial_msg_type::STATUS_REQUEST:
+    {
+        // Over the network this is answered by the server on core1; this is
+        // the USB serial path.
+        static char status[status_json_max];   // static: keep it off core0's stack
+        status_build_json(status, sizeof(status));
+        printf("status: %s\n", status);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    }
+    case serial_msg_type::REBOOT:
+        // The network ACK went out when the command was queued; the delay
+        // gives lwIP time to actually transmit it.
+        event_logf("reboot requested - restarting in 250ms");
+        watchdog_reboot(0, 0, 250);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::WIFI_RECONNECT:
+        wifi_request_reconnect();
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
 
     default:
         // not a valid msg_type
@@ -458,6 +491,7 @@ void main_core1()
     bool led_on = false;
     while (true) {
         core1_loop_count++;
+        core1_loop_counter = core1_loop_counter + 1;
         uint64_t now_us = time_us_64();
         if (now_us > (last_core1_heartbeat_us + core1_heartbeat_interval_us))
         {
@@ -521,6 +555,11 @@ int main() {
     // the board, so seeing it over serial after a deploy proves this exact
     // build is what's actually running.
     printf("\nDEPLOY MARKER: 081f4c04\n");
+
+    status_boot_was_watchdog = watchdog_caused_reboot();
+    event_log_init();
+    status_init();
+    event_logf("boot (%s)", status_boot_was_watchdog ? "watchdog reboot" : "power-on or reset");
 
     // Claims its PIO SMs and DMA channels - finish before core1 starts the
     // CYW43 driver, whose own PIO/DMA allocation must land elsewhere.

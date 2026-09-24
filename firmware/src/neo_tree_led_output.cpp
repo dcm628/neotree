@@ -185,6 +185,7 @@ bool led_output_ready()
                 if ((phase_strings & (1u << s)) && (fd & bit) && dma_channel_is_busy(dma_channels[s]))
                 {
                     stats.underflows[s]++;
+                    stats.underflows_total[s]++;
                     clear |= bit;
                 }
             }
@@ -200,6 +201,7 @@ bool led_output_ready()
                 if (fd & txover_bits(1u << s))
                 {
                     stats.overflows[s]++;
+                    stats.overflows_total[s]++;
                 }
             }
             pio->fdebug = fd & txover_bits(0b1111u);
@@ -382,4 +384,9 @@ led_output_stats_t led_output_take_stats()
         stats.overflows[s] = 0;
     }
     return out;
+}
+
+led_output_stats_t led_output_peek_stats()
+{
+    return stats;
 }
