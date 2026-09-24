@@ -545,13 +545,56 @@ Measured:
 | Host: 8 h of sim time, rendering every frame | 0.13 s wall (~220,000× real time) |
 | Host: 8 h of sim time, no rendering | 3 ms wall |
 
-**Found, to investigate at the start of M2:** core0 is periodically
-interrupted or stalled. The existing LED frame prep (normally ~148 µs) peaks at
-1.2–2.2 ms in most 5 s windows, and the engine's timing caught outliers of 17
-and 42 ms (15 frames over 2 ms in the first 75 s after boot). The engine code
-itself takes no locks and does no I/O, so these are time spent elsewhere. It's
-invisible with static colors but would show as stutter once the engine drives
-animation.
+**Found in M1, investigated at the start of M2:** core0 stalls. The
+engine's timing caught outliers of 17 and 42 ms, and the LED frame prep peaked
+at 1–2 ms in most 5 s windows.
+
+### Core0 stall investigation (2026-09-24)
+
+Built a permanent core0 main-loop monitor (`firmware/src/neo_tree_loop_monitor.cpp`,
+status JSON `loop`): every gap ≥ 0.5 ms between loop passes is recorded with
+what the pass was doing, plus call counts and handler times for every
+interrupt enabled on core0 (`irqs`: timer alarm 3, USB 14, stdio spare 51).
+
+Findings:
+
+- **Two kinds of stall.** (1) Frequent ~1.0 ms stalls, ~5–7 per second, in
+  passes doing nothing unusual. (2) Rare long stalls of 8–46 ms, mostly
+  during WiFi connection shortly after boot.
+- **The 1 ms stalls track core1's CYW43 (WiFi chip) traffic.** They line up
+  with the once-a-second WiFi status refresh (3–4 chip queries), the onboard
+  LED toggle every 500 ms (the LED is on the WiFi chip), and core1's 5 s
+  heartbeat (reads RSSI). Moving the refresh to 3 s moved its stalls with it.
+- **Each stall lasts as long as one of the driver's 1 ms waits.** The CYW43
+  driver waits for chip responses with `CYW43_DO_IOCTL_WAIT` /
+  `CYW43_SDPCM_SEND_COMMON_WAIT` = wait up to 1000 µs, which spins in
+  `sem_acquire_block_until` → `best_effort_wfe_or_timeout` on core1
+  (traced by wrapping those functions: ~4–5k calls/s from that one caller in
+  stall mode), each scheduling alarms on core0's default alarm pool (timer IRQ
+  rate ~4–14k/s in stall mode vs ~17–100/s otherwise).
+- **Core0 isn't running interrupt code during a stall**: every core0 handler
+  measured under 50 µs, ~1% of core0 time in total. Stalls land in code that
+  takes locks and in code that doesn't (the output-ready poll), so it isn't
+  plain lock contention either. The command queue (spin lock 17) and the
+  driver's semaphore (lock 20) don't share a lock.
+- **It depends on the build, not the boot.** The same binary behaves the same
+  way across reboots; small unrelated code changes flip it (~2/3 of builds
+  stall). A 20 kHz highest-priority interrupt on core0 prevented it in 5 of 5
+  builds, and removing it brought it back.
+- **Not WiFi quality.** It reproduced on a healthy link (15 ms ping).
+
+Unproven best guess: the two cores fall into lockstep on shared flash-cache or
+bus access while core1 spins in that wait, and a periodic interrupt on core0
+breaks the lockstep.
+
+Decision: **no fix for now.** The 1 ms stalls cost ~0.5% of core0 and can't
+cause a missed frame (16.7 ms budget, DMA output unaffected). The long stalls
+would drop 2–3 frames but are rare and mostly at boot. A permanent 20 kHz
+interrupt would cost more than the stalls. Revisit if long stalls show up
+while animations run. Options then, cheapest first: run core0's per-frame
+path from RAM (`__not_in_flash_func`), move the WiFi status refresh and the
+LED blink out of the steady state, or give the CYW43 driver a core1-owned
+alarm pool for its waits.
 
 ## 16. Memory estimate
 

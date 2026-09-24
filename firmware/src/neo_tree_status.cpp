@@ -9,6 +9,7 @@
 #include "neo_tree_command_queue.hpp"
 #include "neo_tree_event_log.hpp"
 #include "neo_tree_engine.hpp"
+#include "neo_tree_loop_monitor.hpp"
 #include "neo_tree_led_output.hpp"
 #include "neo_tree_net_server.hpp"
 #include "neo_tree_protocol.hpp"
@@ -143,6 +144,32 @@ static size_t build_locked(char *out, size_t cap)
           (unsigned)eng.max_render_us, (unsigned)eng.max_advance_at_ms, (unsigned)eng.max_render_at_ms,
           (unsigned)eng.slow_frames, (unsigned)eng.geometry_build_us, (unsigned)eng.leds,
           (unsigned)eng.positioned);
+
+    // Core0 main-loop stalls (neo_tree_loop_monitor): counts, then the most
+    // recent as [uptime_ms, gap_us, pass flags].
+    loop_monitor_stats_t lm = loop_monitor_stats();
+    j.raw(",\"loop\":{\"passes\":%u,\"stalls_500us\":%u,\"stalls_2ms\":%u,\"stalls_10ms\":%u,"
+          "\"max_gap_us\":%u,\"max_gap_at_ms\":%u,\"core0_irqs\":[\"0x%08x\",\"0x%08x\"],\"recent\":[",
+          (unsigned)lm.passes, (unsigned)lm.stalls_500us, (unsigned)lm.stalls_2ms, (unsigned)lm.stalls_10ms,
+          (unsigned)lm.max_gap_us, (unsigned)lm.max_gap_at_ms, (unsigned)lm.core0_irqs[0],
+          (unsigned)lm.core0_irqs[1]);
+    static loop_stall_t stalls[12];   // static: keep it off the stack
+    size_t stall_count = loop_monitor_recent(stalls, 12);
+    for (size_t i = 0; i < stall_count; i++)
+    {
+        j.raw("%s[%u,%u,%u]", i ? "," : "", (unsigned)stalls[i].at_ms, (unsigned)stalls[i].gap_us,
+              (unsigned)stalls[i].flags);
+    }
+    // Core0 interrupt handlers: [irq, calls, max_us, calls >= 0.5 ms, total_us].
+    j.raw("],\"irqs\":[");
+    static loop_irq_stats_t irqs[loop_irq_slots];
+    size_t irq_count = loop_monitor_irq_stats(irqs, loop_irq_slots);
+    for (size_t i = 0; i < irq_count; i++)
+    {
+        j.raw("%s[%d,%u,%u,%u,%llu]", i ? "," : "", (int)irqs[i].irq, (unsigned)irqs[i].calls,
+              (unsigned)irqs[i].max_us, (unsigned)irqs[i].slow, (unsigned long long)irqs[i].total_us);
+    }
+    j.raw("]}");
 
     j.raw(",\"queue\":{\"level\":%u,\"dropped\":%u},\"core1_loops\":%u", (unsigned)command_queue_level(),
           (unsigned)command_queue_dropped(), (unsigned)core1_loop_counter);

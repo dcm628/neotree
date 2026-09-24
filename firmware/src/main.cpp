@@ -24,6 +24,7 @@
 #include "neo_tree_event_log.hpp"
 #include "neo_tree_status.hpp"
 #include "neo_tree_engine.hpp"
+#include "neo_tree_loop_monitor.hpp"
 
 mutex core0_data_update;
 
@@ -590,9 +591,12 @@ int main() {
     //redo initial time check for loop timer
     initial_abs_time_check = get_absolute_time();
     next_frame_us = initial_abs_time_check;
+    loop_monitor_init();
+    loop_monitor_wrap_core0_irqs();
     while(1)
     {
         latest_abs_time_check = get_absolute_time();
+        loop_monitor_pass_begin(latest_abs_time_check);
         if (latest_abs_time_check > (last_uptime_print_us + uptime_print_interval_us))
         {
             last_uptime_print_us = latest_abs_time_check;
@@ -607,6 +611,7 @@ int main() {
                    (unsigned)out.underflows[0], (unsigned)out.underflows[1], (unsigned)out.underflows[2],
                    (unsigned)out.underflows[3], (unsigned)out.overflows[0], (unsigned)out.overflows[1],
                    (unsigned)out.overflows[2], (unsigned)out.overflows[3]);
+            loop_monitor_mark(loop_pass_heartbeat);
         }
         // Bounded per pass so a burst of commands can't starve the LED refresh.
         static command_t cmd;   // static: ~260 bytes, keep it off core0's stack
@@ -615,6 +620,7 @@ int main() {
             memcpy(serial_buf_copy, cmd.data, SERIAL_BUFFER_SIZE);
             memset(cmd.data, 0, sizeof(cmd.data));  // may hold WiFi credential bytes
             process_msg();
+            loop_monitor_mark(loop_pass_commands);
         }
         // Frame pacing: when the next frame is due, pack it (cheap), then start
         // it as soon as the previous one has fully gone out and latched. The
@@ -626,6 +632,7 @@ int main() {
             engine_host_frame(latest_abs_time_check);
             led_output_prepare_frame();
             frame_prepared = true;
+            loop_monitor_mark(loop_pass_frame_prep);
         }
         // Polled every pass (not just when a frame is waiting) so the end of
         // each frame is timestamped promptly for the output stats.
@@ -634,6 +641,7 @@ int main() {
         {
             led_output_start_frame();
             frame_prepared = false;
+            loop_monitor_mark(loop_pass_frame_start);
             led_loop_counter++;
             // Schedule from the ideal time so the rate doesn't drift, but never
             // "catch up" with a burst after a stall (or at a rate the output
