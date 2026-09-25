@@ -31,7 +31,7 @@ void usage()
                  "                   [--render-every N] [--positions FILE] [--quiet]\n"
                  "  T accepts s/m/h/d suffixes (default 60s)\n"
                  "  scenes: %s (default empty)\n",
-                 neotree::sim::demo_scene_names());
+                 neotree::sim::demo_scene_names().c_str());
 }
 
 std::string format_time(double s)
@@ -128,7 +128,8 @@ int main(int argc, char **argv)
     engine.init(geometry, config, quiet ? nullptr : log_to_stderr);
     if (!neotree::sim::setup_demo(engine, scene))
     {
-        std::fprintf(stderr, "unknown scene '%s' (have: %s)\n", scene.c_str(), neotree::sim::demo_scene_names());
+        std::fprintf(stderr, "unknown scene '%s' (have: %s)\n", scene.c_str(),
+                     neotree::sim::demo_scene_names().c_str());
         return 2;
     }
 
@@ -166,7 +167,8 @@ int main(int argc, char **argv)
                 wall_s > 0.0 ? static_cast<double>(st.ticks) / wall_s : 0.0, (unsigned long long)st.ticks_dropped);
     std::printf("frames        %llu rendered of %llu at %u fps (%.0f/s wall)\n", (unsigned long long)rendered,
                 (unsigned long long)total_frames, fps, wall_s > 0.0 ? static_cast<double>(rendered) / wall_s : 0.0);
-    std::printf("scene         %s: %.0f LED-layer evaluations per frame, %.1f us per frame on this PC\n", scene.c_str(),
+    std::printf("entities      %u live, %u failed spawns\n", (unsigned)st.entities, (unsigned)st.spawns_failed);
+    std::printf("scene         %s:%.0f LED-layer evaluations per frame, %.1f us per frame on this PC\n", scene.c_str(),
                 rendered ? static_cast<double>(led_evals) / static_cast<double>(rendered) : 0.0,
                 rendered ? wall_s * 1e6 / static_cast<double>(rendered) : 0.0);
     std::printf("LEDs          %u (%u positioned, %u mapped)\n", (unsigned)geometry.count(),

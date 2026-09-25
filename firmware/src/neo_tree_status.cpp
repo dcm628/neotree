@@ -140,12 +140,13 @@ static size_t build_locked(char *out, size_t cap)
     j.raw(",\"engine\":{\"ticks\":%llu,\"ticks_dropped\":%llu,\"frames\":%llu,\"advance_us\":%u,"
           "\"max_advance_us\":%u,\"render_us\":%u,\"max_render_us\":%u,\"max_advance_at_ms\":%u,\"max_render_at_ms\":%u,"
           "\"slow_frames\":%u,\"led_evals\":%u,\"geometry_us\":%u,\"leds\":%u,\"positioned\":%u,"
-          "\"rejected_edits\":%u}",
+          "\"rejected_edits\":%u,\"entities\":%u,\"spawns_failed\":%u,\"demo\":%u}",
           (unsigned long long)eng.ticks, (unsigned long long)eng.ticks_dropped, (unsigned long long)eng.frames,
           (unsigned)eng.last_advance_us, (unsigned)eng.max_advance_us, (unsigned)eng.last_render_us,
           (unsigned)eng.max_render_us, (unsigned)eng.max_advance_at_ms, (unsigned)eng.max_render_at_ms,
           (unsigned)eng.slow_frames, (unsigned)eng.led_evals, (unsigned)eng.geometry_build_us, (unsigned)eng.leds,
-          (unsigned)eng.positioned, (unsigned)eng.rejected_edits);
+          (unsigned)eng.positioned, (unsigned)eng.rejected_edits, (unsigned)eng.entities,
+          (unsigned)eng.spawns_failed, (unsigned)eng.demo);
 
     // Core0 main-loop stalls (neo_tree_loop_monitor): counts, then the most
     // recent as [uptime_ms, gap_us, pass flags].

@@ -7,6 +7,7 @@
 #include "dcm_physics_math.hpp"
 #include "neo_tree_config.hpp"
 #include "neo_tree_event_log.hpp"
+#include "neotree/demos.hpp"
 #include "neotree/engine.hpp"
 
 namespace {
@@ -22,6 +23,9 @@ constexpr int16_t unmapped_z = -32768;
 constexpr uint8_t canvas_slot = 0;
 constexpr uint8_t canvas_background = 0;
 constexpr uint8_t canvas_paint = 1;
+// Built-in demos draw over the Canvas from here.
+constexpr uint8_t demo_slot = 1;
+neotree::Demo demo = neotree::Demo::none;
 
 // Static: the geometry is ~31 KB, the engine (with its pixel buffers) ~27 KB,
 // and the frame 12 KB - far too big for core0's stack.
@@ -129,6 +133,19 @@ void engine_host_reload_geometry()
     build_geometry();
 }
 
+bool engine_host_set_demo(uint8_t id)
+{
+    if (id >= static_cast<uint8_t>(neotree::Demo::count))
+    {
+        return false;
+    }
+    demo = static_cast<neotree::Demo>(id);
+    neotree::setup_demo(engine, demo, demo_slot);
+    stats.demo = id;
+    event_logf("demo: %s", neotree::demo_name(demo));
+    return true;
+}
+
 void engine_host_set_output(bool enabled)
 {
     engine.master().output_enabled = enabled;
@@ -140,6 +157,7 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     engine.advance((int64_t)(now_us - last_frame_us));
     last_frame_us = now_us;
     uint64_t t1 = time_us_64();
+    neotree::update_demo(engine, demo, demo_slot);
     engine.render(frame);
     size_t n = count < geometry.count() ? count : geometry.count();
     pack_words(words, n);
@@ -154,6 +172,8 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     stats.ticks_dropped = es.ticks_dropped;
     stats.frames = es.frames;
     stats.led_evals = es.last_frame_led_evals;
+    stats.entities = es.entities;
+    stats.spawns_failed = es.spawns_failed;
     stats.last_advance_us = (uint32_t)(t1 - t0);
     stats.last_render_us = (uint32_t)(t2 - t1);
     uint32_t now_ms = (uint32_t)(t2 / 1000);
@@ -281,5 +301,8 @@ engine_host_stats_t engine_host_stats()
     s.leds = stats.leds;
     s.positioned = stats.positioned;
     s.rejected_edits = stats.rejected_edits;
+    s.entities = stats.entities;
+    s.spawns_failed = stats.spawns_failed;
+    s.demo = stats.demo;
     return s;
 }

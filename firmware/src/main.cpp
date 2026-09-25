@@ -191,6 +191,8 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
     case serial_msg_type::WIFI_RECONNECT:
     case serial_msg_type::BOOTSEL:
         return len == 1;
+    case serial_msg_type::DEMO:
+        return len == 2;
     default:
         // Includes RUN_SWEEP_SEQUENCE, which process_msg() never implemented.
         return false;
@@ -435,6 +437,14 @@ void process_msg()
         event_logf("reboot requested - restarting in 250ms");
         safety_stop_feeding();   // or the main loop would keep deferring it
         watchdog_reboot(0, 0, 250);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::DEMO:
+        if (!engine_host_set_demo(serial_buf_copy[1]))
+        {
+            event_logf("demo: unknown id %u", (unsigned)serial_buf_copy[1]);
+        }
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;

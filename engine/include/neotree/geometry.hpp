@@ -69,6 +69,12 @@ public:
     // The positioned LEDs with z_min <= z <= z_max, as a slice of z_order().
     std::span<const uint16_t> in_z_range(float z_min, float z_max) const;
 
+    // The tree's outer envelope: the radius 85% of the LEDs at height z are
+    // inside (from envelope_bins height bands, smoothed and interpolated).
+    // Used for the outer boundary and the surface constraint.
+    static constexpr int envelope_bins = 16;
+    float envelope_radius(float z) const;
+
 private:
     uint16_t count_ = 0;
     uint16_t positioned_ = 0;
@@ -85,6 +91,7 @@ private:
 
     uint16_t z_order_[max_leds] = {};
     float z_sorted_[max_leds] = {};   // z_[z_order_[k]], for the range search
+    float envelope_[envelope_bins] = {};
 };
 
 }  // namespace neotree

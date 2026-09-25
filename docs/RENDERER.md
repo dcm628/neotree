@@ -1,6 +1,6 @@
 # NeoTree Rendering Engine — Design
 
-**Status:** Design agreed · M1 done · M2 (compositor + Canvas) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
+**Status:** Design agreed · M1, M2 done · M3 (entities) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
 
 **Related:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) §6 defers volumetric
 rendering to this document. [`LED_OUTPUT.md`](./LED_OUTPUT.md) covers the
@@ -520,7 +520,7 @@ configuration (stack editing, layer/entity/rule settings, presets, shows).
 |---|---|---|
 | M1 ✅ | Engine skeleton (portable library), host build, headless CLI, viewer skeleton, LED geometry module (real + synthetic positions) | Viewer shows the tree's point cloud; CLI runs an empty scene at thousands of fps |
 | M2 ✅ | Compositor: solid, pixel, field layers; masks; blends; master stage. Canvas mode; base scene = Canvas; existing messages translated to layer edits | Tree looks and behaves exactly as today; frame timing on the Debug page |
-| M3 | Entities: shapes, falloff, integration, global forces, boundaries, surface constraint, z-culling | Gravity and launch sweeps recreated as entity demos, on the tree and in the sim |
+| M3 ✅ | Entities: shapes, falloff, integration, global forces, boundaries, surface constraint, z-culling | Gravity and launch sweeps recreated as entity demos, on the tree and in the sim |
 | M4 | Collision groups, response table, events, rules/actions, templates, emitters, runaway protection | Snow and fireworks demos; ball-collision spawn chain stays bounded |
 | M5 | Modes, slots (stacking), lifecycle (end conditions, loop/chain/revert/remove/hold), transitions, scene description format, base scene as any scene; describe/select/param/layer protocol; app: mode picker and parameters | Stacked snow-over-rainbow; a chained scene verified over hours of sim time |
 | M6 | Shows, persistence of base scene and presets, state push to all phones; app: stack editing and presets | A holiday show loops unattended |
@@ -660,6 +660,57 @@ that did deliberate work (rendering a frame, commands, the heartbeat) are
 still listed in `loop.recent` with their flags but aren't counted.
 
 RAM placement stays off until it can be retried under this net.
+
+### M3 — done 2026-09-24
+
+- `engine/`: entities (`entity.hpp`) - sphere, slab, shell, capsule and
+  wedge shapes with hard/linear/smooth/glow falloff; motion with global
+  gravity, wind and swirl (per-entity response), drag, kinematic entities;
+  floor/ceiling/outer-envelope bounds with pass/stop/bounce/destroy/respawn/
+  wrap; the envelope surface constraint; lifetime with fade in/out. A pool
+  of 256 with generation-checked handles; `Engine::spawn` records the
+  respawn point. An `entity` layer type draws its entities into a scratch
+  buffer (premultiplied, combined by add or max) and then blends like any
+  layer. Culling: each entity only tests the LEDs in its height range
+  (z-sorted index); unbounded shapes (wedges, tilted slabs) test all.
+- The tree envelope (`LedGeometry::envelope_radius`): per height band, the
+  radius 85% of its LEDs are inside, from a small histogram. (The outermost
+  LED was the first try, and a few stray LEDs put that surface outside
+  almost everything.)
+- Demos (`demos.hpp`), shared by the tree and the host: layers, wedge
+  (lighthouse), **the Pi's three sweeps as slab entities** - linear (wrap),
+  gravity (respawn at the top) and launch (v0 = sqrt(2gh), apex at the top,
+  verified by a unit test) with the Pi's green backdrop, band size and
+  2000 mm/s^2 - plus bounce, snow (150 entities with wind gusts) and orbit
+  (comets swirling on the envelope). On the tree they run via the `DEMO`
+  protocol command (type 22) in slot 1 over the Canvas, and from the app's
+  Debug page; on the host via `--scene`. Stand-in for modes until M5.
+- Compositing skips every layer under the topmost opaque full-cover solid
+  layer (e.g. a demo's backdrop hides the Canvas: ~2000 fewer evaluations).
+- 54 engine unit tests (12 new for entities and demos).
+
+Frame time on the Pico (engine advance + render + packing, 233 positioned
+LEDs), after three rounds of tuning:
+
+| Demo | Entities | Evaluations / frame | Frame time |
+|---|---|---|---|
+| sweeps | 1 | ~1,050 | 1.35 ms |
+| bounce / orbit / wedge | 1-6 | ~1,150-1,300 | 1.4-1.5 ms |
+| layers | 0 | ~1,500 | 3.2 ms |
+| snow | 150 | ~4,200 | 3.85 ms (was 6.7 ms) |
+
+The tuning: specializing the entity loop by shape and falloff with the
+entity's fields hoisted into locals (the compiler otherwise reloads them
+after every scratch-buffer store - it can't rule out aliasing), skipping
+hidden layers, and `-fno-math-errno`. Retrying RAM placement of the hot
+loops under the safety net ran fine this time but gained only ~5%, so it's
+left off.
+
+**Watch for the full map:** evaluations scale with positioned LEDs. At
+1,000 positioned LEDs snow would be ~14k evaluations - roughly 12-14 ms of
+the 16.7 ms budget. The fixed ~1.3 ms per frame is several full passes over
+all 1,000 LEDs (clear, backdrop, entity composite, master, pack) that could
+be fused; that's the next place to look before M4's spark-heavy effects.
 
 ## 16. Memory estimate
 

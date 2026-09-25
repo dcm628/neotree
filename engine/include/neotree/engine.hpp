@@ -42,6 +42,8 @@ struct MasterSettings
 
 struct EngineStats
 {
+    uint16_t entities = 0;          // live entities
+    uint32_t spawns_failed = 0;     // spawn() with the pool full
     uint64_t ticks = 0;             // ticks run
     uint64_t ticks_dropped = 0;     // ticks skipped by max_ticks_per_advance
     uint64_t frames = 0;            // render() calls
@@ -70,12 +72,23 @@ public:
     // rate relative to ticks - or be skipped.
     void render(std::span<Rgb> out);
 
-    // The scene and master settings are edited directly by the platform
-    // between calls (single-threaded: the firmware applies commands on core0
-    // between frames).
+    // The scene, entities, forces and master settings are edited directly by
+    // the platform between calls (single-threaded: the firmware applies
+    // commands on core0 between frames).
     Scene &scene() { return scene_; }
     const Scene &scene() const { return scene_; }
     MasterSettings &master() { return master_; }
+    Forces &forces() { return forces_; }
+    World &world() { return world_; }
+
+    // Adds an entity (its current pos/vel become its respawn point). Returns
+    // an invalid handle, and counts it, if the pool is full.
+    Handle spawn(const Entity &entity);
+    Entity *entity(Handle h) { return entities_.get(h); }
+    bool destroy(Handle h) { return entities_.destroy(h); }
+    // Removes every entity drawn into slot (all slots if slot < 0).
+    void destroy_entities_in_slot(int slot);
+    const EntityPool &entities() const { return entities_; }
 
     int64_t time_us() const { return clock_.time_us(); }
     const SimClock &clock() const { return clock_; }
@@ -93,6 +106,10 @@ private:
     SimClock clock_{};
     Scene scene_{};
     MasterSettings master_{};
+    EntityPool entities_{};
+    EntityScratch scratch_{};
+    Forces forces_{};
+    World world_{};
     Rng rng_{};
     EngineStats stats_{};
 };

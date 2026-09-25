@@ -1,7 +1,7 @@
 #pragma once
-// Demo scenes for the host tools, built from the engine's scene API. Until
-// modes arrive (M5) these are plain setup functions; until entities arrive
-// (M3) any motion comes from update() moving layer settings over time.
+// Demo scenes for the host tools: the engine's built-in demos
+// (neotree/demos.hpp, shared with the firmware's DEMO command) plus the
+// host-only "canvas" and "empty".
 
 #include <string>
 
@@ -10,7 +10,7 @@
 namespace neotree::sim {
 
 // Names accepted by setup_demo(), for help text.
-const char *demo_scene_names();
+std::string demo_scene_names();
 
 // Replaces the engine's scene with the named demo. False if unknown.
 bool setup_demo(Engine &engine, const std::string &name);

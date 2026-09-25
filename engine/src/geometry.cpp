@@ -68,6 +68,10 @@ void LedGeometry::finalize()
     }
 
     float height = bounds_.max.z - bounds_.min.z;
+    for (float &e : envelope_)
+    {
+        e = 0.0f;
+    }
     for (uint16_t k = 0; k < positioned_; k++)
     {
         uint16_t i = z_order_[k];
@@ -82,6 +86,89 @@ void LedGeometry::finalize()
     {
         z_sorted_[k] = z_[z_order_[k]];
     }
+
+    // Envelope: per height band, the radius 85% of its LEDs are inside (so a
+    // few stray outliers don't define the surface), from a 10mm histogram -
+    // small enough for the Pico's stack. Gaps are filled from the nearest
+    // bands, then lightly smoothed.
+    float raw[envelope_bins] = {};
+    bool have[envelope_bins] = {};
+    constexpr int radius_buckets = 128;   // 0..1280 mm
+    constexpr float bucket_mm = 10.0f;
+    uint16_t k0 = 0;
+    for (int b = 0; b < envelope_bins; b++)
+    {
+        uint16_t hist[radius_buckets] = {};
+        uint16_t n = 0;
+        uint16_t k1 = k0;
+        while (k1 < positioned_ &&
+               std::min(envelope_bins - 1, static_cast<int>(height01_[z_order_[k1]] * envelope_bins)) == b)
+        {
+            int r = std::min(radius_buckets - 1, static_cast<int>(radius_[z_order_[k1]] / bucket_mm));
+            hist[r]++;
+            n++;
+            k1++;
+        }
+        k0 = k1;
+        if (n == 0)
+        {
+            continue;
+        }
+        uint16_t want = static_cast<uint16_t>(std::ceil(0.85f * n));
+        uint16_t seen = 0;
+        for (int r = 0; r < radius_buckets; r++)
+        {
+            seen += hist[r];
+            if (seen >= want)
+            {
+                raw[b] = (static_cast<float>(r) + 1.0f) * bucket_mm;
+                break;
+            }
+        }
+        have[b] = true;
+    }
+    for (int b = 0; b < envelope_bins; b++)
+    {
+        if (have[b])
+        {
+            continue;
+        }
+        int lo = b - 1, hi = b + 1;
+        while (lo >= 0 && !have[lo]) lo--;
+        while (hi < envelope_bins && !have[hi]) hi++;
+        float a = lo >= 0 ? raw[lo] : (hi < envelope_bins ? raw[hi] : 0.0f);
+        float c = hi < envelope_bins ? raw[hi] : a;
+        float t = (lo >= 0 && hi < envelope_bins) ? static_cast<float>(b - lo) / static_cast<float>(hi - lo) : 0.0f;
+        raw[b] = a + (c - a) * t;
+    }
+    for (int b = 0; b < envelope_bins; b++)
+    {
+        float prev = raw[std::max(b - 1, 0)];
+        float next = raw[std::min(b + 1, envelope_bins - 1)];
+        envelope_[b] = 0.25f * prev + 0.5f * raw[b] + 0.25f * next;
+    }
+}
+
+float LedGeometry::envelope_radius(float z) const
+{
+    float height = bounds_.max.z - bounds_.min.z;
+    if (positioned_ == 0 || height <= 0.0f)
+    {
+        return envelope_[0];
+    }
+    // Bin centres at (b + 0.5) / bins; linear between them, flat past the ends.
+    float f = (z - bounds_.min.z) / height * envelope_bins - 0.5f;
+    if (f <= 0.0f)
+    {
+        return envelope_[0];
+    }
+    if (f >= envelope_bins - 1)
+    {
+        return envelope_[envelope_bins - 1];
+    }
+    int b = static_cast<int>(f);
+    float t = f - static_cast<float>(b);
+    return envelope_[b] + (envelope_[b + 1] - envelope_[b]) * t;
 }
 
 std::span<const uint16_t> LedGeometry::in_z_range(float z_min, float z_max) const

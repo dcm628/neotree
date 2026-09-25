@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.neotree.app.TreeViewModel
 import com.neotree.app.net.TreeConnection
+import com.neotree.app.net.TreeProtocol
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -66,6 +67,7 @@ fun DebugScreen(vm: TreeViewModel, contentPadding: PaddingValues) {
         Text("Debug", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         ConnectionCard(vm)
         ControlsCard(vm)
+        DemosCard(vm, status?.json?.optJSONObject("engine")?.optInt("demo", -1) ?: -1)
         val s = status
         if (s == null) {
             Text("Waiting for the tree's status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -220,6 +222,31 @@ private fun ControlsCard(vm: TreeViewModel) {
     }
 }
 
+/** Runs the engine's built-in demos over the Canvas (stand-in for modes). */
+@Composable
+private fun DemosCard(vm: TreeViewModel, running: Int) {
+    val state by vm.connection.state.collectAsState()
+    val connected = state is TreeConnection.State.Connected
+    Section("Engine demos") {
+        TreeProtocol.DEMOS.indices.chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { id ->
+                    val label: @Composable () -> Unit = { Text(TreeProtocol.DEMOS[id]) }
+                    if (id == running) {
+                        Button(onClick = { vm.runDemo(id) }, enabled = connected, modifier = Modifier.weight(1f)) {
+                            label()
+                        }
+                    } else {
+                        OutlinedButton(onClick = { vm.runDemo(id) }, enabled = connected, modifier = Modifier.weight(1f)) {
+                            label()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ConfirmDialog(title: String, text: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
@@ -306,7 +333,7 @@ private fun EngineCard(json: JSONObject) {
             e.optInt("slow_frames").toString(),
             if (e.optInt("slow_frames") > 0) WARN_AMBER else Color.Unspecified,
         )
-        Kv("Work per frame", "${e.optInt("led_evals")} LED × layer")
+        Kv("Work per frame", "${e.optInt("led_evals")} evaluations, ${e.optInt("entities")} entities")
         Kv("Positioned LEDs", "${e.optInt("positioned")} of ${e.optInt("leds")}")
         Kv("Ticks dropped", e.optLong("ticks_dropped").toString())
         Kv(

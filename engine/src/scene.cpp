@@ -168,9 +168,11 @@ NEOTREE_INLINE void run_layer_any_blend(const Layer &layer, float base_alpha, co
     }
 }
 
-NEOTREE_HOT void composite_layer(const Scene &scene, const Layer &layer, float slot_opacity,
-                                 const LedGeometry &geometry, int64_t time_us, std::span<Rgb> out, uint32_t &evals)
+NEOTREE_HOT void composite_layer(const Scene &scene, uint8_t slot, uint8_t layer_index, float slot_opacity,
+                                 const LedGeometry &geometry, int64_t time_us, const EntityPool &entities,
+                                 EntityScratch &scratch, std::span<Rgb> out, uint32_t &evals)
 {
+    const Layer &layer = *scene.layer(slot, layer_index);
     const float base_alpha = layer.opacity * slot_opacity;
     if (base_alpha <= 0.0f)
     {
@@ -237,6 +239,24 @@ NEOTREE_HOT void composite_layer(const Scene &scene, const Layer &layer, float s
         }
         break;
     }
+    case LayerType::entity:
+    {
+        evals += render_entities(entities, slot, layer_index, layer.combine, geometry, scratch);
+        const EntityScratch *s = &scratch;
+        run_layer_any_blend(layer, base_alpha, geometry, out, evals, [s](size_t i, Rgb &src, float &a) {
+            const float cover = s->alpha[i];
+            if (cover <= 0.0f)
+            {
+                return false;
+            }
+            // Premultiplied -> straight color at that coverage.
+            const float inv = 1.0f / cover;
+            src = {s->color[i].r * inv, s->color[i].g * inv, s->color[i].b * inv};
+            a *= cover;
+            return true;
+        });
+        break;
+    }
     case LayerType::empty:
         break;
     }
@@ -244,7 +264,20 @@ NEOTREE_HOT void composite_layer(const Scene &scene, const Layer &layer, float s
 
 }  // namespace
 
-uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time_us, std::span<Rgb> out)
+namespace {
+
+// True if the layer paints every LED fully, hiding everything below it.
+bool covers_everything(const Slot &slot, const Layer &layer)
+{
+    return slot.enabled && layer.enabled && layer.type == LayerType::solid && slot.opacity >= 1.0f &&
+           layer.opacity >= 1.0f && layer.mask.shape == MaskShape::none &&
+           (layer.blend == Blend::normal || layer.blend == Blend::replace);
+}
+
+}  // namespace
+
+uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time_us, const EntityPool &entities,
+                   EntityScratch &scratch, std::span<Rgb> out)
 {
     for (Rgb &px : out)
     {
@@ -252,19 +285,37 @@ uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time
     }
     uint32_t evals = 0;
     std::span<Rgb> leds = out.first(out.size() < geometry.count() ? out.size() : geometry.count());
-    for (uint8_t s = 0; s < max_slots; s++)
+
+    // Start from the topmost layer that hides everything below it (e.g. a
+    // demo's opaque backdrop over the Canvas); nothing under it is visible.
+    uint8_t first_slot = 0, first_layer = 0;
+    for (int s = max_slots - 1; s >= 0 && first_slot == 0 && first_layer == 0; s--)
+    {
+        const Slot *slot = scene.slot(static_cast<uint8_t>(s));
+        for (int l = slot->layer_count - 1; l >= 0; l--)
+        {
+            if (covers_everything(*slot, slot->layers[l]))
+            {
+                first_slot = static_cast<uint8_t>(s);
+                first_layer = static_cast<uint8_t>(l);
+                break;
+            }
+        }
+    }
+
+    for (uint8_t s = first_slot; s < max_slots; s++)
     {
         const Slot *slot = scene.slot(s);
         if (!slot->enabled || slot->opacity <= 0.0f)
         {
             continue;
         }
-        for (uint8_t l = 0; l < slot->layer_count; l++)
+        for (uint8_t l = s == first_slot ? first_layer : 0; l < slot->layer_count; l++)
         {
             const Layer &layer = slot->layers[l];
             if (layer.enabled && layer.type != LayerType::empty)
             {
-                composite_layer(scene, layer, slot->opacity, geometry, time_us, leds, evals);
+                composite_layer(scene, s, l, slot->opacity, geometry, time_us, entities, scratch, leds, evals);
             }
         }
     }

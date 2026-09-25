@@ -27,6 +27,7 @@ object TreeProtocol {
     private const val STATUS_REQUEST = 18
     private const val REBOOT = 19
     private const val WIFI_RECONNECT = 20
+    private const val DEMO = 22
 
     /** Round-trip check - the tree just ACKs it. */
     fun noop(): ByteArray = byteArrayOf(NOOP.toByte())
@@ -36,6 +37,15 @@ object TreeProtocol {
     fun reboot(): ByteArray = byteArrayOf(REBOOT.toByte())
     /** Tree leaves the WiFi network and rejoins (drops this connection). */
     fun wifiReconnect(): ByteArray = byteArrayOf(WIFI_RECONNECT.toByte())
+
+    /**
+     * The engine's built-in demos, by id (firmware engine/include/neotree/demos.hpp).
+     * They run over the Canvas until modes arrive; id 0 stops them.
+     */
+    val DEMOS = listOf(
+        "Off", "Layers", "Lighthouse", "Sweep", "Drop", "Launch", "Bounce", "Snow", "Orbit",
+    )
+    fun demo(id: Int): ByteArray = byteArrayOf(DEMO.toByte(), id.toByte())
 
     /** LEDs per string, in order - strings 1-4 are LEDs 0-299, 300-599, 600-799, 800-999. */
     val STRING_LENGTHS = intArrayOf(300, 300, 200, 200)
@@ -76,6 +86,8 @@ object TreeProtocol {
         18 -> "STATUS"
         19 -> "REBOOT"
         20 -> "WIFI_RECONNECT"
+        21 -> "BOOTSEL"
+        22 -> "DEMO"
         else -> "TYPE_$type"
     }
 

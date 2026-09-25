@@ -135,10 +135,13 @@ int main(int argc, char **argv)
     engine.init(geometry, config);
     if (!neotree::sim::setup_demo(engine, scene))
     {
-        std::fprintf(stderr, "unknown scene '%s' (have: %s)\n", scene.c_str(), neotree::sim::demo_scene_names());
+        std::fprintf(stderr, "unknown scene '%s' (have: %s)\n", scene.c_str(),
+                     neotree::sim::demo_scene_names().c_str());
         return 2;
     }
-    const char *scene_cycle[] = {"layers", "wedge", "canvas", "empty"};
+    const char *scene_cycle[] = {"layers", "wedge", "sweep_linear", "sweep_gravity", "sweep_launch",
+                                 "bounce", "snow",  "orbit",        "canvas",        "empty"};
+    const int scene_count = sizeof(scene_cycle) / sizeof(scene_cycle[0]);
     engine.advance(static_cast<int64_t>(start_at_s * 1e6));
     std::vector<neotree::Rgb> frame(geometry.count());
 
@@ -195,11 +198,11 @@ int main(int argc, char **argv)
         if (IsKeyPressed(KEY_S))
         {
             int next = 0;
-            for (int k = 0; k < 4; k++)
+            for (int k = 0; k < scene_count; k++)
             {
                 if (scene == scene_cycle[k])
                 {
-                    next = (k + 1) % 4;
+                    next = (k + 1) % scene_count;
                 }
             }
             scene = scene_cycle[next];
@@ -289,8 +292,8 @@ int main(int argc, char **argv)
         DrawText(TextFormat("ticks %llu (dropped %llu)   frames %llu   view %d fps", (unsigned long long)st.ticks,
                             (unsigned long long)st.ticks_dropped, (unsigned long long)st.frames, GetFPS()),
                  12, 38, 18, LIGHTGRAY);
-        DrawText(TextFormat("scene: %s   %u LED-layer evals/frame", scene.c_str(),
-                            (unsigned)engine.stats().last_frame_led_evals),
+        DrawText(TextFormat("scene: %s   %u entities   %u evals/frame", scene.c_str(),
+                            (unsigned)engine.stats().entities, (unsigned)engine.stats().last_frame_led_evals),
                  12, 82, 18, LIGHTGRAY);
         DrawText(TextFormat("LEDs %u: %u mapped, %u synthetic   colors: %s", (unsigned)geometry.count(),
                             (unsigned)geometry.mapped_count(),

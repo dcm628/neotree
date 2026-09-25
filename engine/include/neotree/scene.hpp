@@ -12,6 +12,7 @@
 #include <span>
 
 #include "neotree/color.hpp"
+#include "neotree/entity.hpp"
 #include "neotree/geometry.hpp"
 #include "neotree/mask.hpp"
 #include "neotree/types.hpp"
@@ -30,6 +31,7 @@ enum class LayerType : uint8_t
     solid,   // one color everywhere (within the mask)
     pixel,   // a stored color + coverage per LED
     field,   // a color computed from each LED's position (and time)
+    entity,  // the entities assigned to this layer (Entity::slot/layer)
 };
 
 enum class FieldKind : uint8_t
@@ -60,6 +62,7 @@ struct Layer
     Rgb color{};          // solid
     int8_t buffer = -1;   // pixel: which pixel buffer
     FieldParams field{};  // field
+    EntityCombine combine = EntityCombine::add;   // entity: how overlapping entities combine
 };
 
 struct Slot
@@ -105,8 +108,10 @@ private:
 };
 
 // Composites the scene into out (one entry per LED, starting from black).
-// time_us drives animated fields. Returns the number of LED-layer
-// evaluations (the platform-independent cost measure).
-uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time_us, std::span<Rgb> out);
+// time_us drives animated fields; entity layers draw from entities, using
+// scratch. Returns the number of LED-layer and LED-entity evaluations (the
+// platform-independent cost measure).
+uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time_us, const EntityPool &entities,
+                   EntityScratch &scratch, std::span<Rgb> out);
 
 }  // namespace neotree

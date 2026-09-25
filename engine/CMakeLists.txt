@@ -7,7 +7,9 @@
 # (not double) in anything that runs per tick or per frame.
 
 add_library(neotree_engine STATIC
+    src/demos.cpp
     src/engine.cpp
+    src/entity.cpp
     src/geometry.cpp
     src/mask.cpp
     src/scene.cpp
@@ -15,7 +17,9 @@ add_library(neotree_engine STATIC
 
 target_include_directories(neotree_engine PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
 target_compile_features(neotree_engine PUBLIC cxx_std_20)
-target_compile_options(neotree_engine PRIVATE -Wall -Wextra -Wdouble-promotion)
+# -fno-math-errno: the engine never reads errno, and without it sqrtf etc.
+# compile to single FPU instructions instead of calls that may set errno.
+target_compile_options(neotree_engine PRIVATE -Wall -Wextra -Wdouble-promotion -fno-math-errno)
 
 # The Pico SDK already builds without exceptions/RTTI; enforce the same on the
 # host so anything that would fail in firmware fails here first. PRIVATE: the

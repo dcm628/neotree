@@ -28,6 +28,9 @@ struct engine_host_stats_t
     uint16_t leds;
     uint16_t positioned;
     uint32_t rejected_edits;      // legacy commands whose target layer doesn't exist
+    uint16_t entities;
+    uint32_t spawns_failed;
+    uint8_t demo;                 // neotree::Demo running in the demo slot (0 = none)
 };
 
 // A frame whose engine work takes longer than this is counted as slow.
@@ -46,6 +49,10 @@ void engine_host_reload_geometry();
 // Advances the engine to now_us and renders a frame into words, packed for
 // led_output_prepare_frame(): one per LED, (r << 24) | (g << 16) | (b << 8).
 void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count);
+
+// Runs a built-in demo (neotree::Demo id) in the demo slot above the Canvas;
+// 0 stops it. Returns false for an unknown id.
+bool engine_host_set_demo(uint8_t demo);
 
 // Lights on/off (TREE_OUTPUT) - the master stage; the scene is untouched.
 void engine_host_set_output(bool enabled);

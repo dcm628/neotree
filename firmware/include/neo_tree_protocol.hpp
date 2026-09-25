@@ -59,10 +59,14 @@ enum class serial_msg_type : uint8_t
     // Reboot into BOOTSEL (USB mass-storage flashing) - the network escape
     // hatch for when USB serial is unavailable. No payload.
     BOOTSEL,
+    // Runs a built-in engine demo (neotree/demos.hpp) in slot 1, above the
+    // Canvas: [22][demo id]. 0 = none (back to the Canvas). Stand-in for the
+    // mode picker until modes exist (M5).
+    DEMO,
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::BOOTSEL) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::DEMO) + 1;
 
 // Set by TREE_OUTPUT (core0), read by the LED output path and reported to
 // network clients in HELLO (core1).

@@ -339,6 +339,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun rebootTree() = sendNow("Reboot", TreeProtocol.reboot())
     fun reconnectTreeWifi() = sendNow("WiFi reconnect", TreeProtocol.wifiReconnect())
+    fun runDemo(id: Int) = sendNow("Demo ${TreeProtocol.DEMOS.getOrElse(id) { "$id" }}", TreeProtocol.demo(id))
 
     /** Lights strings 1-4 dim red/green/blue/white - checks string order, shows glitches. */
     fun runStringTest() {
