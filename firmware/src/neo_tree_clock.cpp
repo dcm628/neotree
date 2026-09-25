@@ -31,7 +31,8 @@ uint32_t sntp_syncs = 0;
 uint32_t app_sets = 0;
 uint32_t app_ignored = 0;
 int32_t last_step_ms = 0;
-char tz_text[64] = "UTC0";
+char tz_text[64] = "";
+bool tz_stored = false;
 neotree::TimeZone zone{};
 
 bool sntp_started = false;   // core1 only
@@ -51,7 +52,8 @@ void accept(int64_t unix_us, clock_source from)
     last_sync_us = now;
 }
 
-// The settings text with the tz line replaced (other lines kept).
+// The settings text with the tz line replaced (other lines kept); tz null:
+// without one.
 void settings_with_tz(const char *tz, char *out, size_t cap)
 {
     static char old[scene_store_settings_max + 1];
@@ -69,7 +71,11 @@ void settings_with_tz(const char *tz, char *out, size_t cap)
         }
         line += len + (end != nullptr ? 1 : 0);
     }
-    snprintf(out + n, cap - n, "tz=%s\n", tz);
+    out[n] = '\0';
+    if (tz != nullptr)
+    {
+        snprintf(out + n, cap - n, "tz=%s\n", tz);
+    }
 }
 
 }  // namespace
@@ -103,6 +109,8 @@ extern "C" void neo_tree_clock_sntp_get(uint32_t *sec, uint32_t *us)
 void clock_init()
 {
     lock = spin_lock_init(spin_lock_claim_unused(true));
+    static_assert(sizeof(clock_default_tz) <= sizeof(tz_text));
+    memcpy(tz_text, clock_default_tz, sizeof(clock_default_tz));
     static char text[scene_store_settings_max + 1];
     scene_store_load_settings(text, sizeof(text));
     const char *tz = strstr(text, "tz=");
@@ -117,11 +125,12 @@ void clock_init()
             if (neotree::parse_time_zone(rule, zone))
             {
                 memcpy(tz_text, rule, sizeof(rule));
+                tz_stored = true;
                 event_logf("clock: time zone %s", tz_text);
                 return;
             }
         }
-        event_logf("clock: stored time zone unreadable - UTC");
+        event_logf("clock: stored time zone unreadable - the default");
     }
     neotree::parse_time_zone(tz_text, zone);
 }
@@ -206,8 +215,26 @@ bool clock_set_from_app(int64_t unix_ms)
 
 bool clock_set_zone(const char *tz, size_t len)
 {
+    static char text[scene_store_settings_max + 1];
+    if (len == 0)
+    {
+        // Back to the default, and none stored.
+        if (!tz_stored)
+        {
+            return true;
+        }
+        const uint32_t irq = lock_irq();
+        memcpy(tz_text, clock_default_tz, sizeof(clock_default_tz));
+        neotree::parse_time_zone(tz_text, zone);
+        tz_stored = false;
+        unlock_irq(irq);
+        settings_with_tz(nullptr, text, sizeof(text));
+        scene_store_save_settings(text);
+        event_logf("clock: time zone back to the default");
+        return true;
+    }
     char rule[sizeof(tz_text)];
-    if (len == 0 || len >= sizeof(rule))
+    if (len >= sizeof(rule))
     {
         return false;
     }
@@ -218,15 +245,15 @@ bool clock_set_zone(const char *tz, size_t len)
     {
         return false;
     }
-    if (strcmp(rule, tz_text) == 0)
+    if (strcmp(rule, tz_text) == 0 && tz_stored)
     {
         return true;   // already so: no flash write
     }
     const uint32_t irq = lock_irq();
     zone = z;
     memcpy(tz_text, rule, sizeof(rule));
+    tz_stored = true;
     unlock_irq(irq);
-    static char text[scene_store_settings_max + 1];
     settings_with_tz(rule, text, sizeof(text));
     const bool stored = scene_store_save_settings(text);
     event_logf("clock: time zone %s%s", rule, stored ? "" : " (not stored - flash write failed)");
@@ -248,6 +275,7 @@ clock_status_t clock_status()
     s.app_ignored = app_ignored;
     s.last_step_ms = last_step_ms;
     memcpy(s.tz, tz_text, sizeof(s.tz));
+    s.tz_stored = tz_stored;
     unlock_irq(irq);
     return s;
 }

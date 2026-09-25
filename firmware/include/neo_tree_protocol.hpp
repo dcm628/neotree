@@ -110,7 +110,7 @@ enum class serial_msg_type : uint8_t
     // The clock (neo_tree_clock.hpp). UTC normally comes from SNTP; the app's
     // time is a fallback, taken only if SNTP hasn't synced for 2 hours.
     TIME_SET,       // 47: [u64 LE Unix time, ms]
-    TIME_ZONE,      // 48: [length][POSIX TZ rule, e.g. "PST8PDT,M3.2.0,M11.1.0"] - stored in flash
+    TIME_ZONE,      // 48: [length][POSIX TZ rule, e.g. "PST8PDT,M3.2.0,M11.1.0"] - stored in flash; empty = back to the default (Los Angeles)
 };
 
 // Number of defined command types - anything >= this is unknown.

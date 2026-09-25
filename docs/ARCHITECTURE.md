@@ -412,9 +412,14 @@ decided). `firmware/src/neo_tree_clock.cpp`:
 - **The app's time is a fallback**: TIME_SET (47) is taken only if SNTP
   hasn't synced for 2 hours. The app sends it on every connect.
 - **Local time from a POSIX TZ rule** (e.g. `PST8PDT,M3.2.0,M11.1.0`).
-  - The app builds it from the phone's zone and sends it on every connect
-    (TIME_ZONE, 48).
-  - It's stored in a one-sector settings region below the effects
+  - NTP carries no time zone, so the tree has a default: Los Angeles, its
+    home (`clock_default_tz`). Local time is right from power-up, with no
+    phone needed.
+  - Another zone can be set on purpose: the app's Debug page offers the
+    phone's zone (TIME_ZONE, 48) when it differs; an empty TIME_ZONE goes back to
+    the default. It's not sent
+    automatically, so a phone back from a trip can't move the tree.
+  - A set zone is stored in a one-sector settings region below the effects
     (`key=value` text), and written only when it changes.
   - The engine converts with it, DST changes included, with no zone
     database (`engine/include/neotree/civil_time.hpp`).

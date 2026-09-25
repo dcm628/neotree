@@ -234,7 +234,7 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
     case serial_msg_type::TIME_SET:
         return len == 9;
     case serial_msg_type::TIME_ZONE:
-        return len >= 3 && msg[1] <= protocol_time_zone_max && len == 2u + msg[1];
+        return len >= 2 && msg[1] <= protocol_time_zone_max && len == 2u + msg[1];
     case serial_msg_type::SLOT_SET:
     case serial_msg_type::SLOT_END:
         return len == (msg[0] == static_cast<uint8_t>(serial_msg_type::SLOT_SET) ? 4u : 3u);

@@ -112,13 +112,13 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     private val backgroundLive = Channel<ByteArray>(Channel.CONFLATED)
 
     init {
-        // Each connection: the phone's time zone (the tree stores it; the
-        // same one again is a no-op) and time (a fallback for when the tree
-        // can't reach its time servers).
+        // Each connection: the phone's time, a fallback for when the tree
+        // can't reach its time servers. (Not its time zone: that's where the
+        // tree is, set on purpose from the Debug page - a phone back from a
+        // trip mustn't move it.)
         viewModelScope.launch {
             connection.state.collect { s ->
                 if (s is TreeConnection.State.Connected) {
-                    runCatching { PosixTimeZone.of() }.onSuccess { connection.send(TreeProtocol.timeZone(it)) }
                     connection.send(TreeProtocol.timeSet(System.currentTimeMillis()))
                 }
             }
@@ -377,6 +377,15 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun rebootTree() = sendNow("Reboot", TreeProtocol.reboot())
+
+    /** The phone's time zone as a POSIX rule (null if it can't be expressed). */
+    val phoneTimeZone: String? = runCatching { PosixTimeZone.of() }.getOrNull()
+
+    /** Gives the tree this phone's time zone (stored on the tree). */
+    fun setTreeTimeZone() {
+        val rule = phoneTimeZone ?: return
+        sendNow("Tree time zone $rule", TreeProtocol.timeZone(rule))
+    }
     fun reconnectTreeWifi() = sendNow("WiFi reconnect", TreeProtocol.wifiReconnect())
     fun runDemo(id: Int) = sendNow("Demo ${TreeProtocol.DEMOS.getOrElse(id) { "$id" }}", TreeProtocol.demo(id))
 

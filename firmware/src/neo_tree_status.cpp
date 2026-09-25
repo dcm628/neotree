@@ -202,8 +202,9 @@ static size_t build_locked(char *out, size_t cap)
     // The clock (neo_tree_clock.hpp).
     const clock_status_t cs = clock_status();
     static const char *const sources[] = {"none", "sntp", "app"};
-    j.raw(",\"clock\":{\"set\":%s,\"source\":\"%s\",\"unix_ms\":%lld,\"tz\":\"%s\"", cs.set ? "true" : "false",
-          sources[static_cast<int>(cs.source)], static_cast<long long>(cs.unix_ms), cs.tz);
+    j.raw(",\"clock\":{\"set\":%s,\"source\":\"%s\",\"unix_ms\":%lld,\"tz\":\"%s\",\"tz_stored\":%s",
+          cs.set ? "true" : "false", sources[static_cast<int>(cs.source)], static_cast<long long>(cs.unix_ms), cs.tz,
+          cs.tz_stored ? "true" : "false");
     neotree::CivilTime local;
     if (clock_local(&local))
     {

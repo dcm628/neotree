@@ -74,7 +74,7 @@ fun DebugScreen(vm: TreeViewModel, contentPadding: PaddingValues) {
         } else {
             val ageSec = ((now - s.receivedAtMs) / 1000).coerceAtLeast(0)
             TreeCard(s.json, ageSec)
-            ClockCard(s.json.optJSONObject("clock"))
+            ClockCard(vm, s.json.optJSONObject("clock"))
             WifiCard(s.json.optJSONObject("wifi"))
             LedCard(s.json.optJSONObject("led"), rates?.fps)
             EngineCard(s.json)
@@ -272,14 +272,15 @@ private fun TreeCard(json: JSONObject, ageSec: Long) {
 }
 
 @Composable
-private fun ClockCard(c: JSONObject?) {
+private fun ClockCard(vm: TreeViewModel, c: JSONObject?) {
     Section("Clock") {
         if (c == null) {
             Text("-"); return@Section
         }
         val set = c.optBoolean("set")
         Kv("Time", if (set) c.optString("local") else "not set yet", if (set) Color.Unspecified else ERROR_RED)
-        Kv("Time zone", c.optString("tz"))
+        val tz = c.optString("tz")
+        Kv("Time zone", tz + if (c.optBoolean("tz_stored")) "" else " (default)")
         val source = when (c.optString("source")) {
             "sntp" -> "internet time (SNTP)"
             "app" -> "a phone (no internet time)"
@@ -288,6 +289,11 @@ private fun ClockCard(c: JSONObject?) {
         Kv("Set by", if (set) "$source, ${formatUptime(c.optLong("sync_age_s") * 1000)} ago" else "-")
         Kv("SNTP syncs", c.optLong("sntp_syncs").toString())
         Kv("Last correction", "${c.optLong("last_step_ms")} ms")
+        val phone = vm.phoneTimeZone
+        if (phone != null && phone != tz) {
+            Text("This phone's time zone is $phone.", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = { vm.setTreeTimeZone() }) { Text("Move the tree to this phone's time zone") }
+        }
     }
 }
 
