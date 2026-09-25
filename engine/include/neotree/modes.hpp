@@ -16,7 +16,7 @@ namespace neotree {
 
 class Engine;
 
-constexpr uint8_t max_params = 6;
+constexpr uint8_t max_params = 8;
 constexpr uint8_t no_mode = 0xFF;
 
 enum class ParamType : uint8_t
@@ -99,7 +99,8 @@ void default_params(const ModeDef &def, ParamValue out[max_params]);
 // (for PARAM_SET) is its position in "p". PARAM is {"id","l" (label),"t"
 // (type: "n" number, "c" color, "ch" choice, "t" toggle), then "min","max",
 // "st" (step), "d" (default: number, "#rrggbb", choice index or bool), and
-// "ch" ("a|b|c") for choices}.
+// "ch" ("a|b|c") for choices}. To stay small, fields at their defaults are
+// left out: min 0, max 1, st 0, and a toggle's d false.
 // Returns the length written (truncated JSON if cap is too small).
 size_t describe_modes(char *out, size_t cap);
 

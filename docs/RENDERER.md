@@ -1031,9 +1031,27 @@ dimmed toward black and then the scene snapped back when it went. Fades and
 brightness below 1 now scale coverage (brightness above 1 still brightens);
 the trails, a pixel layer fading by alpha, were already smooth.
 
-**Watch:** the modes description is 3,532 bytes of its 4 KB reply frame -
-a few more modes will need a more compact format (e.g. omitting default
-fields) or a bigger frame.
+**Ball options (2026-09-25, after trying it):** the play mode gained
+look (solid / glow / bubble - a shell, which now collides at its outer
+radius), what happens when balls meet (bounce / pass through / burst into
+sparks in both colors / mix to the color between them - burst and mix are
+prebuilt rules switched on and off, so changing it keeps the balls and
+trails), comet tails (each ball paints its path; dabs are now centred on the
+surface too, so a tail shows for a ball deep inside the tree), air drag and
+ball life - all applied live to balls in flight. The phone sets its own ball
+size, throw strength and balls per flick. Modes may have 8 parameters (was
+6). On the tree: a burst left 16 sparks; 12 balls with tails, 2.5 ms frames.
+
+The modes description now leaves out fields at their defaults (min 0, max 1,
+step 0, a toggle's false): 3,762 bytes with 8 play parameters. DESCRIBE
+replies get a 6 KB frame (`net_reply_json_max`).
+
+**Fixed:** on the Play tab, one finger could get stuck turning the view
+instead of flicking. When the scene was replaced (a scene picked, "Back to
+base", a show's next step) Play went with it, the tab didn't put it back,
+and the gestures quietly fell back to one-finger turning. The tab now puts
+Play back whenever it's missing, and one finger never turns the view in
+Paint or Flick.
 
 ## 16. Memory estimate
 

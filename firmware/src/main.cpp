@@ -477,7 +477,7 @@ void process_msg()
     case serial_msg_type::DESCRIBE:
     {
         // Over the network the server answers this on core1.
-        static char modes_json[status_json_max];   // static: keep it off core0's stack
+        static char modes_json[net_reply_json_max];   // static: keep it off core0's stack
         neotree::describe_modes(modes_json, sizeof(modes_json));
         printf("describe: %s\n", modes_json);
         new_msg = serial_msg_type::NOOP;

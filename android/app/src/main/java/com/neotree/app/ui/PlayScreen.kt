@@ -101,8 +101,16 @@ fun PlayScreen(vm: TreeViewModel, contentPadding: PaddingValues) {
     val connected = state is TreeConnection.State.Connected
     val playSlot = play.playSlot(live?.scene)
 
-    LaunchedEffect(connected, live?.scene != null, catalog != null) {
-        if (connected) play.ensurePlay()
+    // Put Play (back) on the tree whenever it's missing while this page is
+    // open: picking a scene, "Back to base" or a show's next step replaces the
+    // scene, Play with it. After a moment, so a fade swapping it isn't
+    // mistaken for it being gone.
+    val missing = connected && live?.scene != null && catalog != null && playSlot == null
+    LaunchedEffect(missing) {
+        if (missing) {
+            delay(1200)
+            play.ensurePlay()
+        }
     }
 
     Column(Modifier.padding(contentPadding).fillMaxSize()) {
@@ -218,6 +226,14 @@ private fun PlayArea(vm: TreeViewModel, layout: LedLayout, enabled: Boolean) {
                 color = Color(0xFFC8C8C8),
                 modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
             )
+            if (!enabled) {
+                Text(
+                    "Play isn't on the tree right now - putting it back…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFFFD27F),
+                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
+                )
+            }
         }
 
         Column(
@@ -251,16 +267,51 @@ private fun PlayArea(vm: TreeViewModel, layout: LedLayout, enabled: Boolean) {
                     OutlinedButton(onClick = { play.clearTrails(); dots.clear(); redraw++ }) { Text("Clear trails") }
                 }
             } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Random colors", Modifier.weight(1f))
-                    Switch(checked = randomBalls, onCheckedChange = { play.setRandomBalls(it) })
-                }
-                OutlinedButton(onClick = { play.clearMine() }) { Text("Clear my balls") }
+                FlickPanel(vm, play, randomBalls)
             }
             live?.scene?.let { s ->
                 play.playSlot(s)?.let { Text("Play is in slot ${it + 1} - remove it from the Modes tab.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
+    }
+}
+
+/**
+ * The Flick tool's settings: this phone's (size, strength, how many, colors),
+ * then the tree's - the play mode's parameters, shared with everyone playing
+ * and applied to balls already flying.
+ */
+@Composable
+private fun FlickPanel(vm: TreeViewModel, play: PlayController, randomBalls: Boolean) {
+    val t by play.throwSettings.collectAsState()
+    val catalog by vm.catalog.collectAsState()
+    val live by vm.scene.collectAsState()
+    vm.paramEdits.collectAsState().value   // recompose on edits
+    Text("Ball size ${t.sizeMm} mm", style = MaterialTheme.typography.labelSmall)
+    Slider(value = t.sizeMm.toFloat(), valueRange = 30f..200f, onValueChange = { play.setThrow(t.copy(sizeMm = it.roundToInt())) })
+    Text("Throw strength ${"%.1f".format(t.strength)}×", style = MaterialTheme.typography.labelSmall)
+    Slider(value = t.strength, valueRange = 0.3f..2.5f, onValueChange = { play.setThrow(t.copy(strength = it)) })
+    Text("Balls per flick: ${t.perFlick}", style = MaterialTheme.typography.labelSmall)
+    Slider(value = t.perFlick.toFloat(), valueRange = 1f..5f, steps = 3, onValueChange = { play.setThrow(t.copy(perFlick = it.roundToInt())) })
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Random colors", Modifier.weight(1f))
+        Switch(checked = randomBalls, onCheckedChange = { play.setRandomBalls(it) })
+    }
+    OutlinedButton(onClick = { play.clearMine() }) { Text("Clear my balls") }
+
+    val scene = live?.scene
+    val slot = play.playSlot(scene)
+    val mode = catalog?.byId(PlayController.PLAY_MODE)
+    if (scene != null && slot != null && mode != null) {
+        Text("On the tree (everyone's balls)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 6.dp))
+        mode.params.filter { it.id != "fade" }.forEach { p ->
+            val key = TreeViewModel.ParamKey(slot, mode.index, p.index)
+            val value = vm.paramValue(key, scene.slots[slot].params.getOrNull(p.index), p.default)
+            ParamControl(p, value) { vm.setParam(key, it) }
+        }
+        Text("Comet tails fade like paint trails (Paint tab).", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -415,6 +466,9 @@ private fun Modifier.playGestures(
         var twoFinger = false
         var lastSample = 0L
         var flickFrom: FloatArray? = null
+        // One finger paints or flicks - or, if Play isn't on the tree right
+        // now, does nothing; it never turns into rotating (only Aim, which
+        // uses the phone, rotates with one finger).
         val oneFingerTool = enabled && tool != PlayTool.AIM
         if (oneFingerTool && pick(down.position)) {
             if (tool == PlayTool.PAINT) {
@@ -432,7 +486,7 @@ private fun Modifier.playGestures(
                 if (tool == PlayTool.PAINT) onBrushUp()
                 flickFrom = null
             }
-            if (twoFinger || !oneFingerTool) {
+            if (twoFinger || tool == PlayTool.AIM) {
                 val pan = event.calculatePan()
                 camera.value = camera.value.orbit(-pan.x / density * ORBIT_RAD_PER_DP, pan.y / density * ORBIT_RAD_PER_DP)
                     .zoom(event.calculateZoom())

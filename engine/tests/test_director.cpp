@@ -247,7 +247,7 @@ TEST_CASE("director: describe output is well formed")
     }
     CHECK(depth == 0);
     MESSAGE("describe_modes: " << n << " bytes");
-    CHECK(n < 3600);   // fits the tree's 4 KB reply frame with room to grow
+    CHECK(n < 5000);   // fits the tree's 6 KB DESCRIBE reply frame with room to grow
 
     dir().apply_scene(engine, preset_at(find_preset("Holiday show")), Transition::cut);
     n = dir().describe_state(buf.data(), buf.size());

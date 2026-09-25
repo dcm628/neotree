@@ -36,6 +36,9 @@
 
 const uint16_t net_server_port = 7777;
 const uint16_t net_stream_port = 7778;
+// Largest JSON reply frame: DESCRIBE (the modes and their parameters - 3.8 KB
+// with 14 modes) can outgrow the 4 KB status report, so frames have room.
+const size_t net_reply_json_max = 6144;
 const uint8_t net_protocol_version = 1;
 const size_t net_server_max_clients = 4;
 const uint8_t hello_flag_output_on = 0x01;

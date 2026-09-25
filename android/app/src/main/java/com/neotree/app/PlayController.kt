@@ -36,6 +36,16 @@ class PlayController(
     /** Each flicked ball a random bright color (else the brush color). */
     val randomBalls: StateFlow<Boolean> = _randomBalls.asStateFlow()
 
+    /** This phone's own ball settings (how they look and move is the tree's, shared: the play mode's params). */
+    data class Throw(val sizeMm: Int = 70, val strength: Float = 1f, val perFlick: Int = 1)
+
+    private val _throw = MutableStateFlow(Throw())
+    val throwSettings: StateFlow<Throw> = _throw.asStateFlow()
+
+    fun setThrow(value: Throw) {
+        _throw.value = value
+    }
+
     private var stream: TreeStream? = null
     private var streamToken: Int? = null
     private var nextBall = 0
@@ -104,19 +114,34 @@ class PlayController(
         }
     }
 
-    /** Throws a ball from [pos] at [vel] (mm, mm/s). */
+    /**
+     * Throws from [pos] at [vel] (mm, mm/s), scaled by this phone's throw
+     * strength; several balls per flick fan out a little.
+     */
     fun flick(pos: FloatArray, vel: FloatArray) {
         val slot = playSlot(scene.value?.scene) ?: return
-        val color = if (_randomBalls.value) {
-            PickerColor(Random.nextFloat() * 360f, 0.9f + 0.1f * Random.nextFloat(), 1f).toRgb()
-        } else {
-            _brush.value.color.toRgb()
+        val t = _throw.value
+        val speed = kotlin.math.sqrt(vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]) * t.strength
+        val messages = (0 until t.perFlick).map { k ->
+            val color = if (_randomBalls.value) {
+                PickerColor(Random.nextFloat() * 360f, 0.9f + 0.1f * Random.nextFloat(), 1f).toRgb()
+            } else {
+                _brush.value.color.toRgb()
+            }
+            // The first ball goes where it was flicked; the rest scatter by up to ~20%.
+            val scatter = if (k == 0) 0f else 0.2f * speed
+            val v = FloatArray(3) { vel[it] * t.strength + scatter * (Random.nextFloat() * 2f - 1f) }
+            val p = FloatArray(3) { pos[it] + if (k == 0) 0f else 40f * (Random.nextFloat() * 2f - 1f) }
+            val id = nextBall
+            nextBall = (nextBall + 1) % BALL_IDS
+            TreeProtocol.spawnBall(slot, id, p, v, color, t.sizeMm)
         }
-        val id = nextBall
-        nextBall = (nextBall + 1) % BALL_IDS
         scope.launch {
-            if (connection.send(TreeProtocol.spawnBall(slot, id, pos, vel, color)) != AckStatus.QUEUED) {
-                setStatus("The tree didn't take the ball")
+            for (m in messages) {
+                if (connection.send(m) != AckStatus.QUEUED) {
+                    setStatus("The tree didn't take the ball")
+                    break
+                }
             }
         }
     }

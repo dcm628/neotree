@@ -725,31 +725,109 @@ const ParamDef play_params[] = {
     {"fade", "Trail fade (s, 0 = keep)", ParamType::number, 0, 30, 0.5f, 4},
     {"gravity", "Ball gravity", ParamType::number, 0, 2, 0.1f, 1},
     {"bounce", "Ball bounce", ParamType::number, 0, 1, 0.05f, 0.7f},
+    {"look", "Ball look", ParamType::choice, 0, 2, 1, 0, {}, "solid|glow|bubble"},
+    {"hit", "When balls meet", ParamType::choice, 0, 3, 1, 0, {}, "bounce|pass|burst|mix"},
+    {"tails", "Comet tails", ParamType::toggle, 0, 1, 1, 0},
+    {"air", "Air drag", ParamType::number, 0, 3, 0.05f, 0.15f},
+    {"life", "Ball life (s)", ParamType::number, 3, 60, 1, 20},
+};
+enum PlayParam : uint8_t
+{
+    play_fade,
+    play_gravity,
+    play_bounce,
+    play_look,
+    play_hit,
+    play_tails,
+    play_air,
+    play_life,
+};
+enum PlayLook : int
+{
+    look_solid,
+    look_glow,
+    look_bubble,
+};
+enum PlayHit : int
+{
+    hit_bounce,
+    hit_pass,
+    hit_burst,
+    hit_mix,
 };
 constexpr uint8_t play_trail_layer = 0;
+constexpr uint8_t play_spark_template = 2;
 // Real gravity drops a ball the height of the tree in about half a second:
 // balls fall at a quarter of it (times the gravity parameter).
 constexpr float play_gravity_scale = 0.25f;
-// Trail alpha still to take off, carried between ticks (a tick's share of a
-// fade is usually a fraction of one step of alpha).
+// Per slot: trail alpha still to take off, carried between ticks (a tick's
+// share of a fade is usually a fraction of one step of alpha); the rules for
+// "burst" and "mix" (both set up, one or none enabled).
 float play_decay[max_slots] = {};
+int play_burst_rule[max_slots] = {-1, -1, -1, -1};
+int play_mix_rule[max_slots] = {-1, -1, -1, -1};
 
-void play_ball_physics(ModeContext &ctx)
+// A phone's ball - not the mode's own sparks, or a brush.
+bool is_ball(const Entity &e)
 {
-    const float gravity = play_gravity_scale * ctx.num(1);
-    const float bounce = ctx.num(2);
-    if (Entity *ball = ctx.engine.behavior().template_at(ctx.slot, static_cast<uint8_t>(DirectKind::ball)))
+    return e.owner != 0 && e.direct_kind == static_cast<uint8_t>(DirectKind::ball);
+}
+
+void play_stroke(ModeContext &ctx, Vec3 from, Vec3 to, Rgb color, float radius);
+
+// A ball's look, motion and life from the parameters (size is the phone's).
+void style_ball(const ModeContext &ctx, Entity &e)
+{
+    e.gravity_scale = play_gravity_scale * ctx.num(play_gravity);
+    e.restitution = ctx.num(play_bounce);
+    e.drag = ctx.num(play_air);
+    e.lifetime_s = ctx.num(play_life);
+    switch (ctx.choice(play_look))
     {
-        ball->gravity_scale = gravity;
-        ball->restitution = bounce;
+    case look_glow:
+        e.shape = Shape::sphere;
+        e.falloff = Falloff::glow;
+        e.edge_mm = 55.0f;
+        break;
+    case look_bubble:
+        e.shape = Shape::shell;
+        e.falloff = Falloff::smooth;
+        e.thickness = 16.0f;
+        e.edge_mm = 30.0f;
+        break;
+    default:
+        e.shape = Shape::sphere;
+        e.falloff = Falloff::smooth;
+        e.edge_mm = 60.0f;
+        break;
+    }
+}
+
+// Applies the parameters to the ball template, every ball in flight, and the
+// collision setup - live, so balls and trails carry on.
+void play_apply(ModeContext &ctx)
+{
+    Behavior &b = ctx.engine.behavior();
+    if (Entity *ball = b.template_at(ctx.slot, static_cast<uint8_t>(DirectKind::ball)))
+    {
+        style_ball(ctx, *ball);
     }
     for_slot_entities(ctx.engine, ctx.slot, [&](Entity &e) {
-        if (e.direct_kind == static_cast<uint8_t>(DirectKind::ball))
+        if (is_ball(e))
         {
-            e.gravity_scale = gravity;
-            e.restitution = bounce;
+            style_ball(ctx, e);
         }
     });
+    const int hit = ctx.choice(play_hit);
+    b.set_response(ctx.slot, 0, 0, hit == hit_pass ? Response::ignore : Response::bounce);
+    if (Rule *r = play_burst_rule[ctx.slot] >= 0 ? b.rule(ctx.slot, static_cast<uint8_t>(play_burst_rule[ctx.slot])) : nullptr)
+    {
+        r->enabled = hit == hit_burst;
+    }
+    if (Rule *r = play_mix_rule[ctx.slot] >= 0 ? b.rule(ctx.slot, static_cast<uint8_t>(play_mix_rule[ctx.slot])) : nullptr)
+    {
+        r->enabled = hit == hit_mix;
+    }
 }
 
 void play_setup(ModeContext &ctx)
@@ -766,15 +844,12 @@ void play_setup(ModeContext &ctx)
     const uint8_t layer = entity_layer(scene, ctx.slot, EntityCombine::max);
     Behavior &b = ctx.engine.behavior();
 
-    Entity ball;   // template 0
+    Entity ball;   // template 0; styled by play_apply
     ball.layer = layer;
     ball.size = 70.0f;
-    ball.edge_mm = 60.0f;
-    ball.drag = 0.15f;
     ball.floor = Bound::bounce;
     ball.ceiling = Bound::bounce;
     ball.outer = Bound::bounce;
-    ball.lifetime_s = 20.0f;
     ball.fade_in_s = 0.1f;
     ball.fade_out_s = 3.0f;
     ball.group = 0;
@@ -791,18 +866,79 @@ void play_setup(ModeContext &ctx)
     brush.group = 1;
     b.add_template(ctx.slot, brush);
 
-    // Balls bounce off each other and off brushes (which, being kinematic,
-    // bat them like an immovable paddle).
-    b.set_response(ctx.slot, 0, 0, Response::bounce);
+    Entity spark;   // template 2: what a burst leaves; no collisions
+    spark.layer = layer;
+    spark.size = 45.0f;
+    spark.edge_mm = 55.0f;
+    spark.gravity_scale = 0.2f;
+    spark.drag = 1.2f;
+    spark.lifetime_s = 1.4f;
+    spark.fade_out_s = 1.0f;
+    b.add_template(ctx.slot, spark);
+
+    // Balls bounce off brushes (which, being kinematic, bat them like an
+    // immovable paddle); between balls it's the "hit" parameter.
     b.set_response(ctx.slot, 0, 1, Response::bounce);
-    b.set_quota(ctx.slot, 64);
+
+    // Burst: both balls go, in sparks of their colors.
+    Rule burst;
+    burst.trigger = Trigger::collision;
+    burst.group_a = 0;
+    burst.group_b = 0;
+    Action from_a;
+    from_a.type = ActionType::spawn;
+    from_a.index = play_spark_template;
+    from_a.count = 8;
+    from_a.place = Place::event_point;
+    from_a.color_from = ColorFrom::a;
+    from_a.spread = 1300.0f;
+    from_a.inherit = 0.3f;
+    Action from_b = from_a;
+    from_b.color_from = ColorFrom::b;
+    Action gone;
+    gone.type = ActionType::destroy;
+    gone.target = Target::both;
+    burst.then(from_a).then(from_b).then(gone);
+    play_burst_rule[ctx.slot] = b.add_rule(ctx.slot, burst);
+
+    // Mix: both take the color halfway between them, and bounce apart.
+    Rule mix;
+    mix.trigger = Trigger::collision;
+    mix.group_a = 0;
+    mix.group_b = 0;
+    Action blend;
+    blend.type = ActionType::set_color;
+    blend.target = Target::both;
+    blend.color_from = ColorFrom::mix;
+    mix.then(blend);
+    play_mix_rule[ctx.slot] = b.add_rule(ctx.slot, mix);
+
+    b.set_quota(ctx.slot, 160);
     play_decay[ctx.slot] = 0.0f;
-    play_ball_physics(ctx);
+    play_apply(ctx);
 }
 
 void play_tick(ModeContext &ctx, float dt)
 {
-    const float fade = ctx.num(0);
+    // Comet tails: each ball paints its path since the last tick.
+    if (ctx.toggle(play_tails))
+    {
+        for_slot_entities(ctx.engine, ctx.slot, [&](Entity &e) {
+            if (is_ball(e))
+            {
+                play_stroke(ctx, e.spawn_pos, e.pos, e.color, std::max(0.8f * e.size, 70.0f));
+            }
+        });
+    }
+    // (spawn_pos: a ball never respawns, so it holds where the tail got to.)
+    for_slot_entities(ctx.engine, ctx.slot, [&](Entity &e) {
+        if (is_ball(e))
+        {
+            e.spawn_pos = e.pos;
+        }
+    });
+
+    const float fade = ctx.num(play_fade);
     if (fade <= 0.0f)
     {
         return;   // strokes are kept
@@ -826,11 +962,11 @@ void play_tick(ModeContext &ctx, float dt)
 
 bool play_param(ModeContext &ctx, uint8_t index)
 {
-    if (index == 1 || index == 2)
+    if (index != play_fade)
     {
-        play_ball_physics(ctx);
+        play_apply(ctx);
     }
-    return true;   // fade is read every tick
+    return true;   // all live; fade and tails are read every tick
 }
 
 // Paints a soft round dab into px at p (a point on the tree's surface): full
@@ -840,6 +976,15 @@ bool play_param(ModeContext &ctx, uint8_t index)
 // tree, as someone looking at the tree sees it.
 void stamp(const LedGeometry &geometry, std::span<Rgba8> px, Vec3 p, Rgb color, float radius)
 {
+    // The centre goes onto the surface too: brush samples are already there,
+    // but a ball's tail is painted from wherever inside the tree it flies.
+    const float rp = std::sqrt(p.x * p.x + p.y * p.y);
+    if (rp > 1.0f)
+    {
+        const float out = geometry.envelope_radius(p.z) / rp;
+        p.x *= out;
+        p.y *= out;
+    }
     const float r2 = radius * radius;
     const float inv_edge = 2.0f / radius;
     for (uint16_t i : geometry.in_z_range(p.z - radius, p.z + radius))
@@ -984,12 +1129,22 @@ size_t describe_modes(char *out, size_t cap)
             switch (d.type)
             {
             case ParamType::number:
-                j.raw("\"t\":\"n\",\"min\":");
-                j.num(d.min);
-                j.raw(",\"max\":");
-                j.num(d.max);
-                j.raw(",\"st\":");
-                j.num(d.step);
+                j.raw("\"t\":\"n\"");
+                if (d.min != 0.0f)
+                {
+                    j.raw(",\"min\":");
+                    j.num(d.min);
+                }
+                if (d.max != 1.0f)
+                {
+                    j.raw(",\"max\":");
+                    j.num(d.max);
+                }
+                if (d.step != 0.0f)
+                {
+                    j.raw(",\"st\":");
+                    j.num(d.step);
+                }
                 j.raw(",\"d\":");
                 j.num(d.def);
                 j.raw("}");
@@ -1005,7 +1160,7 @@ size_t describe_modes(char *out, size_t cap)
                 j.raw("}");
                 break;
             case ParamType::toggle:
-                j.raw("\"t\":\"t\",\"d\":%s}", d.def >= 0.5f ? "true" : "false");
+                j.raw(d.def >= 0.5f ? "\"t\":\"t\",\"d\":true}" : "\"t\":\"t\"}");
                 break;
             }
         }

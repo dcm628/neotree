@@ -239,3 +239,107 @@ TEST_CASE("direct: a brush bats a ball")
     // Knocked along +x, faster than the brush (it then bounces around the tree).
     CHECK(fastest > 3000.0f);   // knocked along +x
 }
+
+namespace {
+
+// Two balls from phone 1 flying at each other along x at 1 m.
+void head_on(uint8_t slot)
+{
+    // Inside the tree (radius ~380 mm at 800 mm up), meeting at the trunk.
+    REQUIRE(direct_spawn(engine, slot, 1, 0, DirectKind::ball, {-250, 0, 800}, {1500, 0, 0}, {1, 0, 0}, 60.0f));
+    REQUIRE(direct_spawn(engine, slot, 1, 1, DirectKind::ball, {250, 0, 800}, {-1500, 0, 0}, {0, 0, 1}, 60.0f));
+}
+
+void set_play(uint8_t slot, uint8_t param, float value)
+{
+    ParamValue v;
+    v.f = value;
+    REQUIRE(dir().set_param(engine, slot, param, v));
+}
+
+uint16_t mode_owned()
+{
+    uint16_t n = 0;
+    const EntityPool &pool = engine.entities();
+    for (uint16_t k = 0; k < pool.capacity; k++)
+    {
+        n += pool.alive(k) && pool.item(k).owner == 0;
+    }
+    return n;
+}
+
+}  // namespace
+
+TEST_CASE("play: when balls meet - bounce, pass through, burst into sparks, or mix colors")
+{
+    // Params: 1 gravity, 4 hit (0 bounce, 1 pass, 2 burst, 3 mix).
+    setup();
+    start_play(1);
+    set_play(1, 1, 0.0f);
+    head_on(1);
+    seconds(0.25f);   // they meet at ~0.1 s; before they reach the far side
+    CHECK(find(1, 0)->vel.x < 0.0f);   // bounced back
+    CHECK(find(1, 1)->vel.x > 0.0f);
+
+    setup();
+    start_play(1);
+    set_play(1, 1, 0.0f);
+    set_play(1, 4, 1.0f);
+    head_on(1);
+    seconds(0.25f);
+    CHECK(find(1, 0)->pos.x > 0.0f);   // passed straight through
+    CHECK(find(1, 0)->vel.x > 1000.0f);
+
+    setup();
+    start_play(1);
+    set_play(1, 1, 0.0f);
+    set_play(1, 4, 2.0f);
+    head_on(1);
+    seconds(0.4f);
+    CHECK(find(1, 0) == nullptr);   // both gone...
+    CHECK(find(1, 1) == nullptr);
+    CHECK(mode_owned() == 16);      // ...in 8 sparks each (the mode's, not the phone's)
+    seconds(2.0f);
+    CHECK(mode_owned() == 0);       // sparks burn out
+
+    setup();
+    start_play(1);
+    set_play(1, 1, 0.0f);
+    set_play(1, 4, 3.0f);
+    head_on(1);
+    seconds(0.4f);
+    for (uint8_t id : {0, 1})
+    {
+        const Entity *ball = find(1, id);
+        REQUIRE(ball != nullptr);
+        CHECK(ball->color.r == doctest::Approx(0.5f));   // red and blue meet in the middle
+        CHECK(ball->color.b == doctest::Approx(0.5f));
+    }
+}
+
+TEST_CASE("play: comet tails paint where balls go; look and physics change balls in flight")
+{
+    setup();
+    start_play(1, 30.0f);
+    set_play(1, 1, 0.0f);
+    REQUIRE(direct_spawn(engine, 1, 1, 0, DirectKind::ball, {-250, 250, 800}, {800, 0, 0}, red, 50.0f));
+    seconds(0.3f);
+    CHECK(painted(engine.scene().pixels(1, 0)) == 0);   // tails off: no trail
+    set_play(1, 5, 1.0f);
+    seconds(0.4f);
+    CHECK(painted(engine.scene().pixels(1, 0)) > 0);
+    CHECK(painted_near(engine.scene().pixels(1, 0), find(1, 0)->pos, 150.0f) > 0);
+
+    // Look 2 = bubble, drag and life follow too - for the ball already flying.
+    set_play(1, 3, 2.0f);
+    set_play(1, 6, 1.5f);
+    set_play(1, 7, 5.0f);
+    const Entity *ball = find(1, 0);
+    CHECK(ball->shape == Shape::shell);
+    CHECK(ball->drag == 1.5f);
+    CHECK(ball->lifetime_s == 5.0f);
+    CHECK(collision_radius(*ball) > ball->size);   // bubbles still collide
+    set_play(1, 3, 1.0f);
+    CHECK(ball->shape == Shape::sphere);
+    CHECK(ball->falloff == Falloff::glow);
+}

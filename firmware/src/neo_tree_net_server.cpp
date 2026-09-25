@@ -258,7 +258,7 @@ static err_t drop_overflowed_client(client_slot *c)
 }
 
 // Builds a JSON frame ([len][type][JSON]) of the given reply type into frame
-// (3 + status_json_max bytes) and sends it in one all-or-nothing tcp_write,
+// (3 + net_reply_json_max bytes) and sends it in one all-or-nothing tcp_write,
 // so a partial frame can never corrupt the stream. Not while ACKs are
 // backlogged, so it can't starve them. Returns false if it couldn't go now.
 static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame)
@@ -269,7 +269,7 @@ static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame)
     {
     case net_reply_type::STATUS: json_len = status_build_json(json, status_json_max); break;
     // The built-in modes: static data, safe to read from core1.
-    case net_reply_type::DESCRIBE: json_len = neotree::describe_modes(json, status_json_max); break;
+    case net_reply_type::DESCRIBE: json_len = neotree::describe_modes(json, net_reply_json_max); break;
     // Snapshots core0 publishes.
     case net_reply_type::SCENE: json_len = engine_host_scene_json(json, status_json_max); break;
     case net_reply_type::LIBRARY: json_len = engine_host_library_json(json, status_json_max); break;
@@ -287,7 +287,7 @@ static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame)
 // can't go now it's dropped (the client asks again).
 static void send_reply(client_slot *c, net_reply_type type)
 {
-    static uint8_t frame[3 + status_json_max];   // static: IRQ context, one core
+    static uint8_t frame[3 + net_reply_json_max];   // static: IRQ context, one core
     if (!send_json(c, type, frame))
     {
         diag.status_dropped = diag.status_dropped + 1;
@@ -630,7 +630,7 @@ static void push_changes()
     static uint64_t last_push_us = 0;
     static uint32_t last_scene_rev = 0;
     static uint32_t last_library_rev = 0;
-    static uint8_t frame[3 + status_json_max];   // static: keep it off core1's stack
+    static uint8_t frame[3 + net_reply_json_max];   // static: keep it off core1's stack
     const uint64_t now = time_us_64();
     const uint32_t scene_rev = engine_host_scene_revision();
     const uint32_t library_rev = engine_host_library_revision();

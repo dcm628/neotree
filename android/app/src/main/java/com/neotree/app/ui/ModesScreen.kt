@@ -260,7 +260,7 @@ private fun ModePicker(catalog: ModeCatalog, current: ModeInfo?, onPick: (Int) -
 }
 
 @Composable
-private fun ParamControl(p: ParamInfo, value: ParamValue, onChange: (ParamValue) -> Unit) {
+internal fun ParamControl(p: ParamInfo, value: ParamValue, onChange: (ParamValue) -> Unit) {
     when (p.type) {
         ParamType.NUMBER -> NumberParam(p, value.number) { onChange(ParamValue(number = it)) }
         ParamType.TOGGLE -> Row(verticalAlignment = Alignment.CenterVertically) {

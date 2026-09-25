@@ -102,7 +102,7 @@ struct Entity
 
     // Interaction
     uint8_t group = no_group;        // collision group, 0..max_groups-1
-    float collide_radius = 0.0f;     // 0 = from the shape (sphere: size, capsule: size + length)
+    float collide_radius = 0.0f;     // 0 = from the shape (sphere: size, shell: size + thickness, capsule: size + length)
 
     // Direct control (neotree/direct.hpp): 0 = the slot's mode; otherwise
     // the phone (or other client) that spawned it, under its own id.

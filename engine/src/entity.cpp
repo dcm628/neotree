@@ -199,8 +199,9 @@ float collision_radius(const Entity &e)
     switch (e.shape)
     {
     case Shape::sphere: return e.size;
+    case Shape::shell: return e.size + e.thickness;
     case Shape::capsule: return e.size + e.length;
-    default: return 0.0f;   // slabs, shells and wedges only collide if given a radius
+    default: return 0.0f;   // slabs and wedges only collide if given a radius
     }
 }
 
