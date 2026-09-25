@@ -14,6 +14,7 @@ namespace {
 
 constexpr uint32_t store_magic = 0x4C53544E;     // "NTSL"
 constexpr uint32_t effects_magic = 0x5846544E;   // "NTFX"
+constexpr uint32_t settings_magic = 0x5453544E;  // "NTST"
 constexpr size_t store_size = 4 * FLASH_SECTOR_SIZE;
 
 struct store_header
@@ -36,6 +37,7 @@ extern "C" char __flash_binary_end;
 // library, then the effects below it.
 uint32_t library_offset() { return pos_config_flash_offset() - FLASH_SECTOR_SIZE - store_size; }
 uint32_t effects_offset() { return library_offset() - store_size; }
+uint32_t settings_offset() { return effects_offset() - FLASH_SECTOR_SIZE; }
 
 bool clear_of_program(uint32_t offset)
 {
@@ -177,4 +179,30 @@ bool scene_store_save_effects(const neotree::Library &library)
 scene_store_stats_t scene_store_stats()
 {
     return stats;
+}
+
+size_t scene_store_load_settings(char *out, size_t cap)
+{
+    const uint8_t *payload = nullptr;
+    uint32_t len = 0;
+    if (cap == 0 || read_region(settings_offset(), settings_magic, &payload, &len) != scene_store_load_result::loaded)
+    {
+        return 0;
+    }
+    const size_t n = len < cap - 1 ? len : cap - 1;
+    memcpy(out, payload, n);
+    out[n] = '\0';
+    return n;
+}
+
+bool scene_store_save_settings(const char *text)
+{
+    const size_t n = strnlen(text, scene_store_settings_max + 1);
+    if (n > scene_store_settings_max || !clear_of_program(settings_offset()))
+    {
+        stats.save_failures++;
+        return false;
+    }
+    memcpy(staging + sizeof(store_header), text, n);
+    return write_region(settings_offset(), settings_magic, n, "settings");
 }

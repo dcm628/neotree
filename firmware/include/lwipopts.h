@@ -46,6 +46,26 @@
 #define LWIP_TCP                    1
 #define LWIP_UDP                    1
 #define LWIP_DNS                    1
+// DHCP, DNS, mDNS, the brush stream and SNTP.
+#define MEMP_NUM_UDP_PCB            6
+
+// SNTP (neo_tree_clock.cpp): public servers by name (the router doesn't
+// answer), round trips compensated, replies checked against our request.
+#define SNTP_SERVER_DNS             1
+#define SNTP_MAX_SERVERS            2
+#define SNTP_COMP_ROUNDTRIP         1
+#define SNTP_CHECK_RESPONSE         2
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+void neo_tree_clock_sntp_set(uint32_t sec, uint32_t us);
+void neo_tree_clock_sntp_get(uint32_t *sec, uint32_t *us);
+#ifdef __cplusplus
+}
+#endif
+#define SNTP_SET_SYSTEM_TIME_US(sec, us) neo_tree_clock_sntp_set((sec), (us))
+#define SNTP_GET_SYSTEM_TIME(sec, us)    neo_tree_clock_sntp_get(&(sec), &(us))
 #define LWIP_TCP_KEEPALIVE          1
 #define DHCP_DOES_ARP_CHECK         0
 #define LWIP_DHCP_DOES_ACD_CHECK    0

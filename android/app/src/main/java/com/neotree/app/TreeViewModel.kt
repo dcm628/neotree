@@ -13,6 +13,7 @@ import com.neotree.app.net.FxSectionData
 import com.neotree.app.net.FxSectionSchema
 import com.neotree.app.net.ModeCatalog
 import com.neotree.app.net.ParamValue
+import com.neotree.app.net.PosixTimeZone
 import com.neotree.app.net.Rgb
 import com.neotree.app.net.SceneState
 import com.neotree.app.net.TreeLibrary
@@ -109,6 +110,20 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     // channels keep only the newest pending one per picker, so the tree
     // always catches up to where the finger is instead of replaying every step.
     private val backgroundLive = Channel<ByteArray>(Channel.CONFLATED)
+
+    init {
+        // Each connection: the phone's time zone (the tree stores it; the
+        // same one again is a no-op) and time (a fallback for when the tree
+        // can't reach its time servers).
+        viewModelScope.launch {
+            connection.state.collect { s ->
+                if (s is TreeConnection.State.Connected) {
+                    runCatching { PosixTimeZone.of() }.onSuccess { connection.send(TreeProtocol.timeZone(it)) }
+                    connection.send(TreeProtocol.timeSet(System.currentTimeMillis()))
+                }
+            }
+        }
+    }
     private val paintLive = Channel<ByteArray>(Channel.CONFLATED)
     private var connectJob: Job? = null
     private var foreground = false

@@ -107,10 +107,15 @@ enum class serial_msg_type : uint8_t
     FX_ITEM,        // 44: [op: 0 add (actions: to rule `item`), 1 remove, 2 duplicate][section][item]
     FX_GET,         // 45: [section] -> [0x87][JSON]: the draft's items in that section (sent after the ACK)
     FX_SAVE,        // 46: [name] - stores the draft as an effect (replaces the effect of that name)
+    // The clock (neo_tree_clock.hpp). UTC normally comes from SNTP; the app's
+    // time is a fallback, taken only if SNTP hasn't synced for 2 hours.
+    TIME_SET,       // 47: [u64 LE Unix time, ms]
+    TIME_ZONE,      // 48: [length][POSIX TZ rule, e.g. "PST8PDT,M3.2.0,M11.1.0"] - stored in flash
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::FX_SAVE) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::TIME_ZONE) + 1;
+const size_t protocol_time_zone_max = 63;
 
 const size_t entity_spawn_len = 20;
 const size_t brush_len = 14;

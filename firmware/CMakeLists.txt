@@ -70,6 +70,7 @@ target_sources(neo_tree PRIVATE
                 src/neo_tree_loop_monitor.cpp
                 src/neo_tree_safety.cpp
                 src/neo_tree_scene_store.cpp
+                src/neo_tree_clock.cpp
                 )
 
 # The rendering engine (portable library shared with the host simulator).
@@ -110,6 +111,7 @@ target_link_libraries(neo_tree PRIVATE    pico_stdlib
                                             pico_multicore
                                             pico_cyw43_arch_lwip_threadsafe_background
                                             pico_lwip_mdns
+                                            pico_lwip_sntp
                                             pico_rand
                                             hardware_flash)
 

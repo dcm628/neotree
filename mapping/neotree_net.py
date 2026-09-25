@@ -76,6 +76,9 @@ FX_GET_MSG_TYPE = 45
 FX_SAVE_MSG_TYPE = 46
 FX_SECTIONS = ["settings", "layers", "things", "sources", "meets", "rules", "actions", "starts"]
 FX_ADD, FX_REMOVE, FX_DUPLICATE = 0, 1, 2
+# The clock (firmware neo_tree_clock.hpp): UTC from SNTP, the app's time as a fallback.
+TIME_SET_MSG_TYPE = 47
+TIME_ZONE_MSG_TYPE = 48
 NAME_LEN = 20
 
 STATUS_NAMES = {
@@ -234,6 +237,18 @@ class NeotreeNet:
         """what: "base" (back to the default), "preset" or "show" (by library
         index), or "effect" (by its position, "k" in the library's "fx")."""
         self.write(bytes([LIBRARY_DELETE_MSG_TYPE, ["base", "preset", "show", "effect"].index(what), index]))
+
+    # ---- the clock ----
+
+    def set_time(self, unix_ms=None):
+        """Offers the tree this computer's time (taken only if SNTP hasn't synced for 2 hours)."""
+        ms = int(time.time() * 1000) if unix_ms is None else int(unix_ms)
+        self.write(bytes([TIME_SET_MSG_TYPE]) + struct.pack("<q", ms))
+
+    def set_time_zone(self, rule):
+        """A POSIX TZ rule, e.g. "PST8PDT,M3.2.0,M11.1.0" - stored on the tree."""
+        raw = rule.encode("ascii")
+        self.write(bytes([TIME_ZONE_MSG_TYPE, len(raw)]) + raw)
 
     # ---- custom effects ----
 

@@ -7,9 +7,9 @@
 //
 // Flash layout, from the top: LED positions (neo_tree_config), WiFi
 // credentials (one sector, neo_tree_wifi), then this store's two regions of
-// 4 sectors - the library, then its custom effects - each
-// [magic][length][crc32][reserved] + that part's stored form. Apart, so
-// saving one doesn't rewrite the other.
+// 4 sectors - the library, then its custom effects - and one sector of
+// settings below them, each [magic][length][crc32][reserved] + that part's
+// stored form. Apart, so saving one doesn't rewrite the others.
 
 #include <cstddef>
 #include <cstdint>
@@ -48,5 +48,13 @@ bool scene_store_save(const neotree::Library &library);
 bool scene_store_save_effects(const neotree::Library &library);
 
 scene_store_stats_t scene_store_stats();
+
+// Settings: a little text, "key=value" lines (the clock's time zone, ...).
+// Copies what's stored into out (NUL-terminated) and returns its length, 0
+// for none. Saving is core0 only, like the rest.
+size_t scene_store_load_settings(char *out, size_t cap);
+bool scene_store_save_settings(const char *text);
+// The largest settings text that fits.
+constexpr size_t scene_store_settings_max = 1024;
 
 #endif

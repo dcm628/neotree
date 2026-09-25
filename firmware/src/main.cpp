@@ -24,6 +24,7 @@
 #include "neo_tree_event_log.hpp"
 #include "neo_tree_status.hpp"
 #include "neo_tree_engine.hpp"
+#include "neo_tree_clock.hpp"
 #include "neo_tree_loop_monitor.hpp"
 #include "neo_tree_safety.hpp"
 #include "neotree/effect.hpp"
@@ -230,6 +231,10 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
         return len == 4;
     case serial_msg_type::FX_SAVE:
         return len == 1 + protocol_name_len;
+    case serial_msg_type::TIME_SET:
+        return len == 9;
+    case serial_msg_type::TIME_ZONE:
+        return len >= 3 && msg[1] <= protocol_time_zone_max && len == 2u + msg[1];
     case serial_msg_type::SLOT_SET:
     case serial_msg_type::SLOT_END:
         return len == (msg[0] == static_cast<uint8_t>(serial_msg_type::SLOT_SET) ? 4u : 3u);
@@ -511,6 +516,23 @@ void process_msg()
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
+    case serial_msg_type::TIME_SET:
+    {
+        int64_t unix_ms = 0;
+        memcpy(&unix_ms, serial_buf_copy + 1, sizeof(unix_ms));
+        clock_set_from_app(unix_ms);   // ignored while SNTP is fresh (counted in status)
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    }
+    case serial_msg_type::TIME_ZONE:
+        if (!clock_set_zone(reinterpret_cast<const char *>(serial_buf_copy + 2), serial_buf_copy[1]))
+        {
+            event_logf("clock: not a time zone rule");
+        }
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
     case serial_msg_type::FX_SCHEMA:
     {
         // Over the network the server answers this on core1.
@@ -646,6 +668,7 @@ void main_core1()
         {
             wifi_poll();
             net_server_poll();
+            clock_poll_core1();
         }
         // Onboard LED blinks at 1Hz while core1 is cycling and the CYW43 is
         // up. The LED hangs off the CYW43, so each write is an SPI
@@ -717,6 +740,7 @@ int main() {
     led_output_init();
 
     command_queue_init();   // core1's serial reader pushes into it from the start
+    clock_init();           // its lock and stored time zone, before core1 uses them
     multicore_launch_core1(main_core1);
 
     init_my_tree();

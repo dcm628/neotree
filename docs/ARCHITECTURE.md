@@ -399,6 +399,33 @@ concurrent clients, and exactly which state persists.
 - **Not yet done:** modes, persistence and the stream channel (phase B).
   LED output is untested visually, since the testbed has no LEDs.
 
+### 8.0 The clock (2026-09-25)
+
+The tree keeps wall-clock time, for timers (what they do is still to be
+decided). `firmware/src/neo_tree_clock.cpp`:
+
+- **UTC from SNTP** (lwIP's client) - `pool.ntp.org`, then `time.google.com`.
+  The router doesn't answer NTP. It syncs once the WiFi link is up, then
+  hourly, with the round trip compensated. Before the first sync its clock
+  starts at a floor date (2026-05-28), because lwIP skips the compensation
+  when the clock is more than ~34 years out.
+- **The app's time is a fallback**: TIME_SET (47) is taken only if SNTP
+  hasn't synced for 2 hours. The app sends it on every connect.
+- **Local time from a POSIX TZ rule** (e.g. `PST8PDT,M3.2.0,M11.1.0`).
+  - The app builds it from the phone's zone and sends it on every connect
+    (TIME_ZONE, 48).
+  - It's stored in a one-sector settings region below the effects
+    (`key=value` text), and written only when it changes.
+  - The engine converts with it, DST changes included, with no zone
+    database (`engine/include/neotree/civil_time.hpp`).
+- Kept as an offset from the microsecond timer, so a power cut loses it
+  until the next sync. After a reboot it was set 13 s after power-up.
+- Status JSON `clock`: set, source, `unix_ms`, `local`, tz, `offset_min`,
+  dst, sync ages, counts, and the last correction. The app's Debug page has a
+  Clock card.
+- Measured: within ~10-15 ms of true time (the measurement itself is good to
+  about +-12 ms).
+
 ### 8.1 Goals
 
 The whole family uses it on the living-room tree at Christmas, from Android

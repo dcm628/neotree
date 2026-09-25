@@ -8,6 +8,7 @@
 
 add_library(neotree_engine STATIC
     src/behavior.cpp
+    src/civil_time.cpp
     src/direct.cpp
     src/effect.cpp
     src/director.cpp

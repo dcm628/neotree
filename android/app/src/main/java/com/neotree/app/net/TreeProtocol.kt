@@ -62,6 +62,8 @@ object TreeProtocol {
     private const val FX_ITEM = 44
     private const val FX_GET = 45
     private const val FX_SAVE = 46
+    private const val TIME_SET = 47
+    private const val TIME_ZONE = 48
     const val BRUSH_LEN = 14
 
     /** Names on the wire: 20 bytes, NUL-padded (at most 19 used). */
@@ -138,6 +140,20 @@ object TreeProtocol {
     fun deleteShow(index: Int): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 2, index.toByte())
     /** A saved custom effect, by its position (EffectInfo.position). */
     fun deleteEffect(position: Int): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 3, position.toByte())
+
+    // ---- the clock (firmware neo_tree_clock.hpp) ----
+
+    /** The phone's time; the tree takes it only if SNTP hasn't synced for 2 hours. */
+    fun timeSet(unixMs: Long): ByteArray = message(9) {
+        put(TIME_SET.toByte())
+        putLong(unixMs)
+    }
+
+    /** A POSIX TZ rule (PosixTimeZone), stored on the tree; it keeps local time with it. */
+    fun timeZone(rule: String): ByteArray {
+        val raw = rule.toByteArray(Charsets.US_ASCII).take(63).toByteArray()
+        return byteArrayOf(TIME_ZONE.toByte(), raw.size.toByte()) + raw
+    }
 
     // ---- custom effects (engine/include/neotree/effect.hpp) ----
     // One draft effect is edited at a time, running in a slot; edits show there at once.
@@ -342,6 +358,8 @@ object TreeProtocol {
         44 -> "FX_ITEM"
         45 -> "FX_GET"
         46 -> "FX_SAVE"
+        47 -> "TIME_SET"
+        48 -> "TIME_ZONE"
         else -> "TYPE_$type"
     }
 

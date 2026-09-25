@@ -6,6 +6,7 @@
 #include "hardware/sync.h"
 #include "lwip/stats.h"
 
+#include "neo_tree_clock.hpp"
 #include "neo_tree_command_queue.hpp"
 #include "neo_tree_event_log.hpp"
 #include "neo_tree_engine.hpp"
@@ -197,6 +198,25 @@ static size_t build_locked(char *out, size_t cap)
           load_names[static_cast<int>(ss.load)], (unsigned)ss.stored_bytes,
           load_names[static_cast<int>(ss.effects_load)], (unsigned)ss.effects_bytes, (unsigned)ss.saves,
           (unsigned)ss.save_failures, (unsigned)(ss.last_save_us / 1000));
+
+    // The clock (neo_tree_clock.hpp).
+    const clock_status_t cs = clock_status();
+    static const char *const sources[] = {"none", "sntp", "app"};
+    j.raw(",\"clock\":{\"set\":%s,\"source\":\"%s\",\"unix_ms\":%lld,\"tz\":\"%s\"", cs.set ? "true" : "false",
+          sources[static_cast<int>(cs.source)], static_cast<long long>(cs.unix_ms), cs.tz);
+    neotree::CivilTime local;
+    if (clock_local(&local))
+    {
+        char text[40];
+        neotree::format_civil(local, text, sizeof(text));
+        j.raw(",\"local\":\"%s\",\"offset_min\":%ld,\"dst\":%s", text, static_cast<long>(local.offset_s / 60),
+              local.dst ? "true" : "false");
+    }
+    j.raw(",\"sync_age_s\":%lu,\"sntp_syncs\":%lu,\"sntp_age_s\":%ld,\"app_sets\":%lu,\"app_ignored\":%lu,"
+          "\"last_step_ms\":%ld}",
+          static_cast<unsigned long>(cs.sync_age_s), static_cast<unsigned long>(cs.sntp_syncs),
+          cs.sntp_age_s == UINT32_MAX ? -1L : static_cast<long>(cs.sntp_age_s), static_cast<unsigned long>(cs.app_sets),
+          static_cast<unsigned long>(cs.app_ignored), static_cast<long>(cs.last_step_ms));
 
     j.raw(",\"queue\":{\"level\":%u,\"dropped\":%u},\"core1_loops\":%u", (unsigned)command_queue_level(),
           (unsigned)command_queue_dropped(), (unsigned)core1_loop_counter);
