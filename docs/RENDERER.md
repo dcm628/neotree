@@ -497,6 +497,53 @@ both switch to the full map.
   tied to the TCP connection by a token from HELLO. Pixel frames could use it
   later.
 
+## 12.1 Custom effects (M8 plan, agreed 2026-09-25)
+
+A new effect built entirely from the app, without reflashing (§8.1's
+"future path"). Decided with Dan: the editor exposes the engine's **building
+blocks** in plain words; edits show **live on the tree**; a new effect
+starts **blank or as a copy of any built-in mode**; **rules** ("when X,
+do Y") are part of M8.
+
+- **An effect is data** (`engine/include/neotree/effect.hpp`): up to 6
+  layers (solid, gradient, rainbow, things), 8 things (entity templates),
+  8 sources (emitters), up to 16 "meets" (a pair of groups and what happens:
+  pass, bounce, stick, destroy...), 12 rules of up to 4 actions, what it
+  starts with (so many of a thing, at a speed), forces, and a limit on how
+  many things. It's exactly what a mode's setup builds, so running an effect
+  is a generic setup that builds it (`apply_effect`), and **copying a
+  built-in** is running its setup and capturing the slot it built
+  (`capture_effect`). What's code rather than data doesn't copy (e.g. snow's
+  wind gusts, in its tick hook).
+- **One schema** describes every editable field: section, id, plain label,
+  type (number with range and step, color, choice, toggle), and when it's
+  shown (e.g. thickness only for bubbles). It drives the app's editor (sent
+  with FX_SCHEMA), the JSON the app reads, the edits it sends, and the stored
+  form. Field numbers are append-only, like protocol numbers.
+- **Effects are modes.** A saved effect runs in a slot like a built-in, is
+  listed with the library (LIBRARY's `"fx"`, with its mode index - DESCRIBE
+  stays the static built-ins, since the firmware builds it on core1), is
+  saved in scenes and shows by id (`fx:<name>`), and stores in flash in its
+  own 4-sector region (up to 6).
+  Stored field by field, with a type tag, only where different from the
+  default - so fields added later default, and unknown ones are skipped.
+- **Live editing:** one draft effect at a time runs in a slot (mode
+  `fx.draft`). FX_SET changes one field and the tree applies it at once to
+  the running slot - to the layer, the template *and every thing already
+  made from it*, the source, the rule. Adding or removing an item rebuilds
+  the slot. FX_SAVE stores the draft under a name.
+- **Protocol:** FX_SCHEMA (41), FX_EDIT (42: new blank / copy a mode / open
+  a saved effect, into a slot), FX_SET (43), FX_ITEM (44: add / remove /
+  duplicate), FX_GET (45: a section of the draft, answered after core0
+  builds it - a deferred reply), FX_SAVE (46); LIBRARY_DELETE gains effects.
+- **App:** an Effects card on the Modes tab (play, edit, delete, "new:
+  blank or a copy of..."); a full-page editor with sections - Backgrounds,
+  Things, Sources, When things meet, Rules, Start with, Settings - each item
+  a card whose controls come from the schema.
+- **Order:** engine (data, schema, apply, capture, draft, storage, tests) →
+  firmware (protocol, deferred replies, flash) → app editor → rules in the
+  editor → the proof: an effect built from nothing in the app.
+
 ## 13. Open questions
 
 None outstanding. Settled on review (2026-09-24):
@@ -1052,6 +1099,72 @@ base", a show's next step) Play went with it, the tab didn't put it back,
 and the gestures quietly fell back to one-finger turning. The tab now puts
 Play back whenever it's missing, and one finger never turns the view in
 Paint or Flick.
+
+### M8 — done 2026-09-25 (the proof awaits Dan: an effect built in the app)
+
+Decided with Dan: the editor shows the engine's **building blocks** in plain
+words; edits show **live on the tree**; a new effect starts **blank or as a
+copy of a built-in**; **rules** are in. The plan is §12.1.
+
+- **Effects** (`engine/include/neotree/effect.hpp`, `src/effect.cpp`): an
+  `Effect` is layers, things (entity templates), sources (emitters), meets,
+  rules with their actions, starts, a quota and optional forces. One schema
+  (8 sections, 118 fields, each with a plain label, a type, a range and when
+  it's shown) drives everything: get / set by field number, the app's
+  controls, the JSON, the stored form. `apply_effect` builds one in a slot;
+  `capture_effect` turns what a mode's setup built into one (pixel layers
+  dropped; live entities become "start with" counts, per template - entities
+  now remember theirs, `Entity::tmpl`). What's code rather than data doesn't
+  copy (snow's gusts, orbit's steering). Copies of field modes (solid,
+  gradient, rainbow, lighthouse) draw byte-identically to the mode.
+- **Live edits** (`effect_apply_field`): a thing's change reaches the
+  template *and everything made from it*; sources and rules are replaced in
+  place keeping their timers and counts; meets are rebuilt; forces and quota
+  set. What can't change in place - what it starts with, a layer turning to
+  or from things, a thing changing layer - sets the draft up again, as does
+  adding or removing an item.
+- **Effects are modes**: `fx.draft` (mode 48, the one being edited) and the
+  library's saved effects at fixed positions (`fx:<name>`, modes 49-54), so
+  an effect's index stays put while others come and go. They have no
+  parameters (the editor is their control). Scenes store them by id; at
+  boot the effects load before the scenes that name them.
+- **Stored form**: per item, only the fields that are shown and differ from
+  a new item's, each with its number and a type tag - so fields added later
+  default and unknown ones are skipped, and aliases (a wedge's width is its
+  size) stay single. Copies of the built-ins store in 67-369 bytes; up to 2 KB
+  each. The library holds them encoded (6 x 2 KB) and decodes one into a
+  single scratch `Effect` (6.4 KB) when its mode starts. Flash: a second
+  4-sector region below the library's (`NTFX`); each region is written only
+  when its part changed (`Library::scenes_revision`).
+- **Director**: `edit_effect` (new / copy / open, run in a slot and nowhere
+  else), `edit_field`, `edit_item`, `save_draft`; the scene JSON has
+  `"fx":{"n","rev","slot"}`. Mode ids in the scene JSON are now escaped
+  (they hold names).
+- **Protocol**: FX_SCHEMA 41 (answered on core1: static), FX_EDIT 42, FX_SET
+  43, FX_ITEM 44, FX_GET 45 and FX_SAVE 46; LIBRARY_DELETE 3 = an effect.
+  FX_GET is a deferred reply: core0 notes which sections each client wants
+  and builds one a frame into a mailbox, which core1 sends (`[0x87][JSON]`,
+  after the ACK). Replies: FX_SCHEMA `[0x86]`, FX `[0x87]`.
+- **App**: an Effects card on the Modes tab (new - blank or a copy of any
+  mode; play / edit / delete saved ones; continue the last one), and a
+  full-page editor: Backgrounds, Things, Sources, When things meet, Rules
+  (each with its "Then" actions), Start with, Settings. Every control comes
+  from the tree's schema (only the fields that apply show); numbers can be
+  typed; slider drags send only the newest value, and once edits pause the
+  touched sections are read back. Effects and the draft join the mode
+  catalog, so slots show them and saved effects can be picked for any slot.
+  Effects play and are edited in slot 2, over the Colors canvas.
+- 113 engine tests (9 new), 36 app tests (5 new); the built-in scenes render
+  byte-identically to before.
+
+**On the tree:** built from nothing over the protocol (no source; a timer
+rule popping 6 random-colored balls a second, falling and bouncing): runs at
+1.2 ms frames; 20 live size edits in 82 ms; saved, it plays as `fx:Popcorn`,
+survives a reboot (effects region loaded, 146 bytes) and deletes. Copies of
+snow, fireworks, chain and orbit run at 1.0-1.8 ms frames. Stack peaks
+2,176 / 1,896 bytes. RAM: bss 450 KB of 520 KB (+36 KB). **The proof - a
+new effect built entirely in the app - needs Dan with the phone**; the app is
+installed.
 
 ## 16. Memory estimate
 

@@ -7,6 +7,7 @@
 
 #include "neotree/direct.hpp"
 #include "neotree/director.hpp"
+#include "neotree/effect.hpp"
 #include "neotree/engine.hpp"
 #include "json.hpp"
 
@@ -1078,12 +1079,73 @@ const ModeDef modes[] = {
      play_setup, play_tick, play_param, true, play_stroke},
 };
 constexpr uint8_t count_of_modes = static_cast<uint8_t>(sizeof(modes) / sizeof(modes[0]));
+static_assert(count_of_modes <= effect_mode_base);
+
+// ---- custom effects as modes ----
+
+const Effect *bound_draft = nullptr;
+const Library *bound_library = nullptr;
+constexpr uint8_t effect_def_count = 1 + max_effects;
+ModeDef effect_defs[effect_def_count];
+char effect_ids[effect_def_count][3 + name_size];
+
+void effect_setup(ModeContext &ctx)
+{
+    const auto k = &ctx.def - effect_defs;
+    if (k == 0 && bound_draft != nullptr)
+    {
+        apply_effect(ctx.engine, ctx.slot, *bound_draft);
+    }
+    else if (k > 0 && k < effect_def_count && bound_library != nullptr)
+    {
+        Effect &e = effect_scratch();
+        if (bound_library->effect(static_cast<uint8_t>(k - 1), e))
+        {
+            apply_effect(ctx.engine, ctx.slot, e);
+        }
+    }
+}
+
+// Effect mode index -> its (refreshed) definition, or null.
+const ModeDef *effect_def(uint8_t index)
+{
+    if (!is_effect_mode(index) || index - effect_mode_base >= effect_def_count)
+    {
+        return nullptr;
+    }
+    const uint8_t k = static_cast<uint8_t>(index - effect_mode_base);
+    const char *name = nullptr;
+    if (k == 0)
+    {
+        if (bound_draft == nullptr)
+        {
+            return nullptr;
+        }
+        std::snprintf(effect_ids[0], sizeof(effect_ids[0]), "fx.draft");
+        name = bound_draft->name;
+    }
+    else
+    {
+        if (bound_library == nullptr || !bound_library->effect_used(static_cast<uint8_t>(k - 1)))
+        {
+            return nullptr;
+        }
+        name = bound_library->effect_name(static_cast<uint8_t>(k - 1));
+        std::snprintf(effect_ids[k], sizeof(effect_ids[k]), "fx:%s", name);
+    }
+    effect_defs[k] = ModeDef{effect_ids[k], name, k == 0 ? "The effect being edited" : "Made in the app", nullptr, 0,
+                             effect_setup};
+    return &effect_defs[k];
+}
 
 }  // namespace
 
 uint8_t mode_count() { return count_of_modes; }
 
-const ModeDef *mode_at(uint8_t index) { return index < count_of_modes ? &modes[index] : nullptr; }
+const ModeDef *mode_at(uint8_t index)
+{
+    return index < count_of_modes ? &modes[index] : effect_def(index);
+}
 
 uint8_t find_mode(const char *id)
 {
@@ -1094,7 +1156,22 @@ uint8_t find_mode(const char *id)
             return i;
         }
     }
+    if (std::strcmp(id, "fx.draft") == 0 && bound_draft != nullptr)
+    {
+        return draft_mode;
+    }
+    if (std::strncmp(id, "fx:", 3) == 0 && bound_library != nullptr)
+    {
+        const uint8_t k = bound_library->find_effect(id + 3);
+        return k == no_index ? no_mode : effect_mode(k);
+    }
     return no_mode;
+}
+
+void bind_effects(const Effect *draft, const Library *library)
+{
+    bound_draft = draft;
+    bound_library = library;
 }
 
 void default_params(const ModeDef &def, ParamValue out[max_params])

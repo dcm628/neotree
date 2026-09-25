@@ -144,6 +144,7 @@ int Behavior::add_template(uint8_t slot, const Entity &entity)
     SlotBehavior &sb = slots_[slot];
     sb.templates[sb.template_count] = entity;
     sb.templates[sb.template_count].slot = slot;
+    sb.templates[sb.template_count].tmpl = static_cast<uint8_t>(sb.template_count + 1);   // copies carry it
     return sb.template_count++;
 }
 
@@ -192,6 +193,40 @@ int Behavior::add_emitter(uint8_t slot, const Emitter &emitter)
 Emitter *Behavior::emitter(uint8_t slot, uint8_t index)
 {
     return slot < max_slots && index < slots_[slot].emitter_count ? &slots_[slot].emitters[index] : nullptr;
+}
+
+void Behavior::clear_responses(uint8_t slot)
+{
+    if (slot >= max_slots)
+    {
+        return;
+    }
+    for (auto &row : slots_[slot].responses)
+    {
+        for (Response &r : row)
+        {
+            r = Response::ignore;
+        }
+    }
+}
+
+void Behavior::refresh_listening(uint8_t slot)
+{
+    if (slot >= max_slots)
+    {
+        return;
+    }
+    SlotBehavior &sb = slots_[slot];
+    sb.listening = 0;
+    for (uint8_t i = 0; i < sb.rule_count; i++)
+    {
+        sb.listening |= static_cast<uint16_t>(1u << static_cast<unsigned>(event_for(sb.rules[i].trigger)));
+    }
+}
+
+uint16_t Behavior::quota(uint8_t slot) const
+{
+    return slot < max_slots ? slots_[slot].quota : 0;
 }
 
 void Behavior::set_response(uint8_t slot, uint8_t group_a, uint8_t group_b, Response response)

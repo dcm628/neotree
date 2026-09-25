@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "neotree/effect.hpp"
 #include "neotree/library.hpp"
 #include "neotree/modes.hpp"
 #include "neotree/scene.hpp"
@@ -114,6 +115,29 @@ public:
     // Called by the engine first thing each tick.
     void tick(Engine &engine, float dt);
 
+    // ---- custom effects (neotree/effect.hpp, docs/RENDERER.md 12.1) ----
+    // One draft effect is edited at a time. It runs as mode draft_mode in a
+    // slot, and edits show there at once.
+    const Effect &draft() const { return draft_; }
+    // Bumps on every change to the draft - for apps to read it again.
+    uint32_t draft_revision() const { return draft_revision_; }
+    // Starts editing, running the draft in slot (and nowhere else): a new
+    // effect (mode no_mode); a copy of a built-in mode (set up as the slot
+    // has it, if it's running it, else with its defaults); a saved effect
+    // (its name kept, so saving replaces it); or draft_mode, the draft as it
+    // is. False for no such mode.
+    bool edit_effect(Engine &engine, uint8_t slot, uint8_t mode);
+    // Changes one field of the draft; applied live where it runs.
+    bool edit_field(Engine &engine, EffectSection section, uint8_t index, uint8_t field, const FieldValue &value);
+    // Adds (op 0: to rule `index`, for actions), removes (1) or duplicates
+    // (2) an item; where it runs, the draft is set up again.
+    bool edit_item(Engine &engine, uint8_t op, EffectSection section, uint8_t index);
+    // Stores the draft in the library under name (the draft takes it).
+    // Returns the effect's position, or no_index.
+    uint8_t save_draft(const char *name);
+    // The slot running the draft, or -1.
+    int draft_slot() const;
+
     struct SlotInfo
     {
         SlotState state = SlotState::empty;
@@ -129,7 +153,8 @@ public:
     uint32_t revision() const { return revision_; }
 
     // Current state as JSON: {"rev":N,"scene":"holiday","slots":[{"mode":
-    // "snow","state":"running",...}],"base":[...],"show":{...} or null}.
+    // "snow","state":"running",...}],"base":[...],"show":{...} or null,
+    // "fx":{"n":draft name,"rev":draft revision,"slot":its slot or -1}}.
     // Returns the length written.
     size_t describe_state(char *out, size_t cap) const;
 
@@ -155,6 +180,8 @@ private:
     void finish_ending(Engine &engine, uint8_t slot);
     void clear_slot_content(Engine &engine, uint8_t slot);
     void set_opacity(Engine &engine, uint8_t slot, float k);
+    // Sets a running slot's mode up again, keeping its place in its lifecycle.
+    void set_up_again(Engine &engine, uint8_t slot);
 
     struct ShowRun
     {
@@ -178,6 +205,8 @@ private:
     ShowRun show_{};
     uint32_t revision_ = 0;
     DirectorStats stats_{};
+    Effect draft_{};
+    uint32_t draft_revision_ = 0;
 };
 
 }  // namespace neotree

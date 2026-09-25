@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -34,6 +35,17 @@ private const val TAB_DEBUG = 4
 @Composable
 fun AppRoot(vm: TreeViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(TAB_HOME) }
+    // The effect editor is a full page of its own, over the tabs.
+    var editingEffect by rememberSaveable { mutableStateOf(false) }
+    if (editingEffect) {
+        Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
+            EffectEditorScreen(vm, padding, onClose = {
+                vm.closeEffectEditor()
+                editingEffect = false
+            })
+        }
+        return
+    }
     // The debug and modes pages poll the tree's status only while showing.
     LaunchedEffect(tab) {
         vm.setDebugVisible(tab == TAB_DEBUG)
@@ -78,7 +90,7 @@ fun AppRoot(vm: TreeViewModel) {
     ) { padding ->
         when (tab) {
             TAB_HOME -> HomeScreen(vm, padding, onOpenDebug = { tab = TAB_DEBUG })
-            TAB_MODES -> ModesScreen(vm, padding)
+            TAB_MODES -> ModesScreen(vm, padding, onEditEffect = { editingEffect = true })
             TAB_PLAY -> PlayScreen(vm, padding)
             TAB_RENDERER -> RendererScreen(vm, padding)
             else -> DebugScreen(vm, padding)

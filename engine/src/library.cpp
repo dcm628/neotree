@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "json.hpp"
+#include "neotree/effect.hpp"
 #include "neotree/scene.hpp"
 
 namespace neotree {
@@ -754,10 +755,154 @@ size_t Library::describe(char *out, size_t cap) const
     for (uint8_t s = 0; s < max_slots; s++)
     {
         const ModeDef *def = mode_at(base_.specs[s].mode);
-        j.raw("%s\"%s\"", s ? "," : "", def != nullptr ? def->id : "");
+        j.raw("%s", s ? "," : "");
+        j.str(def != nullptr ? def->id : "");
     }
-    j.raw("]}}");
+    j.raw("]},\"fx\":[");
+    bool first = true;
+    for (uint8_t k = 0; k < max_effects; k++)
+    {
+        if (!effect_used(k))
+        {
+            continue;
+        }
+        j.raw("%s{\"n\":", first ? "" : ",");
+        j.str(effects_[k].name);
+        j.raw(",\"k\":%u,\"i\":%u}", static_cast<unsigned>(k), static_cast<unsigned>(effect_mode(k)));
+        first = false;
+    }
+    j.raw("]}");
     return j.len;
+}
+
+// ---- custom effects ----
+
+uint8_t Library::find_effect(const char *name) const
+{
+    for (uint8_t k = 0; k < max_effects; k++)
+    {
+        if (effect_used(k) && std::strcmp(effects_[k].name, name) == 0)
+        {
+            return k;
+        }
+    }
+    return no_index;
+}
+
+bool Library::effect(uint8_t k, Effect &out) const
+{
+    return effect_used(k) && effect_load(out, effects_[k].data, effects_[k].len);
+}
+
+uint8_t Library::save_effect(Effect &effect, const char *name)
+{
+    char clean[name_size];
+    if (!copy_name(clean, name, name_size))
+    {
+        return no_index;
+    }
+    uint8_t k = find_effect(clean);
+    for (uint8_t i = 0; k == no_index && i < max_effects; i++)
+    {
+        k = effects_[i].len == 0 ? i : no_index;
+    }
+    if (k == no_index)
+    {
+        return no_index;
+    }
+    // Encoded aside first, so a failure leaves what was there.
+    static uint8_t buffer[max_effect_bytes];
+    char was[name_size];
+    std::memcpy(was, effect.name, name_size);
+    std::memcpy(effect.name, clean, name_size);
+    const size_t len = effect_save(effect, buffer, sizeof(buffer));
+    if (len == 0)
+    {
+        std::memcpy(effect.name, was, name_size);
+        return no_index;
+    }
+    std::memcpy(effects_[k].name, clean, name_size);
+    std::memcpy(effects_[k].data, buffer, len);
+    effects_[k].len = static_cast<uint16_t>(len);
+    effects_revision_++;
+    revision_++;
+    return k;
+}
+
+bool Library::delete_effect(uint8_t k)
+{
+    if (!effect_used(k))
+    {
+        return false;
+    }
+    effects_[k].len = 0;
+    effects_[k].name[0] = '\0';
+    effects_revision_++;
+    revision_++;
+    return true;
+}
+
+void Library::clear_effects()
+{
+    for (StoredEffect &e : effects_)
+    {
+        e.len = 0;
+        e.name[0] = '\0';
+    }
+    effects_revision_++;
+    revision_++;
+}
+
+// Effects' stored form: u8 version, then per position u16 length (0: free)
+// and the effect's own stored form (effect_save), which holds its name.
+size_t Library::save_effects(uint8_t *out, size_t cap) const
+{
+    Writer w{out, cap};
+    w.u8(format_version);
+    w.u8(max_effects);
+    for (const StoredEffect &e : effects_)
+    {
+        w.u16(e.len);
+        for (uint16_t i = 0; i < e.len; i++)
+        {
+            w.u8(e.data[i]);
+        }
+    }
+    return w.ok ? w.len : 0;
+}
+
+bool Library::load_effects(const uint8_t *data, size_t len)
+{
+    clear_effects();
+    Reader r{data, len};
+    r.check(r.u8() == format_version);
+    const uint8_t n = r.u8();
+    r.check(n <= max_effects);
+    Effect &check = effect_scratch();
+    for (uint8_t k = 0; k < n && r.ok; k++)
+    {
+        StoredEffect &e = effects_[k];
+        const uint16_t size = r.u16();
+        r.check(size <= max_effect_bytes);
+        for (uint16_t i = 0; i < size && r.ok; i++)
+        {
+            e.data[i] = r.u8();
+        }
+        if (r.ok && size > 0)
+        {
+            // Each must decode, and names stay unique.
+            r.check(effect_load(check, e.data, size) && check.name[0] != '\0' && find_effect(check.name) == no_index);
+            std::memcpy(e.name, check.name, name_size);
+            e.len = r.ok ? size : 0;
+        }
+    }
+    r.check(r.pos == len);
+    if (!r.ok)
+    {
+        clear_effects();
+        return false;
+    }
+    return true;
 }
 
 }  // namespace neotree

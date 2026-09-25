@@ -15,6 +15,8 @@
 namespace neotree {
 
 class Engine;
+class Library;
+struct Effect;
 
 constexpr uint8_t max_params = 8;
 constexpr uint8_t no_mode = 0xFF;
@@ -86,9 +88,21 @@ struct ModeContext
 
 // The built-in modes. Indices are stable (the protocol uses them).
 uint8_t mode_count();
+// Built-ins, then custom effects (neotree/effect.hpp) from effect_mode_base:
+// the draft being edited (id "fx.draft"), then the library's effects by
+// position (id "fx:<name>"). Null for no such mode.
 const ModeDef *mode_at(uint8_t index);
 // Index of the mode with this id, or no_mode.
 uint8_t find_mode(const char *id);
+
+constexpr uint8_t effect_mode_base = 48;
+constexpr uint8_t draft_mode = effect_mode_base;
+// The mode index of the library's effect at position k.
+constexpr uint8_t effect_mode(uint8_t k) { return static_cast<uint8_t>(effect_mode_base + 1 + k); }
+constexpr bool is_effect_mode(uint8_t index) { return index >= effect_mode_base && index != no_mode; }
+// Where effect modes come from (the director's draft and library); null
+// for none.
+void bind_effects(const Effect *draft, const Library *library);
 void default_params(const ModeDef &def, ParamValue out[max_params]);
 
 // The modes and their parameters as JSON, for apps to build controls from.
@@ -101,7 +115,9 @@ void default_params(const ModeDef &def, ParamValue out[max_params]);
 // "st" (step), "d" (default: number, "#rrggbb", choice index or bool), and
 // "ch" ("a|b|c") for choices}. To stay small, fields at their defaults are
 // left out: min 0, max 1, st 0, and a toggle's d false.
-// Returns the length written (truncated JSON if cap is too small).
+// Only the built-ins - static data, so the firmware builds this on its
+// network core; custom effects are listed with the library
+// (Library::describe). Returns the length written (truncated JSON if cap is too small).
 size_t describe_modes(char *out, size_t cap);
 
 }  // namespace neotree

@@ -16,11 +16,16 @@
 
 namespace neotree {
 
+struct Effect;
+
 constexpr uint8_t max_user_presets = 8;
 constexpr uint8_t max_user_shows = 4;
 constexpr uint8_t max_show_entries = 16;
-constexpr size_t name_size = sizeof(SceneSpec::name);   // including the NUL
 constexpr uint8_t no_index = 0xFF;
+// Custom effects (neotree/effect.hpp) the library holds, each in its stored
+// form in at most this many bytes.
+constexpr uint8_t max_effects = 6;
+constexpr size_t max_effect_bytes = 2048;
 // A show entry with no duration, of a preset with none, plays this long.
 constexpr uint16_t default_entry_s = 300;
 
@@ -90,7 +95,30 @@ public:
     uint8_t boot_show() const { return find_show(boot_show_); }
     bool set_boot_show(uint8_t index);
 
-    // Bumps on every change - for knowing when to store and to tell apps.
+    // Custom effects, at fixed positions 0..max_effects-1 (an effect's mode
+    // index follows its position, so it stays put while others come and go).
+    // Kept in their stored form; effect() decodes one. reset() leaves them:
+    // they're stored apart from the rest (save_effects / load_effects).
+    bool effect_used(uint8_t k) const { return k < max_effects && effects_[k].len > 0; }
+    const char *effect_name(uint8_t k) const { return k < max_effects ? effects_[k].name : ""; }
+    uint8_t find_effect(const char *name) const;   // no_index if none
+    bool effect(uint8_t k, Effect &out) const;
+    // Stores an effect under a name (which it takes): replaces the effect
+    // with that name, else takes a free position. Returns the position, or
+    // no_index if full, too big, or the name is empty.
+    uint8_t save_effect(Effect &effect, const char *name);
+    bool delete_effect(uint8_t k);
+    void clear_effects();
+    uint32_t effects_revision() const { return effects_revision_; }
+    // Changes when anything but the effects does (every effects change bumps
+    // both counters) - for storing the rest apart from them.
+    uint32_t scenes_revision() const { return revision_ - effects_revision_; }
+    size_t save_effects(uint8_t *out, size_t cap) const;
+    // On malformed data, no effects and false.
+    bool load_effects(const uint8_t *data, size_t len);
+
+    // Bumps on every change (effects too) - for knowing when to store and to
+    // tell apps.
     uint32_t revision() const { return revision_; }
 
     // The user's part of the library in its stored form. Returns the length,
@@ -103,7 +131,8 @@ public:
     // For apps: {"rev":N,"presets":[{"n":"Colors"},{"n":"Mine","u":1}...],
     // "shows":[{"n":..,"u":1,"loop":1,"shuffle":0,"e":[[preset index or -1,
     // seconds]...]}...],"boot":"show name","base":{"custom":0,"slots":[mode
-    // ids]}}. Returns the length written.
+    // ids]},"fx":[{"n":name,"k":position,"i":mode index}...]}. Returns the
+    // length written.
     size_t describe(char *out, size_t cap) const;
 
 private:
@@ -115,6 +144,15 @@ private:
     bool base_custom_ = false;
     char boot_show_[name_size] = "";
     uint32_t revision_ = 0;
+
+    struct StoredEffect
+    {
+        char name[name_size] = "";
+        uint16_t len = 0;   // 0: free
+        uint8_t data[max_effect_bytes];
+    };
+    StoredEffect effects_[max_effects];
+    uint32_t effects_revision_ = 0;
 };
 
 }  // namespace neotree

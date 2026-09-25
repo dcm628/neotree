@@ -107,6 +107,9 @@ struct Entity
     // Direct control (neotree/direct.hpp): 0 = the slot's mode; otherwise
     // the phone (or other client) that spawned it, under its own id.
     uint8_t owner = 0;
+    // The slot template it was copied from (index + 1; 0 = none), so edits to
+    // a template can reach what was made from it (custom effects, live).
+    uint8_t tmpl = 0;
     uint8_t direct_id = 0;
     uint8_t direct_kind = 0;         // DirectKind
     bool pen_down = false;           // a brush's last sample

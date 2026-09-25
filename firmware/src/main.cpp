@@ -26,6 +26,7 @@
 #include "neo_tree_engine.hpp"
 #include "neo_tree_loop_monitor.hpp"
 #include "neo_tree_safety.hpp"
+#include "neotree/effect.hpp"
 #include "neotree/modes.hpp"
 
 mutex core0_data_update;
@@ -218,6 +219,17 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
         return len == 2;
     case serial_msg_type::BRUSH:
         return len == brush_len;
+    case serial_msg_type::FX_SCHEMA:
+    case serial_msg_type::FX_GET:
+        return len == 2;
+    case serial_msg_type::FX_EDIT:
+        return len == 3;
+    case serial_msg_type::FX_SET:
+        return len == 11;
+    case serial_msg_type::FX_ITEM:
+        return len == 4;
+    case serial_msg_type::FX_SAVE:
+        return len == 1 + protocol_name_len;
     case serial_msg_type::SLOT_SET:
     case serial_msg_type::SLOT_END:
         return len == (msg[0] == static_cast<uint8_t>(serial_msg_type::SLOT_SET) ? 4u : 3u);
@@ -499,6 +511,17 @@ void process_msg()
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
+    case serial_msg_type::FX_SCHEMA:
+    {
+        // Over the network the server answers this on core1.
+        static char schema_json[net_reply_json_max];   // static: keep it off core0's stack
+        neotree::effect_schema_json(static_cast<neotree::EffectSection>(serial_buf_copy[1]), schema_json,
+                                    sizeof(schema_json));
+        printf("fx schema: %s\n", schema_json);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    }
     case serial_msg_type::SLOT_SET:
     case serial_msg_type::PARAM_SET:
     case serial_msg_type::SLOT_END:
@@ -514,6 +537,11 @@ void process_msg()
     case serial_msg_type::ENTITY_SPAWN:
     case serial_msg_type::ENTITY_KILL:
     case serial_msg_type::BRUSH:
+    case serial_msg_type::FX_EDIT:
+    case serial_msg_type::FX_SET:
+    case serial_msg_type::FX_ITEM:
+    case serial_msg_type::FX_GET:
+    case serial_msg_type::FX_SAVE:
         // Messages are zero-padded in the buffer, so the queue's maximum
         // length covers every one of them.
         if (!engine_host_mode_command(serial_buf_copy, engine_mode_command_max_len, serial_buf_owner))

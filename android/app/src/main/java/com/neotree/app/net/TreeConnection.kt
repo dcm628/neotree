@@ -75,6 +75,19 @@ class TreeConnection(private val scope: CoroutineScope) {
     /** The tree's library, from its latest LIBRARY reply or push. */
     val library: StateFlow<TreeLibrary?> = _library.asStateFlow()
 
+    private val _fxSchema = MutableStateFlow<Map<EffectSection, FxSectionSchema>>(emptyMap())
+    /** The custom-effect schema, by section, as FX_SCHEMA replies arrive. */
+    val fxSchema: StateFlow<Map<EffectSection, FxSectionSchema>> = _fxSchema.asStateFlow()
+
+    private val _fxDraft = MutableStateFlow<Map<EffectSection, FxSectionData>>(emptyMap())
+    /** The draft effect, by section, as FX_GET replies arrive. */
+    val fxDraft: StateFlow<Map<EffectSection, FxSectionData>> = _fxDraft.asStateFlow()
+
+    /** Shows an edit here before the tree's next reply confirms it. */
+    fun updateFxDraft(section: EffectSection, change: (FxSectionData) -> FxSectionData) {
+        _fxDraft.update { m -> m[section]?.let { m + (section to change(it)) } ?: m }
+    }
+
     private val _log = MutableStateFlow<List<LogEntry>>(emptyList())
     /** Recent commands and connection events, newest first. */
     val log: StateFlow<List<LogEntry>> = _log.asStateFlow()
@@ -116,6 +129,9 @@ class TreeConnection(private val scope: CoroutineScope) {
                 s.soTimeout = 0
                 socket = s
                 output = s.getOutputStream()
+                // Another tree, or new firmware: ask again.
+                _fxSchema.value = emptyMap()
+                _fxDraft.value = emptyMap()
                 acks = Channel(Channel.UNLIMITED)
                 readerJob = scope.launch(Dispatchers.IO) { readLoop(s, input, host) }
                 val lightsOn = if (hello.size >= 3) (hello[2].toInt() and TreeProtocol.HELLO_FLAG_OUTPUT_ON) != 0 else null
@@ -221,6 +237,14 @@ class TreeConnection(private val scope: CoroutineScope) {
                     runCatching { TreeLibrary.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
                         .onSuccess { _library.value = it }
                         .onFailure { log("LIBRARY reply wasn't valid JSON (${frame.size}B)", ok = false) }
+                } else if (type == TreeProtocol.REPLY_FX_SCHEMA) {
+                    runCatching { FxSectionSchema.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
+                        .onSuccess { s -> if (s != null) _fxSchema.update { it + (s.section to s) } }
+                        .onFailure { log("FX_SCHEMA reply wasn't valid JSON (${frame.size}B)", ok = false) }
+                } else if (type == TreeProtocol.REPLY_FX) {
+                    runCatching { FxSectionData.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
+                        .onSuccess { d -> if (d != null) _fxDraft.update { it + (d.section to d) } }
+                        .onFailure { log("FX reply wasn't valid JSON (${frame.size}B)", ok = false) }
                 }
             }
         } catch (e: IOException) {

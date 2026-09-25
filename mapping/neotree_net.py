@@ -27,6 +27,8 @@ REPLY_DESCRIBE = 0x83
 # Pushed to clients that subscribe(): the scene / the library, on every change.
 REPLY_SCENE = 0x84
 REPLY_LIBRARY = 0x85
+REPLY_FX_SCHEMA = 0x86   # [0x86][JSON]: a section of the custom-effect schema
+REPLY_FX = 0x87          # [0x87][JSON]: a section of the draft effect (FX_GET)
 
 STATUS_REQUEST_MSG_TYPE = 18
 REBOOT_MSG_TYPE = 19
@@ -64,6 +66,16 @@ BENCH_MSG_TYPE = 37
 ENTITY_SPAWN_MSG_TYPE = 38
 ENTITY_KILL_MSG_TYPE = 39
 BRUSH_MSG_TYPE = 40
+# Custom effects (engine/include/neotree/effect.hpp): one draft is edited at
+# a time, running in a slot.
+FX_SCHEMA_MSG_TYPE = 41
+FX_EDIT_MSG_TYPE = 42
+FX_SET_MSG_TYPE = 43
+FX_ITEM_MSG_TYPE = 44
+FX_GET_MSG_TYPE = 45
+FX_SAVE_MSG_TYPE = 46
+FX_SECTIONS = ["settings", "layers", "things", "sources", "meets", "rules", "actions", "starts"]
+FX_ADD, FX_REMOVE, FX_DUPLICATE = 0, 1, 2
 NAME_LEN = 20
 
 STATUS_NAMES = {
@@ -100,6 +112,8 @@ class NeotreeNet:
         self.stream_token = struct.unpack("<I", hello[3:7])[0] if len(hello) >= 7 else None
         self._stream_sock = None
         self._stream_seq = 0
+        self.fx_schema_seen = {}   # section -> the last FX_SCHEMA / FX reply not yet taken
+        self.fx_seen = {}
 
     def _recv_exact(self, n):
         buf = b""
@@ -133,6 +147,9 @@ class NeotreeNet:
             if frame and frame[0] in (REPLY_SCENE, REPLY_LIBRARY):
                 self._keep_pushed(frame)
                 continue
+            if frame and frame[0] in (REPLY_FX_SCHEMA, REPLY_FX):
+                self._keep_fx(frame)
+                continue
             if len(frame) != 3 or frame[0] != REPLY_ACK:
                 raise NeotreeNetError(f"expected ACK, got {frame!r}")
             return frame[1], STATUS_NAMES.get(frame[2], f"status {frame[2]}")
@@ -153,6 +170,10 @@ class NeotreeNet:
         if self.last_describe is None:
             raise NeotreeNetError("no DESCRIBE reply (tree out of memory? try again)")
         return self.last_describe
+
+    def _keep_fx(self, frame):
+        data = json.loads(frame[1:].decode("utf-8", errors="replace"))
+        (self.fx_schema_seen if frame[0] == REPLY_FX_SCHEMA else self.fx_seen)[data["s"]] = data
 
     def _keep_pushed(self, frame):
         data = json.loads(frame[1:].decode("utf-8", errors="replace"))
@@ -183,6 +204,8 @@ class NeotreeNet:
                     break
                 if frame and frame[0] in (REPLY_SCENE, REPLY_LIBRARY):
                     self._keep_pushed(frame)
+                elif frame and frame[0] in (REPLY_FX_SCHEMA, REPLY_FX):
+                    self._keep_fx(frame)
         finally:
             self.sock.settimeout(old)
         return self.pushed[start:]
@@ -208,8 +231,66 @@ class NeotreeNet:
         self.write(bytes([SCENE_SAVE_MSG_TYPE, what]) + self._name(name or ""))
 
     def delete(self, what, index=0):
-        """what: "base" (back to the default), "preset" or "show" (by library index)."""
-        self.write(bytes([LIBRARY_DELETE_MSG_TYPE, ["base", "preset", "show"].index(what), index]))
+        """what: "base" (back to the default), "preset" or "show" (by library
+        index), or "effect" (by its position, "k" in the library's "fx")."""
+        self.write(bytes([LIBRARY_DELETE_MSG_TYPE, ["base", "preset", "show", "effect"].index(what), index]))
+
+    # ---- custom effects ----
+
+    @staticmethod
+    def _section(section):
+        return FX_SECTIONS.index(section) if isinstance(section, str) else section
+
+    def _await_fx(self, store, section, timeout):
+        end = time.time() + timeout
+        old = self.sock.gettimeout()
+        try:
+            while section not in store:
+                left = end - time.time()
+                if left <= 0:
+                    raise NeotreeNetError(f"no reply for effect section {section}")
+                self.sock.settimeout(left)
+                frame = self.read_frame()
+                if frame and frame[0] in (REPLY_FX_SCHEMA, REPLY_FX):
+                    self._keep_fx(frame)
+                elif frame and frame[0] in (REPLY_SCENE, REPLY_LIBRARY):
+                    self._keep_pushed(frame)
+        finally:
+            self.sock.settimeout(old)
+        return store.pop(section)
+
+    def fx_schema(self, section, timeout=2.0):
+        """A section's fields: {"s","id","l","item","max","f":[{"id","l","t",...}]}."""
+        s = self._section(section)
+        self.write(bytes([FX_SCHEMA_MSG_TYPE, s]))
+        return self._await_fx(self.fx_schema_seen, s, timeout)
+
+    def fx_edit(self, slot, mode_index=None):
+        """Starts editing in slot: a new effect (None), a copy of a built-in
+        mode, or a saved effect (its mode index, "i" in the library's "fx")."""
+        self.write(bytes([FX_EDIT_MSG_TYPE, slot, 0xFF if mode_index is None else mode_index]))
+
+    def fx_set(self, section, item, field, value=0.0, rgb=(0, 0, 0)):
+        """One field of the draft: a number / choice index / toggle, or a color.
+        An action's item is rule * 4 + action."""
+        self.write(bytes([FX_SET_MSG_TYPE, self._section(section), item, field]) + struct.pack("<f", float(value)) +
+                   bytes(rgb))
+
+    def fx_item(self, op, section, item=0):
+        """FX_ADD (actions: to rule `item`), FX_REMOVE or FX_DUPLICATE."""
+        self.write(bytes([FX_ITEM_MSG_TYPE, op, self._section(section), item]))
+
+    def fx_get(self, section, timeout=2.0):
+        """The draft's items in a section: {"s","n" (its name),"i":[[values...]]}
+        (actions: [rule, action, values...])."""
+        s = self._section(section)
+        self.fx_seen.pop(s, None)
+        self.write(bytes([FX_GET_MSG_TYPE, s]))
+        return self._await_fx(self.fx_seen, s, timeout)
+
+    def fx_save(self, name):
+        """Stores the draft as an effect called name (replacing one of that name)."""
+        self.write(bytes([FX_SAVE_MSG_TYPE]) + self._name(name))
 
     def set_show(self, name, entries, loop=True, shuffle=False):
         """Saves a show: entries = [(preset index, seconds), ...] (seconds 0 =

@@ -1,4 +1,5 @@
 #include "neo_tree_net_server.hpp"
+#include "neotree/effect.hpp"
 #include "neotree/modes.hpp"
 
 #include <stdio.h>
@@ -261,10 +262,14 @@ static err_t drop_overflowed_client(client_slot *c)
 // (3 + net_reply_json_max bytes) and sends it in one all-or-nothing tcp_write,
 // so a partial frame can never corrupt the stream. Not while ACKs are
 // backlogged, so it can't starve them. Returns false if it couldn't go now.
-static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame)
+static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame, uint8_t arg = 0)
 {
     char *json = reinterpret_cast<char *>(frame + 3);
     size_t json_len = 0;
+    if (c->pending_len != 0)
+    {
+        return false;   // before building: FX takes its reply
+    }
     switch (type)
     {
     case net_reply_type::STATUS: json_len = status_build_json(json, status_json_max); break;
@@ -273,6 +278,12 @@ static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame)
     // Snapshots core0 publishes.
     case net_reply_type::SCENE: json_len = engine_host_scene_json(json, status_json_max); break;
     case net_reply_type::LIBRARY: json_len = engine_host_library_json(json, status_json_max); break;
+    // The effect schema: static data. arg = the section.
+    case net_reply_type::FX_SCHEMA:
+        json_len = neotree::effect_schema_json(static_cast<neotree::EffectSection>(arg), json, net_reply_json_max);
+        break;
+    // The reply core0 built for this client (FX_GET).
+    case net_reply_type::FX: json_len = engine_host_take_fx_reply(json, net_reply_json_max); break;
     default: return false;
     }
     size_t payload_len = 1 + json_len;
@@ -285,10 +296,10 @@ static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame)
 // Answers STATUS_REQUEST, DESCRIBE and LIBRARY right here on core1 - they
 // don't touch core0's state machine, so they aren't queued. If the reply
 // can't go now it's dropped (the client asks again).
-static void send_reply(client_slot *c, net_reply_type type)
+static void send_reply(client_slot *c, net_reply_type type, uint8_t arg = 0)
 {
     static uint8_t frame[3 + net_reply_json_max];   // static: IRQ context, one core
-    if (!send_json(c, type, frame))
+    if (!send_json(c, type, frame, arg))
     {
         diag.status_dropped = diag.status_dropped + 1;
     }
@@ -323,6 +334,11 @@ static net_status handle_command(client_slot *c)
     if (type == static_cast<uint8_t>(serial_msg_type::LIBRARY))
     {
         send_reply(c, net_reply_type::LIBRARY);
+        return net_status::QUEUED;
+    }
+    if (type == static_cast<uint8_t>(serial_msg_type::FX_SCHEMA))
+    {
+        send_reply(c, net_reply_type::FX_SCHEMA, c->msg[1]);
         return net_status::QUEUED;
     }
     if (type == static_cast<uint8_t>(serial_msg_type::SUBSCRIBE))
@@ -625,12 +641,16 @@ bool net_server_start()
 // Pushes the scene and library to subscribed clients when they change.
 // core1 loop context, so it takes the lwIP lock; a push that can't go now
 // (lwIP out of memory, ACKs backlogged) is retried on a later poll.
+// Frames sent from core1's loop (pushes, FX replies) - static: keep it off
+// core1's stack.
+static uint8_t loop_frame[3 + net_reply_json_max];
+
 static void push_changes()
 {
     static uint64_t last_push_us = 0;
     static uint32_t last_scene_rev = 0;
     static uint32_t last_library_rev = 0;
-    static uint8_t frame[3 + net_reply_json_max];   // static: keep it off core1's stack
+    uint8_t *frame = loop_frame;
     const uint64_t now = time_us_64();
     const uint32_t scene_rev = engine_host_scene_revision();
     const uint32_t library_rev = engine_host_library_revision();
@@ -690,9 +710,32 @@ static void push_changes()
     }
 }
 
+// An FX_GET reply core0 built: to the client that asked, or dropped if it's
+// gone. If it can't go yet it waits (and core0 builds no other).
+static void send_fx_reply()
+{
+    const uint8_t owner = engine_host_fx_reply_owner();
+    if (owner == 0)
+    {
+        return;
+    }
+    cyw43_arch_lwip_begin();
+    client_slot *c = owner <= net_server_max_clients ? &clients[owner - 1] : nullptr;
+    if (c == nullptr || c->pcb == nullptr)
+    {
+        engine_host_take_fx_reply(reinterpret_cast<char *>(loop_frame), sizeof(loop_frame));
+    }
+    else if (send_json(c, net_reply_type::FX, loop_frame))
+    {
+        flush(c->pcb);
+    }
+    cyw43_arch_lwip_end();
+}
+
 void net_server_poll()
 {
     push_changes();
+    send_fx_reply();
     while (event_tail != event_head)
     {
         const net_event &e = event_log[event_tail];

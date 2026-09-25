@@ -66,7 +66,7 @@ import kotlinx.coroutines.delay
  * polls; ages and time left count on locally between pushes.
  */
 @Composable
-fun ModesScreen(vm: TreeViewModel, contentPadding: PaddingValues) {
+fun ModesScreen(vm: TreeViewModel, contentPadding: PaddingValues, onEditEffect: () -> Unit) {
     val state by vm.connection.state.collectAsState()
     val catalog by vm.catalog.collectAsState()
     val live by vm.scene.collectAsState()
@@ -104,6 +104,7 @@ fun ModesScreen(vm: TreeViewModel, contentPadding: PaddingValues) {
             else -> {
                 ShowsCard(vm, lib, scene.show, elapsedSec)
                 ScenesCard(vm, c, lib, scene)
+                EffectsCard(vm, c, lib, scene, onEditEffect)
                 scene.slots.forEachIndexed { i, slot -> SlotCard(vm, c, i, scene.slots.size, slot, elapsedSec) }
             }
         }
@@ -124,7 +125,7 @@ internal fun ModesCard(content: @Composable () -> Unit) {
 
 @Composable
 private fun SlotCard(vm: TreeViewModel, catalog: ModeCatalog, index: Int, count: Int, slot: SlotState, elapsedSec: Long) {
-    val mode = if (slot.empty) null else catalog.modes.getOrNull(slot.modeIndex)
+    val mode = if (slot.empty) null else catalog.mode(slot.modeIndex)
     var editLife by remember { mutableStateOf(false) }
     ModesCard {
         val where = when (index) {
@@ -227,7 +228,7 @@ private fun LifecycleDialog(
                     }
                 }
                 if (policy == TreeProtocol.EndPolicy.CHAIN) {
-                    ModePicker(catalog, catalog.modes.getOrNull(next)) { next = it }
+                    ModePicker(catalog, catalog.mode(next)) { next = it }
                 }
                 if (never && policy != TreeProtocol.EndPolicy.HOLD) {
                     Text("Set a time or a number of cycles for this to happen.", style = MaterialTheme.typography.bodySmall,
@@ -252,7 +253,7 @@ private fun ModePicker(catalog: ModeCatalog, current: ModeInfo?, onPick: (Int) -
         OutlinedButton(onClick = { open = true }) { Text(current?.name ?: "Choose…") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(text = { Text("Empty") }, onClick = { open = false; onPick(-1) })
-            catalog.modes.forEach { m ->
+            catalog.modes.filter { it.pickable }.forEach { m ->
                 DropdownMenuItem(text = { Text(m.name) }, onClick = { open = false; onPick(m.index) })
             }
         }

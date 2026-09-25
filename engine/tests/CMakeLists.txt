@@ -29,6 +29,7 @@ add_executable(neotree_engine_tests
     test_direct.cpp
     test_director.cpp
     test_library.cpp
+    test_effect.cpp
 )
 target_include_directories(neotree_engine_tests PRIVATE ${DOCTEST_DIR})
 target_link_libraries(neotree_engine_tests PRIVATE neotree_engine)

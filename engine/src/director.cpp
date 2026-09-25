@@ -141,6 +141,9 @@ void Director::reset()
     show_.active = false;
     revision_++;
     stats_ = {};
+    effect_starter(draft_);
+    draft_revision_++;
+    bind_effects(&draft_, &library_);
 }
 
 void Director::set_opacity(Engine &engine, uint8_t slot, float k)
@@ -292,16 +295,157 @@ bool Director::set_param(Engine &engine, uint8_t slot, uint8_t index, const Para
     {
         return true;
     }
-    // Set it up again with the new value, keeping its place in its lifecycle.
-    const SlotInfo keep = rt.info;
+    set_up_again(engine, slot);   // with the new value
+    return true;
+}
+
+void Director::set_up_again(Engine &engine, uint8_t slot)
+{
+    SlotRuntime &rt = slots_[slot];
+    const float age_s = rt.info.age_s;
+    const uint16_t cycles_done = rt.info.cycles_done;
+    const uint16_t loops_done = rt.info.loops_done;
+    const SlotState state = rt.info.state;
     const float opacity_k = engine.scene().slot(slot)->opacity;
     setup_now(engine, slot, rt.info.spec, Transition::cut);
-    rt.info.age_s = keep.age_s;
-    rt.info.cycles_done = keep.cycles_done;
-    rt.info.loops_done = keep.loops_done;
-    rt.info.state = keep.state;
+    rt.info.age_s = age_s;
+    rt.info.cycles_done = cycles_done;
+    rt.info.loops_done = loops_done;
+    rt.info.state = state;
     engine.scene().slot(slot)->opacity = opacity_k;
+}
+
+// ---- custom effects ----
+
+int Director::draft_slot() const
+{
+    for (uint8_t s = 0; s < max_slots; s++)
+    {
+        const SlotRuntime &rt = slots_[s];
+        if (rt.info.state != SlotState::empty && rt.info.state != SlotState::leaving && rt.info.spec.mode == draft_mode)
+        {
+            return s;
+        }
+    }
+    return -1;
+}
+
+bool Director::edit_effect(Engine &engine, uint8_t slot, uint8_t mode)
+{
+    if (slot >= max_slots)
+    {
+        return false;
+    }
+    if (mode == no_mode)
+    {
+        effect_starter(draft_);
+    }
+    else if (is_effect_mode(mode) && mode != draft_mode)
+    {
+        if (!library_.effect(static_cast<uint8_t>(mode - effect_mode(0)), draft_))
+        {
+            return false;
+        }
+    }
+    else if (mode != draft_mode)
+    {
+        // A built-in: set it up here and take what it built.
+        const ModeDef *def = mode_at(mode);
+        if (def == nullptr)
+        {
+            return false;
+        }
+        const SlotRuntime &rt = slots_[slot];
+        ParamValue params[max_params];
+        if (rt.info.state != SlotState::empty && rt.info.spec.mode == mode)
+        {
+            std::memcpy(params, rt.info.spec.params, sizeof(params));
+        }
+        else
+        {
+            default_params(*def, params);
+        }
+        clear_slot_content(engine, slot);
+        ModeContext ctx{engine, slot, *def, params};
+        def->setup(ctx);
+        capture_effect(engine, slot, draft_);
+        std::snprintf(draft_.name, sizeof(draft_.name), "%s", def->name);
+    }
+    draft_revision_++;
+    // The draft runs in this slot only.
+    for (uint8_t s = 0; s < max_slots; s++)
+    {
+        if (s != slot && slots_[s].info.state != SlotState::empty && slots_[s].info.spec.mode == draft_mode)
+        {
+            set_slot(engine, s, SlotSpec{}, Transition::cut);
+        }
+    }
+    SlotSpec spec{};
+    spec.mode = draft_mode;
+    set_slot(engine, slot, spec, Transition::cut);
     return true;
+}
+
+bool Director::edit_field(Engine &engine, EffectSection section, uint8_t index, uint8_t field,
+                          const FieldValue &value)
+{
+    if (!effect_set(draft_, section, index, field, value))
+    {
+        return false;
+    }
+    draft_revision_++;
+    const int s = draft_slot();
+    if (s < 0)
+    {
+        return true;
+    }
+    // What can't change in place: what it starts with, a layer turning to or
+    // from things, a thing moving to another layer.
+    const bool rebuild = section == EffectSection::starts || (section == EffectSection::layers && field == 0) ||
+                         (section == EffectSection::things && field == 9);
+    if (rebuild)
+    {
+        set_up_again(engine, static_cast<uint8_t>(s));
+    }
+    else
+    {
+        effect_apply_field(engine, static_cast<uint8_t>(s), draft_, section, index, field);
+    }
+    return true;
+}
+
+bool Director::edit_item(Engine &engine, uint8_t op, EffectSection section, uint8_t index)
+{
+    bool ok = false;
+    switch (op)
+    {
+    case 0: ok = effect_add(draft_, section, index); break;
+    case 1: ok = effect_remove(draft_, section, index); break;
+    case 2: ok = effect_duplicate(draft_, section, index); break;
+    default: break;
+    }
+    if (!ok)
+    {
+        return false;
+    }
+    draft_revision_++;
+    const int s = draft_slot();
+    if (s >= 0)
+    {
+        set_up_again(engine, static_cast<uint8_t>(s));
+    }
+    return true;
+}
+
+uint8_t Director::save_draft(const char *name)
+{
+    const uint8_t k = library_.save_effect(draft_, name);
+    if (k != no_index)
+    {
+        draft_revision_++;
+        revision_++;   // the running draft's name
+    }
+    return k;
 }
 
 void Director::set_lifecycle(uint8_t slot, const Lifecycle &life, const SlotSpec *chain_to)
@@ -601,8 +745,10 @@ size_t Director::describe_state(char *out, size_t cap) const
         const SlotRuntime &rt = slots_[s];
         const SlotSpec &spec = rt.info.spec;
         const ModeDef *def = mode_at(spec.mode);
-        j.raw("%s{\"mode\":\"%s\",\"i\":%d,\"state\":\"%s\",\"age\":%ld,\"cycles\":%u,\"loops\":%u,\"params\":[",
-              s ? "," : "", rt.info.state == SlotState::empty ? "" : mode_id(spec.mode),
+        // Ids are escaped: an effect's holds its name.
+        j.raw("%s{\"mode\":", s ? "," : "");
+        j.str(rt.info.state == SlotState::empty ? "" : mode_id(spec.mode));
+        j.raw(",\"i\":%d,\"state\":\"%s\",\"age\":%ld,\"cycles\":%u,\"loops\":%u,\"params\":[",
               rt.info.state == SlotState::empty ? -1 : (int)spec.mode, state_name(rt.info.state),
               static_cast<long>(rt.info.age_s), (unsigned)rt.info.cycles_done, (unsigned)rt.info.loops_done);
         for (uint8_t p = 0; def != nullptr && rt.info.state != SlotState::empty && p < def->param_count; p++)
@@ -628,7 +774,8 @@ size_t Director::describe_state(char *out, size_t cap) const
     j.raw("],\"base\":[");
     for (uint8_t s = 0; s < max_slots; s++)
     {
-        j.raw("%s\"%s\"", s ? "," : "", mode_id(library_.base().specs[s].mode));
+        j.raw("%s", s ? "," : "");
+        j.str(mode_id(library_.base().specs[s].mode));
     }
     j.raw("],\"show\":");
     if (show_.active)
@@ -645,7 +792,10 @@ size_t Director::describe_state(char *out, size_t cap) const
     {
         j.raw("null");
     }
-    j.raw("}");
+    // The draft effect: its name, revision and the slot running it (-1).
+    j.raw(",\"fx\":{\"n\":");
+    j.str(draft_.name);
+    j.raw(",\"rev\":%lu,\"slot\":%d}}", static_cast<unsigned long>(draft_revision_), draft_slot());
     return j.len;
 }
 

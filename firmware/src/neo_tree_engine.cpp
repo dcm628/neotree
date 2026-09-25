@@ -1,6 +1,7 @@
 #include "neo_tree_engine.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <span>
 
@@ -14,7 +15,9 @@
 #include "neo_tree_scene_store.hpp"
 #include "hardware/structs/m33.h"
 #include "hardware/sync.h"
+#include "neo_tree_net_server.hpp"
 #include "neotree/direct.hpp"
+#include "neotree/effect.hpp"
 #include "neotree/engine.hpp"
 
 namespace {
@@ -39,7 +42,7 @@ constexpr uint8_t demo_slot = 1;
 constexpr size_t scene_json_max = 2048;
 char scene_json[scene_json_max] = "{}";
 uint32_t scene_revision = 0;
-constexpr size_t library_json_max = 2048;
+constexpr size_t library_json_max = 3072;
 char library_json[library_json_max] = "{}";
 uint32_t library_revision = 0;
 spin_lock_t *scene_lock = nullptr;
@@ -51,6 +54,16 @@ constexpr uint64_t store_settle_us = 1'000'000;
 uint32_t stored_revision = 0;
 uint32_t pending_revision = 0;
 uint64_t pending_since_us = 0;
+uint32_t stored_scenes_revision = 0;    // what's in each flash region
+uint32_t stored_effects_revision = 0;
+
+// FX_GET: the sections of the draft effect each owner asked for (bits), and
+// one reply at a time for core1 to send (fx_reply_owner != 0: waiting; core0
+// writes the reply only while it's 0).
+uint8_t fx_wanted[engine_host_owner_usb + 1];
+char fx_reply[net_reply_json_max];
+size_t fx_reply_len = 0;
+volatile uint8_t fx_reply_owner = 0;
 
 // Scratch for the library commands - too big for core0's stack.
 neotree::SceneSpec scratch_scene;
@@ -193,8 +206,53 @@ void store_when_settled(uint64_t now_us)
     }
     if (pending_revision != stored_revision && now_us - pending_since_us >= store_settle_us)
     {
-        scene_store_save(engine.director().library());
+        // Only the regions that changed: a flash write pauses both cores.
+        const neotree::Library &lib = engine.director().library();
+        if (lib.effects_revision() != stored_effects_revision)
+        {
+            scene_store_save_effects(lib);
+            stored_effects_revision = lib.effects_revision();
+        }
+        if (lib.scenes_revision() != stored_scenes_revision)
+        {
+            scene_store_save(lib);
+            stored_scenes_revision = lib.scenes_revision();
+        }
         stored_revision = pending_revision;   // a failed save is logged; retried on the next change
+    }
+}
+
+// FX_GET: builds the next reply someone is waiting for, if core1 has sent
+// the last one. USB's are printed.
+void pump_fx_replies()
+{
+    if (fx_reply_owner != 0)
+    {
+        return;
+    }
+    for (uint8_t owner = 1; owner <= engine_host_owner_usb; owner++)
+    {
+        if (fx_wanted[owner] == 0)
+        {
+            continue;
+        }
+        uint8_t section = 0;
+        while ((fx_wanted[owner] & (1u << section)) == 0)
+        {
+            section++;
+        }
+        fx_wanted[owner] = static_cast<uint8_t>(fx_wanted[owner] & ~(1u << section));
+        fx_reply_len = neotree::effect_section_json(engine.director().draft(),
+                                                   static_cast<neotree::EffectSection>(section), fx_reply,
+                                                   sizeof(fx_reply));
+        if (owner == engine_host_owner_usb)
+        {
+            printf("fx: %s\n", fx_reply);
+            continue;
+        }
+        __dmb();   // the reply before the flag core1 reads
+        fx_reply_owner = owner;
+        return;
     }
 }
 
@@ -251,6 +309,8 @@ void engine_host_init()
     neotree::Director &d = engine.director();
     scene_store_load(d.library());
     stored_revision = pending_revision = d.library().revision();
+    stored_scenes_revision = d.library().scenes_revision();
+    stored_effects_revision = d.library().effects_revision();
     const uint8_t boot_show = d.library().boot_show();
     if (boot_show == neotree::no_index || !d.play_show(engine, boot_show))
     {
@@ -476,6 +536,7 @@ static bool apply_library_command(const uint8_t *msg)
         case 0: lib.reset_base(); return true;
         case 1: return lib.delete_preset(msg[2]);
         case 2: return lib.delete_show(msg[2]);
+        case 3: return lib.delete_effect(msg[2]);
         default: return false;
         }
     case serial_msg_type::SHOW_SET:
@@ -514,6 +575,43 @@ static bool apply_library_command(const uint8_t *msg)
         return d.play_show(engine, msg[1]);
     case serial_msg_type::SHOW_BOOT:
         return lib.set_boot_show(msg[1]);
+    default:
+        return false;
+    }
+}
+
+// FX_EDIT, FX_SET, FX_ITEM, FX_GET, FX_SAVE: the draft effect.
+static bool apply_effect_command(const uint8_t *msg, uint8_t owner)
+{
+    using namespace neotree;
+    Director &d = engine.director();
+    const auto section = static_cast<EffectSection>(msg[1]);
+    switch (static_cast<serial_msg_type>(msg[0]))
+    {
+    case serial_msg_type::FX_EDIT:
+        return d.edit_effect(engine, msg[1], msg[2]);
+    case serial_msg_type::FX_SET:
+    {
+        FieldValue v;
+        v.f = read_f32(msg + 4);
+        v.c = to_rgb(msg[8], msg[9], msg[10]);
+        return std::isfinite(v.f) && d.edit_field(engine, section, msg[2], msg[3], v);
+    }
+    case serial_msg_type::FX_ITEM:
+        return d.edit_item(engine, msg[1], static_cast<EffectSection>(msg[2]), msg[3]);
+    case serial_msg_type::FX_GET:
+        if (msg[1] >= static_cast<uint8_t>(EffectSection::count) || owner == 0 || owner > engine_host_owner_usb)
+        {
+            return false;
+        }
+        fx_wanted[owner] = static_cast<uint8_t>(fx_wanted[owner] | (1u << msg[1]));
+        return true;
+    case serial_msg_type::FX_SAVE:
+    {
+        char name[name_size];
+        return copy_name(name, reinterpret_cast<const char *>(msg + 1), protocol_name_len) &&
+               d.save_draft(name) != no_index;
+    }
     default:
         return false;
     }
@@ -629,6 +727,15 @@ static bool apply_mode_command(const uint8_t *msg, size_t len, uint8_t owner)
     case serial_msg_type::BRUSH:
         // No scene change to publish: entities aren't part of it.
         return apply_direct_command(msg, owner);
+    case serial_msg_type::FX_SET:
+    case serial_msg_type::FX_GET:
+        // Scene changes (if any) are published with the frame.
+        return apply_effect_command(msg, owner);
+    case serial_msg_type::FX_EDIT:
+    case serial_msg_type::FX_ITEM:
+    case serial_msg_type::FX_SAVE:
+        ok = apply_effect_command(msg, owner);
+        break;
     default:
         return false;
     }
@@ -707,6 +814,26 @@ uint32_t engine_host_library_revision()
     return library_revision;
 }
 
+uint8_t engine_host_fx_reply_owner()
+{
+    return fx_reply_owner;
+}
+
+size_t engine_host_take_fx_reply(char *out, size_t cap)
+{
+    if (fx_reply_owner == 0 || cap == 0)
+    {
+        return 0;
+    }
+    __dmb();   // the flag before the reply it guards
+    const size_t n = fx_reply_len < cap - 1 ? fx_reply_len : cap - 1;
+    memcpy(out, fx_reply, n);
+    out[n] = '\0';
+    __dmb();
+    fx_reply_owner = 0;
+    return n;
+}
+
 void engine_host_set_output(bool enabled)
 {
     engine.master().output_enabled = enabled;
@@ -725,6 +852,7 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     }
     pending_count = 0;
     apply_stream();
+    pump_fx_replies();
 
     uint64_t t0 = time_us_64();
     engine.advance((int64_t)(now_us - last_frame_us));

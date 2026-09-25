@@ -76,7 +76,7 @@ enum class serial_msg_type : uint8_t
     // bytes, NUL-padded. Changes are stored in flash (neo_tree_scene_store).
     LIBRARY,        // 30: -> [0x85][JSON]: presets, shows, base scene, startup show
     SCENE_SAVE,     // 31: [0 = as the base scene, 1 = as a preset][name] - saves the live scene; a preset replaces the user preset of that name
-    LIBRARY_DELETE, // 32: [0 = base scene (back to the default), 1 = preset, 2 = show][index] - user items only
+    LIBRARY_DELETE, // 32: [0 = base scene (back to the default), 1 = preset, 2 = show, 3 = effect][index] - user items only
     SHOW_SET,       // 33: [flags: bit 0 loop, bit 1 shuffle][count][name][(preset index, u16 LE seconds) x count] - saves a user show (replaces by name)
     SHOW_PLAY,      // 34: [show index, 0xFF = stop (the scene stays)]
     SHOW_BOOT,      // 35: [show index, 0xFF = none] - the show to play at power-up
@@ -97,10 +97,20 @@ enum class serial_msg_type : uint8_t
     // pen down it paints from its last sample. Usually sent over the UDP
     // stream (neo_tree_net_server.hpp) 30-60 times a second; also accepted here.
     BRUSH,          // 40: [slot][id][flags: bit 0 pen down][x][y][z][r][g][b][radius mm]
+    // Custom effects (engine/include/neotree/effect.hpp, docs/RENDERER.md
+    // 12.1): one draft effect is edited at a time, running in a slot; edits
+    // show there at once. Sections, items and fields are numbered as the
+    // schema lists them; an action's item index is rule * 4 + action.
+    FX_SCHEMA,      // 41: [section] -> [0x86][JSON]: the section's fields (static)
+    FX_EDIT,        // 42: [slot][mode index: 0xFF = a new effect; a built-in = a copy of it; an effect = open it]
+    FX_SET,         // 43: [section][item][field][f32 LE value][r][g][b] - numbers, choices and toggles in the value, colors in r g b
+    FX_ITEM,        // 44: [op: 0 add (actions: to rule `item`), 1 remove, 2 duplicate][section][item]
+    FX_GET,         // 45: [section] -> [0x87][JSON]: the draft's items in that section (sent after the ACK)
+    FX_SAVE,        // 46: [name] - stores the draft as an effect (replaces the effect of that name)
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::BRUSH) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::FX_SAVE) + 1;
 
 const size_t entity_spawn_len = 20;
 const size_t brush_len = 14;

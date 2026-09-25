@@ -21,8 +21,11 @@
 //   DESCRIBE [0x83][JSON]                      reply to DESCRIBE: the modes
 //   SCENE  [0x84][JSON]                        the running scene, pushed to SUBSCRIBEd clients
 //                                              when it changes (not as time passes)
-//   LIBRARY [0x85][JSON]                       presets and shows: reply to LIBRARY, and
-//                                              pushed to SUBSCRIBEd clients when it changes
+//   LIBRARY [0x85][JSON]                       presets, shows and effects: reply to LIBRARY,
+//                                              and pushed to SUBSCRIBEd clients when it changes
+//   FX_SCHEMA [0x86][JSON]                     reply to FX_SCHEMA: a section of the effect schema
+//   FX     [0x87][JSON]                        reply to FX_GET: a section of the draft effect,
+//                                              a frame or so after that command's ACK
 // ACK means "accepted onto the command queue", not "already applied".
 //
 // Stream channel: UDP port net_stream_port, for high-rate input where only
@@ -51,6 +54,8 @@ enum class net_reply_type : uint8_t
     DESCRIBE = 0x83, // [0x83][JSON] - reply to DESCRIBE: modes and presets
     SCENE = 0x84,    // [0x84][JSON] - pushed: the scene (Director::describe_state)
     LIBRARY = 0x85,  // [0x85][JSON] - reply to LIBRARY, and pushed (Library::describe)
+    FX_SCHEMA = 0x86, // [0x86][JSON] - reply to FX_SCHEMA (effect_schema_json)
+    FX = 0x87,       // [0x87][JSON] - reply to FX_GET (effect_section_json of the draft)
 };
 
 enum class net_status : uint8_t

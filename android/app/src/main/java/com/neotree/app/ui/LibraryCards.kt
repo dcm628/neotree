@@ -373,8 +373,15 @@ internal fun ScenesCard(vm: TreeViewModel, catalog: ModeCatalog, library: TreeLi
 }
 
 @Composable
-private fun NameDialog(title: String, hint: String, problem: (String) -> String?, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
+internal fun NameDialog(
+    title: String,
+    hint: String,
+    problem: (String) -> String?,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+    initial: String = "",
+) {
+    var name by remember { mutableStateOf(initial) }
     val issue = problem(name)
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -395,7 +402,7 @@ private fun NameDialog(title: String, hint: String, problem: (String) -> String?
 }
 
 @Composable
-private fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+internal fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },

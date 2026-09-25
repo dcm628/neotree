@@ -192,9 +192,10 @@ static size_t build_locked(char *out, size_t cap)
     // The stored library (neo_tree_scene_store).
     const scene_store_stats_t ss = scene_store_stats();
     static const char *const load_names[] = {"none", "loaded", "invalid"};
-    j.raw(",\"library\":{\"load\":\"%s\",\"stored_bytes\":%u,\"saves\":%u,\"save_failures\":%u,"
-          "\"last_save_ms\":%u}",
-          load_names[static_cast<int>(ss.load)], (unsigned)ss.stored_bytes, (unsigned)ss.saves,
+    j.raw(",\"library\":{\"load\":\"%s\",\"stored_bytes\":%u,\"effects_load\":\"%s\",\"effects_bytes\":%u,"
+          "\"saves\":%u,\"save_failures\":%u,\"last_save_ms\":%u}",
+          load_names[static_cast<int>(ss.load)], (unsigned)ss.stored_bytes,
+          load_names[static_cast<int>(ss.effects_load)], (unsigned)ss.effects_bytes, (unsigned)ss.saves,
           (unsigned)ss.save_failures, (unsigned)(ss.last_save_us / 1000));
 
     j.raw(",\"queue\":{\"level\":%u,\"dropped\":%u},\"core1_loops\":%u", (unsigned)command_queue_level(),

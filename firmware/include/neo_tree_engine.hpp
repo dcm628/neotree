@@ -98,6 +98,13 @@ uint32_t engine_host_scene_revision();
 size_t engine_host_library_json(char *out, size_t cap);
 uint32_t engine_host_library_revision();
 
+// FX_GET replies - a section of the draft effect as JSON - are built by core0
+// for the network client that asked, one a frame, and sent by core1: the
+// owner (engine_host_owner_network) a reply is waiting for, 0 for none; and
+// taking it (copied into out; returns its length, 0 for none). Safe from core1.
+uint8_t engine_host_fx_reply_owner();
+size_t engine_host_take_fx_reply(char *out, size_t cap);
+
 // Lights on/off (TREE_OUTPUT) - the master stage; the scene is untouched.
 void engine_host_set_output(bool enabled);
 

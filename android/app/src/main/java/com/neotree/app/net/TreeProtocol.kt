@@ -29,6 +29,10 @@ object TreeProtocol {
     const val REPLY_SCENE = 0x84
     /** [0x85][JSON] - the library (TreeLibrary): reply to LIBRARY, and pushed after SUBSCRIBE. */
     const val REPLY_LIBRARY = 0x85
+    /** [0x86][JSON]: a section of the custom-effect schema (reply to FX_SCHEMA). */
+    const val REPLY_FX_SCHEMA = 0x86
+    /** [0x87][JSON]: a section of the draft effect (reply to FX_GET, a frame after its ACK). */
+    const val REPLY_FX = 0x87
 
     private const val NOOP = 0
     private const val COLOR_GROUP_RGB_UPDATE = 2
@@ -52,6 +56,12 @@ object TreeProtocol {
     private const val ENTITY_SPAWN = 38
     private const val ENTITY_KILL = 39
     private const val BRUSH = 40
+    private const val FX_SCHEMA = 41
+    private const val FX_EDIT = 42
+    private const val FX_SET = 43
+    private const val FX_ITEM = 44
+    private const val FX_GET = 45
+    private const val FX_SAVE = 46
     const val BRUSH_LEN = 14
 
     /** Names on the wire: 20 bytes, NUL-padded (at most 19 used). */
@@ -60,6 +70,7 @@ object TreeProtocol {
     const val MAX_SHOW_ENTRIES = 16
     const val MAX_USER_PRESETS = 8
     const val MAX_USER_SHOWS = 4
+    const val MAX_EFFECTS = 6
 
     /** Round-trip check - the tree just ACKs it. */
     fun noop(): ByteArray = byteArrayOf(NOOP.toByte())
@@ -125,6 +136,37 @@ object TreeProtocol {
     fun resetBase(): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 0, 0)
     fun deletePreset(index: Int): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 1, index.toByte())
     fun deleteShow(index: Int): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 2, index.toByte())
+    /** A saved custom effect, by its position (EffectInfo.position). */
+    fun deleteEffect(position: Int): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 3, position.toByte())
+
+    // ---- custom effects (engine/include/neotree/effect.hpp) ----
+    // One draft effect is edited at a time, running in a slot; edits show there at once.
+
+    /** The fields of a section of the effect schema (EffectSection.code). */
+    fun fxSchema(section: Int): ByteArray = byteArrayOf(FX_SCHEMA.toByte(), section.toByte())
+
+    /** Starts editing in slot: a new effect (mode -1), a copy of a built-in mode, or a saved effect (its mode index). */
+    fun fxEdit(slot: Int, mode: Int): ByteArray =
+        byteArrayOf(FX_EDIT.toByte(), slot.toByte(), (if (mode < 0) 0xFF else mode).toByte())
+
+    /** One field of the draft: numbers, choices and toggles in value, colors in color. An action's item is rule * 4 + action. */
+    fun fxSet(section: Int, item: Int, field: Int, value: Float, color: Rgb): ByteArray = message(11) {
+        put(FX_SET.toByte()); put(section.toByte()); put(item.toByte()); put(field.toByte())
+        putFloat(value)
+        putRgb(color)
+    }
+
+    enum class FxOp(val code: Int) { ADD(0), REMOVE(1), DUPLICATE(2) }
+
+    /** Adds (actions: to rule `item`), removes or duplicates an item of the draft. */
+    fun fxItem(op: FxOp, section: Int, item: Int): ByteArray =
+        byteArrayOf(FX_ITEM.toByte(), op.code.toByte(), section.toByte(), item.toByte())
+
+    /** Asks for a section of the draft (answered with a REPLY_FX frame). */
+    fun fxGet(section: Int): ByteArray = byteArrayOf(FX_GET.toByte(), section.toByte())
+
+    /** Stores the draft as an effect called name (replacing the one of that name). */
+    fun fxSave(name: String): ByteArray = byteArrayOf(FX_SAVE.toByte()) + nameBytes(name)
 
     /** Saves a show (replacing the user show of that name): entries are (preset index, seconds). */
     fun saveShow(name: String, entries: List<Pair<Int, Int>>, loop: Boolean, shuffle: Boolean): ByteArray {
@@ -294,6 +336,12 @@ object TreeProtocol {
         38 -> "ENTITY_SPAWN"
         39 -> "ENTITY_KILL"
         40 -> "BRUSH"
+        41 -> "FX_SCHEMA"
+        42 -> "FX_EDIT"
+        43 -> "FX_SET"
+        44 -> "FX_ITEM"
+        45 -> "FX_GET"
+        46 -> "FX_SAVE"
         else -> "TYPE_$type"
     }
 

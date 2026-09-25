@@ -6,6 +6,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.neotree.app.net.AckStatus
+import com.neotree.app.net.EffectInfo
+import com.neotree.app.net.EffectModes
+import com.neotree.app.net.EffectSection
+import com.neotree.app.net.FxSectionData
+import com.neotree.app.net.FxSectionSchema
 import com.neotree.app.net.ModeCatalog
 import com.neotree.app.net.ParamValue
 import com.neotree.app.net.Rgb
@@ -375,8 +380,12 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- modes page ----
 
-    /** The tree's modes and presets (null until its DESCRIBE reply arrives). */
-    val catalog: StateFlow<ModeCatalog?> get() = connection.catalog
+    /** The tree's modes (with the custom effects) and presets - null until its DESCRIBE reply arrives. */
+    val catalog: StateFlow<ModeCatalog?> by lazy {
+        combine(connection.catalog, connection.library, scene) { c, lib, live ->
+            c?.withEffects(lib?.effects ?: emptyList(), live?.scene?.draft)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    }
 
     /** The running scene and when the tree reported it (its ages and a show's time left are as of then). */
     data class LiveScene(val scene: SceneState, val atMs: Long)
@@ -494,7 +503,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Starts a mode in a slot (fading between them), or empties it (mode -1). */
     fun setSlotMode(slot: Int, mode: Int) {
-        val name = connection.catalog.value?.modes?.getOrNull(mode)?.name ?: "Empty"
+        val name = catalog.value?.mode(mode)?.name ?: "Empty"
         sendThenRefresh("Slot ${slot + 1}: $name", TreeProtocol.slotSet(slot, mode, fade = true))
     }
 
@@ -562,6 +571,145 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- custom effects (the effect editor) ----
+
+    /** The effect schema and the draft being edited, by section, as the tree sent them. */
+    val fxSchema: StateFlow<Map<EffectSection, FxSectionSchema>> get() = connection.fxSchema
+    val fxDraft: StateFlow<Map<EffectSection, FxSectionData>> get() = connection.fxDraft
+
+    private fun effectsFull(): Boolean = (connection.library.value?.effects?.size ?: 0) >= TreeProtocol.MAX_EFFECTS
+
+    /**
+     * Starts editing, with the draft running in [EFFECT_SLOT]: a new effect
+     * (mode -1), a copy of a built-in mode, or a saved effect (its mode
+     * index) - then reads the schema (once) and the whole draft.
+     */
+    fun editEffect(mode: Int) {
+        viewModelScope.launch {
+            val label = when {
+                mode < 0 -> "New effect"
+                else -> "Editing ${catalog.value?.mode(mode)?.name ?: "effect"}"
+            }
+            if (mode != EffectModes.DRAFT || scene.value?.scene?.draft?.slot != EFFECT_SLOT) {
+                val status = connection.send(TreeProtocol.fxEdit(EFFECT_SLOT, mode))
+                if (status != AckStatus.QUEUED) {
+                    _status.value = if (status == null) "Not connected to the tree" else "$label: tree rejected it"
+                    return@launch
+                }
+            }
+            _status.value = label
+            EffectSection.entries.forEach { s ->
+                if (connection.fxSchema.value[s] == null) connection.send(TreeProtocol.fxSchema(s.code))
+            }
+            refreshDraft()
+        }
+    }
+
+    /** Leaves the editor: the draft stops (it's kept on the tree until something else is edited). */
+    fun closeEffectEditor() {
+        if (scene.value?.scene?.draft?.slot == EFFECT_SLOT) {
+            sendThenRefresh("Effect editor closed", TreeProtocol.slotSet(EFFECT_SLOT, -1, fade = true))
+        }
+    }
+
+    private suspend fun refreshDraft(sections: Collection<EffectSection> = EffectSection.entries) {
+        sections.forEach { connection.send(TreeProtocol.fxGet(it.code)) }
+    }
+
+    private data class FxKey(val section: EffectSection, val item: Int, val field: Int)
+    private val pendingFx = LinkedHashMap<FxKey, ParamValue>()
+    private val pendingFxLock = Mutex()
+    private val fxWake = Channel<Unit>(Channel.CONFLATED)
+
+    /**
+     * Changes a field of the draft - shown here at once, live on the tree a
+     * moment later. Like parameters, only the newest pending value per field
+     * is sent; once edits stop, the touched sections are read back.
+     */
+    fun setFxField(section: EffectSection, item: Int, field: Int, value: ParamValue) {
+        connection.updateFxDraft(section) { d ->
+            d.copy(items = d.items.map { i ->
+                if (i.index != item) i else i.copy(values = i.values.mapIndexed { k, v -> if (k == field) value else v })
+            })
+        }
+        viewModelScope.launch {
+            pendingFxLock.withLock { pendingFx[FxKey(section, item, field)] = value }
+            fxWake.trySend(Unit)
+        }
+    }
+
+    init {
+        viewModelScope.launch {
+            val touched = mutableSetOf<EffectSection>()
+            while (true) {
+                fxWake.receive()
+                while (true) {
+                    val next = pendingFxLock.withLock {
+                        val first = pendingFx.entries.firstOrNull() ?: return@withLock null
+                        pendingFx.remove(first.key)
+                        first.key to first.value
+                    } ?: break
+                    val (key, v) = next
+                    connection.send(TreeProtocol.fxSet(key.section.code, key.item, key.field, v.number, v.color))
+                    touched += key.section
+                }
+                // Quiet for a moment: read back what the tree made of it (ranges, linked fields).
+                if (withTimeoutOrNull(FX_SETTLE_MS) { fxWake.receive() } != null) {
+                    fxWake.trySend(Unit)
+                } else {
+                    refreshDraft(touched.toList())
+                    touched.clear()
+                }
+            }
+        }
+    }
+
+    /** Adds (actions: to rule [item]), removes or duplicates an item, then reads the draft back (numbering can shift). */
+    fun fxItem(op: TreeProtocol.FxOp, section: EffectSection, item: Int) {
+        viewModelScope.launch {
+            when (connection.send(TreeProtocol.fxItem(op, section.code, item))) {
+                AckStatus.QUEUED -> refreshDraft()
+                null -> _status.value = "Not connected to the tree"
+                else -> _status.value = "The tree rejected that"
+            }
+        }
+    }
+
+    /** Why a name can't be used to save the draft, or null if it can. */
+    fun effectNameProblem(name: String): String? {
+        val lib = connection.library.value ?: return "The tree's library hasn't arrived yet"
+        val n = TreeProtocol.storedName(name)
+        return when {
+            n.isEmpty() -> "Give it a name"
+            lib.effects.none { it.name == n } && effectsFull() -> "The tree holds ${TreeProtocol.MAX_EFFECTS} effects - delete one first"
+            else -> null
+        }
+    }
+
+    /** Stores the draft; confirmed once the tree's library lists it. */
+    fun saveEffect(name: String) {
+        val n = name.trim()
+        viewModelScope.launch {
+            val status = connection.send(TreeProtocol.fxSave(n))
+            if (status != AckStatus.QUEUED) {
+                _status.value = if (status == null) "Not connected to the tree" else "Saving \"$n\": tree rejected it"
+                return@launch
+            }
+            val stored = TreeProtocol.storedName(n)
+            val ok = withTimeoutOrNull(LIBRARY_CONFIRM_MS) {
+                connection.library.first { lib -> lib?.effects?.any { it.name == stored } == true }
+            } != null
+            _status.value = if (ok) "Saved \"$stored\" ✓" else "Saving \"$n\": the tree didn't save it (too big?)"
+            refreshDraft(listOf(EffectSection.SETTINGS))   // its new name
+        }
+    }
+
+    fun deleteEffect(effect: EffectInfo) = sendThenRefresh("Deleted \"${effect.name}\"", TreeProtocol.deleteEffect(effect.position))
+
+    /** Plays a saved effect in [EFFECT_SLOT]. */
+    fun playEffect(effect: EffectInfo) =
+        sendThenRefresh("Playing \"${effect.name}\"", TreeProtocol.slotSet(EFFECT_SLOT, effect.mode, fade = true))
+
     // ---- renderer page ----
 
     /** LED positions from the bundled tree_positions.csv - null while loading, a failure if it couldn't be read. */
@@ -619,6 +767,9 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         const val STATUS_POLL_MS = 1000L
         const val PARAM_EDIT_HOLD_MS = 2500L
         const val LIBRARY_CONFIRM_MS = 3000L
+        const val FX_SETTLE_MS = 600L
+        /** Where effects play and are edited: slot 2, over the Colors canvas. */
+        const val EFFECT_SLOT = 1
         // Radius is a uint16 on the wire; putShort keeps the bit pattern, so
         // 0xFFFF arrives as 65535 = "any radius".
         const val UNLIMITED_RADIUS_MM = 0xFFFF

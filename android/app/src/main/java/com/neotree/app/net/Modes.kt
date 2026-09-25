@@ -5,12 +5,28 @@ import org.json.JSONObject
 
 /**
  * The tree's modes and presets, from its DESCRIBE reply (firmware
- * engine/include/neotree/modes.hpp describe_modes). A mode's index - what
- * SLOT_SET takes - is its position in [modes]; a parameter's index - what
- * PARAM_SET takes - is its position in [ModeInfo.params].
+ * engine/include/neotree/modes.hpp describe_modes): the built-ins, a mode's
+ * index - what SLOT_SET takes - being its position. Custom effects come from
+ * the library and the scene ([withEffects]), at their own indices. A
+ * parameter's index - what PARAM_SET takes - is its position in
+ * [ModeInfo.params].
  */
 data class ModeCatalog(val modes: List<ModeInfo>, val presets: List<String>) {
     fun byId(id: String): ModeInfo? = modes.firstOrNull { it.id == id }
+
+    /** The mode with this index (what SLOT_SET takes and the scene reports). */
+    fun mode(index: Int): ModeInfo? = modes.firstOrNull { it.index == index }
+
+    /** The built-ins with the saved effects after them, and the draft (which can't be picked for a slot). */
+    fun withEffects(effects: List<EffectInfo>, draft: DraftInfo?): ModeCatalog {
+        val builtIns = modes.filter { !it.effect }
+        val saved = effects.map { ModeInfo(it.mode, "fx:${it.name}", it.name, "Made in the app", emptyList(), effect = true) }
+        val editing = draft?.let {
+            ModeInfo(EffectModes.DRAFT, EffectModes.DRAFT_ID, "Editing: ${it.name}", "The effect being edited",
+                emptyList(), effect = true, pickable = false)
+        }
+        return copy(modes = builtIns + saved + listOfNotNull(editing))
+    }
 
     companion object {
         fun parse(json: JSONObject): ModeCatalog {
@@ -39,6 +55,10 @@ data class ModeInfo(
     val name: String,
     val summary: String,
     val params: List<ParamInfo>,
+    /** A custom effect (made in the app) rather than a built-in. */
+    val effect: Boolean = false,
+    /** Offered when choosing a slot's mode (not the draft: that's the editor's). */
+    val pickable: Boolean = true,
 )
 
 enum class ParamType { NUMBER, COLOR, CHOICE, TOGGLE }
@@ -125,6 +145,8 @@ data class SceneState(
     val show: ShowState? = null,
     /** Changes whenever what's running changes (-1 from older firmware). */
     val revision: Long = -1,
+    /** The custom effect being edited (null from older firmware). */
+    val draft: DraftInfo? = null,
 ) {
     companion object {
         /** Parses the scene JSON (pushed, or the status JSON's "scene"); null if there isn't one. */
@@ -132,8 +154,10 @@ data class SceneState(
             if (scene == null) return null
             val slots = scene.optJSONArray("slots") ?: return null
             val show = scene.optJSONObject("show")
+            val fx = scene.optJSONObject("fx")
             return SceneState(
                 revision = scene.optLong("rev", -1),
+                draft = fx?.let { DraftInfo(it.optString("n"), it.optLong("rev"), it.optInt("slot", -1)) },
                 show = show?.let {
                     ShowState(
                         name = it.optString("n"),
@@ -187,13 +211,20 @@ data class TreeLibrary(
     val bootShow: String,
     val baseCustom: Boolean,
     val baseSlots: List<String>,
+    /** Saved custom effects. */
+    val effects: List<EffectInfo> = emptyList(),
 ) {
     companion object {
         fun parse(json: JSONObject): TreeLibrary {
             val presets = json.optJSONArray("presets") ?: JSONArray()
             val shows = json.optJSONArray("shows") ?: JSONArray()
             val base = json.optJSONObject("base")
+            val fx = json.optJSONArray("fx") ?: JSONArray()
             return TreeLibrary(
+                effects = (0 until fx.length()).map { i ->
+                    val e = fx.getJSONObject(i)
+                    EffectInfo(e.optInt("k"), e.optString("n"), e.optInt("i"))
+                },
                 presets = (0 until presets.length()).map { i ->
                     val p = presets.getJSONObject(i)
                     PresetInfo(i, p.optString("n"), p.optInt("u") == 1)

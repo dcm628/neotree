@@ -263,6 +263,10 @@ public:
     Emitter *emitter(uint8_t slot, uint8_t index);
     // Sets how groups a and b respond to each other (both orders).
     void set_response(uint8_t slot, uint8_t group_a, uint8_t group_b, Response response);
+    void clear_responses(uint8_t slot);   // every pair back to ignore
+    uint16_t quota(uint8_t slot) const;
+    // After rules are edited in place: which events the slot's rules handle.
+    void refresh_listening(uint8_t slot);
     Response response(uint8_t slot, uint8_t group_a, uint8_t group_b) const;
     void set_quota(uint8_t slot, uint16_t max_entities_in_slot);
 

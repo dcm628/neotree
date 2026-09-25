@@ -3,6 +3,7 @@
 // mode, its parameters, opacity and lifecycle - and whole scenes. Presets,
 // shows, the base scene and the tree's stored library all hold these.
 
+#include <cstddef>
 #include <cstdint>
 
 #include "neotree/modes.hpp"
@@ -75,5 +76,8 @@ struct SceneSpec
     float duration_s = 0.0f;
     EndPolicy policy = EndPolicy::hold;
 };
+
+// Names people give scenes, shows and effects: this many bytes, with the NUL.
+constexpr size_t name_size = sizeof(SceneSpec::name);
 
 }  // namespace neotree
