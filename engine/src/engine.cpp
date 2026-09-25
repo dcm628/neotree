@@ -18,6 +18,7 @@ void Engine::init(const LedGeometry &geometry, const EngineConfig &config, LogFn
     scene_.clear();
     master_ = {};
     entities_.clear();
+    behavior_.clear();
     forces_ = {};
     world_ = {};
     world_.floor_z = geometry.bounds().min.z;
@@ -53,15 +54,52 @@ void Engine::run_ticks(uint32_t n)
 
 void Engine::tick()
 {
-    // Motion now; collisions, rules and lifecycles join in M4-M5.
+    // Rules first (last tick's events, timers, counts), then emitters,
+    // motion, collisions. Lifecycles join in M5.
     const float dt = clock_.tick_dt_s();
+    behavior_.handle_events(*this, dt);
+    behavior_.run_emitters(*this, dt);
     for (uint16_t k = 0; k < entities_.capacity; k++)
     {
-        if (entities_.alive(k) && !step_entity(entities_.item(k), forces_, world_, *geometry_, dt))
+        if (!entities_.alive(k))
         {
-            entities_.destroy(entities_.handle_at(k));
+            continue;
+        }
+        Entity &e = entities_.item(k);
+        const StepResult r = step_entity(e, forces_, world_, *geometry_, dt);
+        const Handle h = entities_.handle_at(k);
+        if (r.hits != 0 && behavior_.listens(e.slot, EventType::boundary))
+        {
+            Event ev;
+            ev.type = EventType::boundary;
+            ev.slot = e.slot;
+            ev.id = r.hits;
+            ev.group_a = e.group;
+            ev.a = h;
+            ev.pos_a = ev.point = e.pos;
+            ev.vel_a = e.vel;
+            ev.color_a = e.color;
+            behavior_.raise(ev);
+        }
+        if (!r.alive)
+        {
+            if (r.expired && behavior_.listens(e.slot, EventType::expired))
+            {
+                Event ev;
+                ev.type = EventType::expired;
+                ev.slot = e.slot;
+                ev.group_a = e.group;
+                ev.a = h;
+                ev.pos_a = ev.point = e.pos;
+                ev.vel_a = e.vel;
+                ev.color_a = e.color;
+                behavior_.raise(ev);
+            }
+            entities_.destroy(h);
         }
     }
+    behavior_.collide(*this);
+    behavior_.recount(entities_);
     stats_.entities = entities_.size();
     clock_.advance_tick();
     stats_.ticks++;
@@ -112,6 +150,16 @@ Handle Engine::spawn(const Entity &entity)
     return h;
 }
 
+void Engine::input(uint8_t slot, uint8_t id, float value)
+{
+    Event ev;
+    ev.type = EventType::input;
+    ev.slot = slot;
+    ev.id = id;
+    ev.value = value;
+    behavior_.raise(ev);
+}
+
 void Engine::destroy_entities_in_slot(int slot)
 {
     for (uint16_t k = 0; k < entities_.capacity; k++)
@@ -122,6 +170,39 @@ void Engine::destroy_entities_in_slot(int slot)
         }
     }
     stats_.entities = entities_.size();
+}
+
+void Engine::render_bytes(std::span<Rgb8> out)
+{
+    size_t n = out.size() < geometry_->count() ? out.size() : geometry_->count();
+    stats_.frames++;
+    if (!master_.output_enabled)
+    {
+        for (Rgb8 &px : out.first(n))
+        {
+            px = Rgb8{};
+        }
+        stats_.last_frame_led_evals = 0;
+        return;
+    }
+    std::span<Rgb> frame(frame_, n);
+    stats_.last_frame_led_evals = composite(scene_, *geometry_, clock_.time_us(), entities_, scratch_, frame);
+
+    const float k = master_.brightness;
+    if (master_.gamma == 1.0f)
+    {
+        for (size_t i = 0; i < n; i++)
+        {
+            out[i] = {unit_to_byte(frame_[i].r * k), unit_to_byte(frame_[i].g * k), unit_to_byte(frame_[i].b * k)};
+        }
+        return;
+    }
+    const float gamma = master_.gamma;
+    auto curve = [&](float v) { return unit_to_byte(std::pow(std::clamp(v * k, 0.0f, 1.0f), gamma)); };
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = {curve(frame_[i].r), curve(frame_[i].g), curve(frame_[i].b)};
+    }
 }
 
 void Engine::log(const char *fmt, ...) const

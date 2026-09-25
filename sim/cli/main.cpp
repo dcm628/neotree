@@ -168,6 +168,11 @@ int main(int argc, char **argv)
     std::printf("frames        %llu rendered of %llu at %u fps (%.0f/s wall)\n", (unsigned long long)rendered,
                 (unsigned long long)total_frames, fps, wall_s > 0.0 ? static_cast<double>(rendered) / wall_s : 0.0);
     std::printf("entities      %u live, %u failed spawns\n", (unsigned)st.entities, (unsigned)st.spawns_failed);
+    const neotree::BehaviorStats &bs = engine.behavior().stats();
+    std::printf("behavior      peak %u entities, %u rule fires, %u events (%u dropped), %u actions over budget, "
+                "%u spawns over quota, %u contacts dropped\n",
+                (unsigned)bs.peak_entities, (unsigned)bs.rule_fires, (unsigned)bs.events, (unsigned)bs.events_dropped,
+                (unsigned)bs.actions_dropped, (unsigned)bs.spawns_over_quota, (unsigned)bs.contacts_dropped);
     std::printf("scene         %s:%.0f LED-layer evaluations per frame, %.1f us per frame on this PC\n", scene.c_str(),
                 rendered ? static_cast<double>(led_evals) / static_cast<double>(rendered) : 0.0,
                 rendered ? wall_s * 1e6 / static_cast<double>(rendered) : 0.0);

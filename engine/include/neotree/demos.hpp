@@ -18,8 +18,11 @@ enum class Demo : uint8_t
     sweep_gravity = 4,  //   falling from rest under gravity
     sweep_launch = 5,   //   launched from the bottom to just reach the top, then falling back
     bounce = 6,         // balls bouncing off the floor and the tree's outer envelope
-    snow = 7,           // 150 drifting flakes, wrapping floor -> ceiling, wind gusts
+    snow = 7,           // an emitter of drifting flakes that settle and fade; wind gusts
     orbit = 8,          // comets swirling around the trunk on the outer surface
+    fireworks = 9,      // rockets from an emitter; a rule bursts each into sparks when it expires
+    chain = 10,         // balls bounce off each other and every collision spawns another - held by the quota
+    mixer = 11,         // red and blue balls bounce off their own color, pass through and swap with the other
     count
 };
 

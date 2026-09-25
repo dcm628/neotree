@@ -336,6 +336,13 @@ private fun EngineCard(json: JSONObject) {
         Kv("Work per frame", "${e.optInt("led_evals")} evaluations, ${e.optInt("entities")} entities")
         Kv("Positioned LEDs", "${e.optInt("positioned")} of ${e.optInt("leds")}")
         Kv("Ticks dropped", e.optLong("ticks_dropped").toString())
+        Kv("Rule fires", "${e.optLong("rule_fires")}  (peak ${e.optInt("peak_entities")} entities)")
+        val limited = e.optLong("events_dropped") + e.optLong("actions_dropped")
+        Kv(
+            "Runaway limits hit",
+            "quota ${e.optLong("spawns_over_quota")}  events ${e.optLong("events_dropped")}  actions ${e.optLong("actions_dropped")}",
+            if (limited > 0) WARN_AMBER else Color.Unspecified,
+        )
         Kv(
             "Rejected edits",
             e.optInt("rejected_edits").toString(),

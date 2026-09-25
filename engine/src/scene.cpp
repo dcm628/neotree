@@ -279,29 +279,34 @@ bool covers_everything(const Slot &slot, const Layer &layer)
 uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time_us, const EntityPool &entities,
                    EntityScratch &scratch, std::span<Rgb> out)
 {
-    for (Rgb &px : out)
-    {
-        px = Rgb{};
-    }
     uint32_t evals = 0;
     std::span<Rgb> leds = out.first(out.size() < geometry.count() ? out.size() : geometry.count());
 
     // Start from the topmost layer that hides everything below it (e.g. a
     // demo's opaque backdrop over the Canvas); nothing under it is visible.
-    uint8_t first_slot = 0, first_layer = 0;
-    for (int s = max_slots - 1; s >= 0 && first_slot == 0 && first_layer == 0; s--)
+    // That layer is a plain fill, so it's written directly - no clear, no
+    // blend - and compositing continues above it.
+    int cover_slot = -1, cover_layer = -1;
+    for (int s = max_slots - 1; s >= 0 && cover_slot < 0; s--)
     {
         const Slot *slot = scene.slot(static_cast<uint8_t>(s));
         for (int l = slot->layer_count - 1; l >= 0; l--)
         {
             if (covers_everything(*slot, slot->layers[l]))
             {
-                first_slot = static_cast<uint8_t>(s);
-                first_layer = static_cast<uint8_t>(l);
+                cover_slot = s;
+                cover_layer = l;
                 break;
             }
         }
     }
+    const Rgb fill = cover_slot >= 0 ? scene.slot(static_cast<uint8_t>(cover_slot))->layers[cover_layer].color : Rgb{};
+    for (Rgb &px : out)
+    {
+        px = fill;
+    }
+    uint8_t first_slot = cover_slot >= 0 ? static_cast<uint8_t>(cover_slot) : 0;
+    uint8_t first_layer = cover_slot >= 0 ? static_cast<uint8_t>(cover_layer + 1) : 0;
 
     for (uint8_t s = first_slot; s < max_slots; s++)
     {

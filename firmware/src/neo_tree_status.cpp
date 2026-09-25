@@ -140,13 +140,15 @@ static size_t build_locked(char *out, size_t cap)
     j.raw(",\"engine\":{\"ticks\":%llu,\"ticks_dropped\":%llu,\"frames\":%llu,\"advance_us\":%u,"
           "\"max_advance_us\":%u,\"render_us\":%u,\"max_render_us\":%u,\"max_advance_at_ms\":%u,\"max_render_at_ms\":%u,"
           "\"slow_frames\":%u,\"led_evals\":%u,\"geometry_us\":%u,\"leds\":%u,\"positioned\":%u,"
-          "\"rejected_edits\":%u,\"entities\":%u,\"spawns_failed\":%u,\"demo\":%u}",
+          "\"rejected_edits\":%u,\"entities\":%u,\"spawns_failed\":%u,\"demo\":%u,\"rule_fires\":%u,"
+          "\"events_dropped\":%u,\"actions_dropped\":%u,\"spawns_over_quota\":%u,\"peak_entities\":%u}",
           (unsigned long long)eng.ticks, (unsigned long long)eng.ticks_dropped, (unsigned long long)eng.frames,
           (unsigned)eng.last_advance_us, (unsigned)eng.max_advance_us, (unsigned)eng.last_render_us,
           (unsigned)eng.max_render_us, (unsigned)eng.max_advance_at_ms, (unsigned)eng.max_render_at_ms,
           (unsigned)eng.slow_frames, (unsigned)eng.led_evals, (unsigned)eng.geometry_build_us, (unsigned)eng.leds,
           (unsigned)eng.positioned, (unsigned)eng.rejected_edits, (unsigned)eng.entities,
-          (unsigned)eng.spawns_failed, (unsigned)eng.demo);
+          (unsigned)eng.spawns_failed, (unsigned)eng.demo, (unsigned)eng.rule_fires, (unsigned)eng.events_dropped,
+          (unsigned)eng.actions_dropped, (unsigned)eng.spawns_over_quota, (unsigned)eng.peak_entities);
 
     // Core0 main-loop stalls (neo_tree_loop_monitor): counts, then the most
     // recent as [uptime_ms, gap_us, pass flags].
@@ -176,9 +178,10 @@ static size_t build_locked(char *out, size_t cap)
 
     safety_report_t sr = safety_report();
     j.raw(",\"safety\":{\"crash_reboot\":%s,\"crash_count\":%u,\"fault_core\":%d,\"fault_pc\":\"0x%08lx\","
-          "\"fault_lr\":\"0x%08lx\"}",
+          "\"fault_lr\":\"0x%08lx\",\"stack_used\":[%u,%u],\"stack_size\":[%u,%u]}",
           sr.crash_reboot ? "true" : "false", (unsigned)sr.crash_count, (int)sr.fault_core,
-          (unsigned long)sr.fault_pc, (unsigned long)sr.fault_lr);
+          (unsigned long)sr.fault_pc, (unsigned long)sr.fault_lr, (unsigned)safety_stack_used(0),
+          (unsigned)safety_stack_used(1), (unsigned)safety_stack_size(0), (unsigned)safety_stack_size(1));
 
     j.raw(",\"queue\":{\"level\":%u,\"dropped\":%u},\"core1_loops\":%u", (unsigned)command_queue_level(),
           (unsigned)command_queue_dropped(), (unsigned)core1_loop_counter);

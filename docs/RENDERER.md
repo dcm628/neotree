@@ -1,6 +1,6 @@
 # NeoTree Rendering Engine — Design
 
-**Status:** Design agreed · M1, M2 done · M3 (entities) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
+**Status:** Design agreed · M1-M3 done · M4 (collisions, rules, emitters) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
 
 **Related:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) §6 defers volumetric
 rendering to this document. [`LED_OUTPUT.md`](./LED_OUTPUT.md) covers the
@@ -521,7 +521,7 @@ configuration (stack editing, layer/entity/rule settings, presets, shows).
 | M1 ✅ | Engine skeleton (portable library), host build, headless CLI, viewer skeleton, LED geometry module (real + synthetic positions) | Viewer shows the tree's point cloud; CLI runs an empty scene at thousands of fps |
 | M2 ✅ | Compositor: solid, pixel, field layers; masks; blends; master stage. Canvas mode; base scene = Canvas; existing messages translated to layer edits | Tree looks and behaves exactly as today; frame timing on the Debug page |
 | M3 ✅ | Entities: shapes, falloff, integration, global forces, boundaries, surface constraint, z-culling | Gravity and launch sweeps recreated as entity demos, on the tree and in the sim |
-| M4 | Collision groups, response table, events, rules/actions, templates, emitters, runaway protection | Snow and fireworks demos; ball-collision spawn chain stays bounded |
+| M4 ✅ | Collision groups, response table, events, rules/actions, templates, emitters, runaway protection | Snow and fireworks demos; ball-collision spawn chain stays bounded |
 | M5 | Modes, slots (stacking), lifecycle (end conditions, loop/chain/revert/remove/hold), transitions, scene description format, base scene as any scene; describe/select/param/layer protocol; app: mode picker and parameters | Stacked snow-over-rainbow; a chained scene verified over hours of sim time |
 | M6 | Shows, persistence of base scene and presets, state push to all phones; app: stack editing and presets | A holiday show loops unattended |
 | M7 | Direct entity control from the phone, stream channel, paintbrush | Flick a ball from the phone into the tree |
@@ -711,6 +711,71 @@ left off.
 the 16.7 ms budget. The fixed ~1.3 ms per frame is several full passes over
 all 1,000 LEDs (clear, backdrop, entity composite, master, pack) that could
 be fused; that's the next place to look before M4's spark-heavy effects.
+
+### M4 — done 2026-09-24
+
+Built as designed in §6.5 and §7 (`engine/include/neotree/behavior.hpp`),
+with these specifics:
+
+- **Groups:** each entity is in at most one of 16 collision groups (the
+  design allowed several; one is enough so far and keeps the response lookup
+  a single table entry). Collision radius comes from the shape (sphere: size,
+  capsule: size + length) unless set.
+- **Responses** per slot and pair of groups: ignore, overlap, bounce
+  (impulse with mass and restitution, plus separation), stick (shared
+  momentum), destroy a / b / both. Detection is a z-sorted sweep with sphere
+  tests. Touching pairs are tracked across ticks (up to 128), so collision
+  and overlap-begin events fire once per contact, and overlap-end when it
+  ends.
+- **Events** carry copies of both entities' position, velocity and color
+  (they may be gone by the time a rule runs). Event types: collision,
+  overlap begin/end, boundary (with which boundary), expired, spawned,
+  timer, signal (crosses slots), input (`Engine::input`, for the app),
+  count below/above.
+- **Rules** (16 per slot): trigger, group filters (pair order doesn't
+  matter - roles swap to match), conditions (probability, cooldown, max
+  fires, a group-count limit), and up to 4 actions: spawn from a template
+  (placed at the event / a / b / fixed / anywhere; velocity from the event
+  plus spread; color kept / fixed / from a or b / mixed / random per burst
+  / random each), destroy, set color, set velocity, impulse, emitter
+  on/off/rate, set gravity / wind, layer color / opacity, and signal.
+- **Templates** (8 per slot) and **emitters** (8 per slot: rate, region -
+  point, box, band, tree top, tree volume, riding an entity - velocity
+  spread, size and lifetime jitter, color).
+- **Runaway protection:** events from actions are handled next tick (a
+  self-spawning chain grows exactly one generation per tick - tested); a
+  per-slot entity quota (default 200); 96 actions per tick; cooldowns and
+  fire limits. Hitting any limit is counted (status JSON `engine`, the app's
+  Engine card).
+- **Events nothing listens to are never queued:** each slot keeps a mask of
+  the event types its rules handle. Without it, resting snow raised ~6,000
+  boundary events a second for no one.
+
+New demos: fireworks (a launcher emitter; a rule bursts each expiring rocket
+into sparks in its color plus white glitter), chain (every collision spawns
+another ball - a chain reaction held by a 40-entity quota), mixer (red and
+blue balls bounce off their own color, pass through and swap colors with
+the other), and snow rebuilt on an emitter (flakes settle and fade). 70
+engine unit tests.
+
+**Proof - bounded chain reaction:** `neotree_sim --scene chain --duration 8h`
+ran 8 hours of simulated time in 15 s: peak 40 entities (the quota), 189,711
+rule fires, 143,782 spawns refused by the quota, no dropped events or
+actions. The same run is reproducible to the rule fire.
+
+On the tree (233 positioned LEDs): snow 3.4 ms per frame, fireworks up to
+2.7 ms, chain and mixer ~1.4 ms, with no limits hit.
+
+Also in M4:
+- **Faster output:** `Engine::render_bytes` does the master stage and
+  rounding in one pass straight to 8-bit (the firmware packs bytes), and an
+  opaque backdrop is written directly as the starting fill. Sweeps went
+  from 1.35 to ~1.1 ms.
+- **Stacks:** measuring showed both cores were already past the SDK's 2 KB
+  default (core0 2,144 bytes, core1 2,300 at peak) and spilling into memory
+  that happened to be unused - possibly behind the unexplained crash in M2.
+  Both now have 4 KB (`PICO_STACK_SIZE`), and the status JSON reports each
+  core's high-water mark (`safety.stack_used`), painted at boot.
 
 ## 16. Memory estimate
 

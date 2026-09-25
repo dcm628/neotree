@@ -88,6 +88,11 @@ target_compile_definitions(neo_tree PRIVATE
         #PIN_DBG1=3
         CYW43_HOST_NAME=\"${NEOTREE_HOSTNAME}\"
         NEOTREE_FRAME_RATE=${NEOTREE_FRAME_RATE}
+        # 4 KB for core0 (the SDK default is 2 KB): the engine's rule
+        # handling and demo setup reach ~2.2 KB deep. The top half of
+        # SCRATCH_Y was free anyway; usage is reported in the status JSON
+        # (safety.stack_used).
+        PICO_STACK_SIZE=0x1000
         )
 
 target_compile_options(neo_tree PRIVATE

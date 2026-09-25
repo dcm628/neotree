@@ -7,6 +7,7 @@
 # (not double) in anything that runs per tick or per frame.
 
 add_library(neotree_engine STATIC
+    src/behavior.cpp
     src/demos.cpp
     src/engine.cpp
     src/entity.cpp

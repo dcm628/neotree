@@ -27,11 +27,11 @@ constexpr uint8_t canvas_paint = 1;
 constexpr uint8_t demo_slot = 1;
 neotree::Demo demo = neotree::Demo::none;
 
-// Static: the geometry is ~31 KB, the engine (with its pixel buffers) ~27 KB,
-// and the frame 12 KB - far too big for core0's stack.
+// Static: the geometry is ~31 KB and the engine (pixel buffers, entities,
+// its own float frame) ~95 KB - far too big for core0's stack.
 neotree::LedGeometry geometry;
 neotree::Engine engine;
-neotree::Rgb frame[neotree::LedGeometry::max_leds];
+neotree::Rgb8 frame[neotree::LedGeometry::max_leds];
 
 // The integer positions the legacy volume commands test against, exactly as
 // RGB_LED_3D holds them (refreshed at the same points: boot and config
@@ -108,9 +108,7 @@ void pack_words(uint32_t *words, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
-        words[i] = ((uint32_t)neotree::unit_to_byte(frame[i].r) << 24) |
-                   ((uint32_t)neotree::unit_to_byte(frame[i].g) << 16) |
-                   ((uint32_t)neotree::unit_to_byte(frame[i].b) << 8);
+        words[i] = ((uint32_t)frame[i].r << 24) | ((uint32_t)frame[i].g << 16) | ((uint32_t)frame[i].b << 8);
     }
 }
 
@@ -158,7 +156,7 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     last_frame_us = now_us;
     uint64_t t1 = time_us_64();
     neotree::update_demo(engine, demo, demo_slot);
-    engine.render(frame);
+    engine.render_bytes(frame);
     size_t n = count < geometry.count() ? count : geometry.count();
     pack_words(words, n);
     for (size_t i = n; i < count; i++)
@@ -174,6 +172,12 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     stats.led_evals = es.last_frame_led_evals;
     stats.entities = es.entities;
     stats.spawns_failed = es.spawns_failed;
+    const neotree::BehaviorStats &bs = engine.behavior().stats();
+    stats.rule_fires = bs.rule_fires;
+    stats.events_dropped = bs.events_dropped;
+    stats.actions_dropped = bs.actions_dropped;
+    stats.spawns_over_quota = bs.spawns_over_quota;
+    stats.peak_entities = bs.peak_entities;
     stats.last_advance_us = (uint32_t)(t1 - t0);
     stats.last_render_us = (uint32_t)(t2 - t1);
     uint32_t now_ms = (uint32_t)(t2 / 1000);
@@ -304,5 +308,10 @@ engine_host_stats_t engine_host_stats()
     s.entities = stats.entities;
     s.spawns_failed = stats.spawns_failed;
     s.demo = stats.demo;
+    s.rule_fires = stats.rule_fires;
+    s.events_dropped = stats.events_dropped;
+    s.actions_dropped = stats.actions_dropped;
+    s.spawns_over_quota = stats.spawns_over_quota;
+    s.peak_entities = stats.peak_entities;
     return s;
 }

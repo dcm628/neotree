@@ -13,6 +13,10 @@ namespace neotree {
 
 constexpr uint16_t max_entities = 256;
 
+// Collision groups (docs/RENDERER.md 6.5): an entity is in at most one.
+constexpr uint8_t max_groups = 16;
+constexpr uint8_t no_group = 0xFF;   // takes part in no collisions
+
 enum class Shape : uint8_t
 {
     sphere,    // ball, spark, snowflake: radius = size
@@ -80,6 +84,7 @@ struct Entity
     float wind_scale = 1.0f;
     float swirl_scale = 1.0f;
     float restitution = 0.6f;        // bounce energy kept
+    float mass = 1.0f;               // for collisions between entities
     bool kinematic = false;          // ignores forces (moved by commands); velocity still applies
     Surface surface = Surface::none;
     float surface_offset_mm = 0.0f;
@@ -95,8 +100,11 @@ struct Entity
     Vec3 spawn_pos{};                // set by Engine::spawn; respawn returns here
     Vec3 spawn_vel{};
 
+    // Interaction
+    uint8_t group = no_group;        // collision group, 0..max_groups-1
+    float collide_radius = 0.0f;     // 0 = from the shape (sphere: size, capsule: size + length)
+
     // Reserved for later milestones
-    uint16_t groups = 0;             // collision groups (M4)
     uint8_t owner = 0;               // mode instance / controlling phone (M5+)
 };
 
@@ -122,8 +130,23 @@ struct World
     float outer_margin_mm = 0.0f;   // the outer bound is the envelope + this
 };
 
-// Advances one entity by dt. Returns false if it should be destroyed.
-bool step_entity(Entity &e, const Forces &forces, const World &world, const LedGeometry &geometry, float dt);
+// Which boundaries a step touched (StepResult::hits).
+constexpr uint8_t hit_floor = 1;
+constexpr uint8_t hit_ceiling = 2;
+constexpr uint8_t hit_outer = 4;
+
+struct StepResult
+{
+    bool alive = true;     // false: destroy it (by a boundary or its lifetime)
+    bool expired = false;  // its lifetime ran out
+    uint8_t hits = 0;      // hit_* bits for boundaries it crossed this step
+};
+
+// Advances one entity by dt.
+StepResult step_entity(Entity &e, const Forces &forces, const World &world, const LedGeometry &geometry, float dt);
+
+// The radius used for entity-entity collisions (0 = doesn't collide).
+float collision_radius(const Entity &e);
 
 // Premultiplied color + coverage accumulated from an entity layer's entities.
 struct EntityScratch

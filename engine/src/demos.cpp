@@ -7,8 +7,8 @@ namespace neotree {
 
 namespace {
 
-const char *const names[] = {"none", "layers", "wedge", "sweep_linear", "sweep_gravity",
-                             "sweep_launch", "bounce", "snow", "orbit"};
+const char *const names[] = {"none",   "layers", "wedge", "sweep_linear", "sweep_gravity", "sweep_launch",
+                             "bounce", "snow",   "orbit", "fireworks",    "chain",         "mixer"};
 static_assert(sizeof(names) / sizeof(names[0]) == static_cast<size_t>(Demo::count));
 
 float deg(float d) { return d * pi / 180.0f; }
@@ -198,33 +198,33 @@ void setup_bounce(Engine &engine, uint8_t slot)
 void setup_snow(Engine &engine, uint8_t slot)
 {
     backdrop(engine.scene(), slot, {0.0f, 0.01f, 0.04f});
-    uint8_t layer = entity_layer(engine.scene(), slot, EntityCombine::max);
-    const World &w = engine.world();
-    Rng &rng = engine.rng();
-    for (int k = 0; k < 150; k++)
-    {
-        Entity f;
-        f.slot = slot;
-        f.layer = layer;
-        f.shape = Shape::sphere;
-        // LEDs are ~80mm apart on average, so flakes have to be about that
-        // big to reliably light one.
-        f.size = rng.range(50.0f, 80.0f);
-        f.edge_mm = 60.0f;
-        f.color = {0.8f, 0.85f, 1.0f};
-        f.brightness = rng.range(0.4f, 1.0f);
-        float a = rng.range(0.0f, two_pi);
-        float z = rng.range(w.floor_z, w.ceiling_z);
-        float r = rng.range(0.0f, 1.05f) * engine.geometry().envelope_radius(z);
-        f.pos = {r * std::cos(a), r * std::sin(a), z};
-        f.vel = {0.0f, 0.0f, rng.range(-250.0f, -120.0f)};
-        f.gravity_scale = 0.008f;   // with the drag: falls at ~260 mm/s
-        f.drag = 0.3f;
-        f.wind_scale = rng.range(0.5f, 1.5f);
-        f.floor = Bound::wrap;
-        f.outer = Bound::stop;
-        engine.spawn(f);
-    }
+    Behavior &b = engine.behavior();
+    Entity flake;
+    flake.layer = entity_layer(engine.scene(), slot, EntityCombine::max);
+    flake.shape = Shape::sphere;
+    // LEDs are ~80mm apart on average, so flakes have to be about that big to
+    // reliably light one.
+    flake.size = 65.0f;
+    flake.edge_mm = 60.0f;
+    flake.color = {0.8f, 0.85f, 1.0f};
+    flake.vel = {0.0f, 0.0f, -150.0f};
+    flake.gravity_scale = 0.008f;   // with the drag: falls at ~260 mm/s
+    flake.drag = 0.3f;
+    flake.floor = Bound::stop;      // settles...
+    flake.outer = Bound::stop;
+    flake.lifetime_s = 12.0f;       // ...and fades away where it lies
+    flake.fade_in_s = 0.5f;
+    flake.fade_out_s = 3.0f;
+    int t = b.add_template(slot, flake);
+    Emitter em;
+    em.template_index = static_cast<uint8_t>(t);
+    em.region = Region::top;
+    em.rate = 12.0f;
+    em.spread = 40.0f;
+    em.size_jitter = 0.25f;
+    em.lifetime_jitter = 0.15f;
+    b.add_emitter(slot, em);
+    b.set_quota(slot, 180);
 }
 
 void update_snow(Engine &engine)
@@ -270,6 +270,167 @@ void setup_orbit(Engine &engine, uint8_t slot)
     }
 }
 
+void setup_fireworks(Engine &engine, uint8_t slot)
+{
+    backdrop(engine.scene(), slot, {0.0f, 0.0f, 0.02f});
+    Behavior &b = engine.behavior();
+    const World &w = engine.world();
+    const uint8_t layer = entity_layer(engine.scene(), slot);
+
+    Entity rocket;
+    rocket.layer = layer;
+    rocket.size = 45.0f;
+    rocket.edge_mm = 50.0f;
+    rocket.gravity_scale = 0.35f;
+    rocket.lifetime_s = 0.85f;  // bursts near the top of its climb, ~1.3 m up
+    rocket.group = 0;
+    int rocket_t = b.add_template(slot, rocket);
+
+    Entity spark;
+    spark.layer = layer;
+    spark.size = 70.0f;         // ~LED spacing, so sparks reliably light LEDs
+    spark.edge_mm = 80.0f;
+    spark.gravity_scale = 0.18f;
+    spark.drag = 1.6f;
+    spark.lifetime_s = 1.6f;
+    spark.fade_out_s = 1.2f;
+    spark.group = 1;
+    int spark_t = b.add_template(slot, spark);
+
+    Emitter launcher;
+    launcher.template_index = static_cast<uint8_t>(rocket_t);
+    launcher.region = Region::band;
+    launcher.min = {0.0f, 0.0f, w.floor_z};
+    launcher.max = {180.0f, 0.0f, w.floor_z};
+    launcher.rate = 0.9f;
+    launcher.vel = {0.0f, 0.0f, 3000.0f};
+    launcher.spread = 350.0f;
+    launcher.lifetime_jitter = 0.15f;
+    launcher.color_from = ColorFrom::random_each;
+    b.add_emitter(slot, launcher);
+
+    // When a rocket's life ends it bursts: sparks in its color, plus white glitter.
+    Rule burst;
+    burst.trigger = Trigger::expired;
+    burst.group_a = 0;
+    Action sparks;
+    sparks.type = ActionType::spawn;
+    sparks.index = static_cast<uint8_t>(spark_t);
+    sparks.count = 32;
+    sparks.place = Place::a;
+    sparks.color_from = ColorFrom::a;
+    sparks.spread = 1000.0f;
+    sparks.inherit = 0.3f;
+    Action glitter = sparks;
+    glitter.count = 8;
+    glitter.color_from = ColorFrom::fixed;
+    glitter.color = {1.0f, 1.0f, 0.9f};
+    glitter.spread = 700.0f;
+    burst.then(sparks).then(glitter);
+    b.add_rule(slot, burst);
+    b.set_quota(slot, 200);
+}
+
+void setup_chain(Engine &engine, uint8_t slot)
+{
+    backdrop(engine.scene(), slot, {0.0f, 0.0f, 0.0f});
+    Behavior &b = engine.behavior();
+    const World &w = engine.world();
+    Entity ball;
+    ball.layer = entity_layer(engine.scene(), slot);
+    ball.size = 100.0f;
+    ball.edge_mm = 60.0f;
+    ball.gravity_scale = 0.0f;   // floating, perfectly bouncy: they keep filling the tree
+    ball.restitution = 1.0f;
+    ball.floor = Bound::bounce;
+    ball.ceiling = Bound::bounce;
+    ball.outer = Bound::bounce;
+    ball.lifetime_s = 25.0f;
+    ball.fade_in_s = 0.3f;
+    ball.fade_out_s = 2.0f;
+    ball.group = 0;
+    int t = b.add_template(slot, ball);
+    b.set_response(slot, 0, 0, Response::bounce);
+
+    // Every collision can spawn another ball right there - a chain reaction.
+    // The slot quota (40) is what keeps it bounded.
+    Rule grow;
+    grow.trigger = Trigger::collision;
+    grow.group_a = 0;
+    grow.group_b = 0;
+    grow.probability = 0.6f;
+    grow.cooldown_s = 0.15f;
+    Action more;
+    more.type = ActionType::spawn;
+    more.index = static_cast<uint8_t>(t);
+    more.spread = 700.0f;
+    more.color_from = ColorFrom::random_each;
+    grow.then(more);
+    b.add_rule(slot, grow);
+    b.set_quota(slot, 40);
+
+    // Five starters in a ring at mid-height, all heading for the trunk, so
+    // the first collisions come within a second or two.
+    Rng &rng = engine.rng();
+    const float mid = 0.5f * (w.floor_z + w.ceiling_z);
+    for (int k = 0; k < 5; k++)
+    {
+        Entity n = ball;
+        float a = two_pi * static_cast<float>(k) / 5.0f;
+        n.pos = {250.0f * std::cos(a), 250.0f * std::sin(a), mid + rng.range(-250.0f, 250.0f)};
+        n.vel = {-500.0f * std::cos(a), -500.0f * std::sin(a), rng.range(-200.0f, 200.0f)};
+        n.color = hsv(72.0f * static_cast<float>(k), 1.0f, 1.0f);
+        b.spawn(engine, slot, n);
+    }
+}
+
+void setup_mixer(Engine &engine, uint8_t slot)
+{
+    backdrop(engine.scene(), slot, {0.01f, 0.01f, 0.01f});
+    Behavior &b = engine.behavior();
+    const World &w = engine.world();
+    Entity ball;
+    ball.layer = entity_layer(engine.scene(), slot);
+    ball.size = 110.0f;
+    ball.edge_mm = 60.0f;
+    ball.gravity_scale = 0.0f;
+    ball.restitution = 1.0f;
+    ball.floor = Bound::bounce;
+    ball.ceiling = Bound::bounce;
+    ball.outer = Bound::bounce;
+    b.set_response(slot, 0, 0, Response::bounce);
+    b.set_response(slot, 1, 1, Response::bounce);
+    b.set_response(slot, 0, 1, Response::overlap);
+
+    // Passing through: swap colors. The event holds both colors from before
+    // the swap, so the two actions don't see each other's result.
+    Rule swap;
+    swap.trigger = Trigger::overlap_begin;
+    swap.group_a = 0;
+    swap.group_b = 1;
+    Action to_a;
+    to_a.type = ActionType::set_color;
+    to_a.target = Target::a;
+    to_a.color_from = ColorFrom::b;
+    Action to_b = to_a;
+    to_b.target = Target::b;
+    to_b.color_from = ColorFrom::a;
+    swap.then(to_a).then(to_b);
+    b.add_rule(slot, swap);
+
+    Rng &rng = engine.rng();
+    for (int k = 0; k < 8; k++)
+    {
+        Entity n = ball;
+        n.group = static_cast<uint8_t>(k % 2);
+        n.color = n.group == 0 ? Rgb{1.0f, 0.1f, 0.05f} : Rgb{0.1f, 0.2f, 1.0f};
+        float z = rng.range(w.floor_z + 200.0f, w.ceiling_z - 200.0f);
+        n.pos = {rng.range(-150.0f, 150.0f), rng.range(-150.0f, 150.0f), z};
+        n.vel = {rng.range(-450.0f, 450.0f), rng.range(-450.0f, 450.0f), rng.range(-450.0f, 450.0f)};
+        b.spawn(engine, slot, n);
+    }
+}
+
 }  // namespace
 
 const char *demo_name(Demo demo)
@@ -293,13 +454,15 @@ bool demo_from_name(const char *name, Demo &out)
 
 const char *demo_names()
 {
-    return "none, layers, wedge, sweep_linear, sweep_gravity, sweep_launch, bounce, snow, orbit";
+    return "none, layers, wedge, sweep_linear, sweep_gravity, sweep_launch, bounce, snow, orbit, fireworks, "
+           "chain, mixer";
 }
 
 void setup_demo(Engine &engine, Demo demo, uint8_t slot)
 {
     engine.scene().clear_slot(slot);
     engine.destroy_entities_in_slot(slot);
+    engine.behavior().clear_slot(slot);
     engine.forces() = Forces{};
     switch (demo)
     {
@@ -312,6 +475,9 @@ void setup_demo(Engine &engine, Demo demo, uint8_t slot)
     case Demo::bounce: setup_bounce(engine, slot); break;
     case Demo::snow: setup_snow(engine, slot); break;
     case Demo::orbit: setup_orbit(engine, slot); break;
+    case Demo::fireworks: setup_fireworks(engine, slot); break;
+    case Demo::chain: setup_chain(engine, slot); break;
+    case Demo::mixer: setup_mixer(engine, slot); break;
     case Demo::count: break;
     }
 }

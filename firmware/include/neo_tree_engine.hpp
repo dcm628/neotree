@@ -31,6 +31,12 @@ struct engine_host_stats_t
     uint16_t entities;
     uint32_t spawns_failed;
     uint8_t demo;                 // neotree::Demo running in the demo slot (0 = none)
+    // Behavior (rules, events, runaway limits) - see neotree/behavior.hpp.
+    uint32_t rule_fires;
+    uint32_t events_dropped;
+    uint32_t actions_dropped;
+    uint32_t spawns_over_quota;
+    uint16_t peak_entities;
 };
 
 // A frame whose engine work takes longer than this is counted as slow.

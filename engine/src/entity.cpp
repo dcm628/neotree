@@ -177,12 +177,29 @@ float entity_coverage(const Entity &e, Vec3 p, float led_radius, float led_angle
     return coverage_from_distance(e, shape_distance(e, effective_axis(e), p, led_radius, led_angle));
 }
 
-bool step_entity(Entity &e, const Forces &forces, const World &world, const LedGeometry &geometry, float dt)
+float collision_radius(const Entity &e)
 {
+    if (e.collide_radius > 0.0f)
+    {
+        return e.collide_radius;
+    }
+    switch (e.shape)
+    {
+    case Shape::sphere: return e.size;
+    case Shape::capsule: return e.size + e.length;
+    default: return 0.0f;   // slabs, shells and wedges only collide if given a radius
+    }
+}
+
+StepResult step_entity(Entity &e, const Forces &forces, const World &world, const LedGeometry &geometry, float dt)
+{
+    StepResult result;
     e.age_s += dt;
     if (e.lifetime_s > 0.0f && e.age_s >= e.lifetime_s)
     {
-        return false;
+        result.alive = false;
+        result.expired = true;
+        return result;
     }
     e.angle = std::fmod(e.angle + e.spin * dt + two_pi, two_pi);
 
@@ -222,13 +239,23 @@ bool step_entity(Entity &e, const Forces &forces, const World &world, const LedG
         e.vel = sub(e.vel, scale(radial, vr));
     }
 
-    if (e.pos.z < world.floor_z && !vertical_bound(e, e.floor, world.floor_z, 1.0f, world))
+    if (e.pos.z < world.floor_z)
     {
-        return false;
+        result.hits |= hit_floor;
+        if (!vertical_bound(e, e.floor, world.floor_z, 1.0f, world))
+        {
+            result.alive = false;
+            return result;
+        }
     }
-    if (e.pos.z > world.ceiling_z && !vertical_bound(e, e.ceiling, world.ceiling_z, -1.0f, world))
+    if (e.pos.z > world.ceiling_z)
     {
-        return false;
+        result.hits |= hit_ceiling;
+        if (!vertical_bound(e, e.ceiling, world.ceiling_z, -1.0f, world))
+        {
+            result.alive = false;
+            return result;
+        }
     }
 
     if (e.outer != Bound::pass)
@@ -237,12 +264,14 @@ bool step_entity(Entity &e, const Forces &forces, const World &world, const LedG
         float limit = geometry.envelope_radius(e.pos.z) + world.outer_margin_mm;
         if (r > limit && r > 1e-3f)
         {
+            result.hits |= hit_outer;
             Vec3 radial{e.pos.x / r, e.pos.y / r, 0.0f};
             float vr = dot(e.vel, radial);
             switch (e.outer)
             {
             case Bound::destroy:
-                return false;
+                result.alive = false;
+                return result;
             case Bound::respawn:
                 respawn(e);
                 break;
@@ -268,7 +297,7 @@ bool step_entity(Entity &e, const Forces &forces, const World &world, const LedG
             }
         }
     }
-    return true;
+    return result;
 }
 
 // ---- rendering ----

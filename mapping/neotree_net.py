@@ -30,7 +30,8 @@ BOOTSEL_MSG_TYPE = 21
 # Runs a built-in engine demo over the Canvas: [22][id], 0 = none. Ids are
 # neotree::Demo (engine/include/neotree/demos.hpp).
 DEMO_MSG_TYPE = 22
-DEMOS = ['none', 'layers', 'wedge', 'sweep_linear', 'sweep_gravity', 'sweep_launch', 'bounce', 'snow', 'orbit']
+DEMOS = ['none', 'layers', 'wedge', 'sweep_linear', 'sweep_gravity', 'sweep_launch', 'bounce', 'snow', 'orbit',
+         'fireworks', 'chain', 'mixer']
 WIFI_RECONNECT_MSG_TYPE = 20
 
 STATUS_NAMES = {

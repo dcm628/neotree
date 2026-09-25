@@ -44,4 +44,11 @@ void safety_stop_feeding();
 
 safety_report_t safety_report();
 
+// Stack high-water marks. safety_paint_stacks() fills both cores' stacks with
+// a pattern (call first thing in main, before core1 starts); *_used() then
+// scan for the deepest byte ever overwritten.
+void safety_paint_stacks();
+uint32_t safety_stack_used(int core);
+uint32_t safety_stack_size(int core);
+
 #endif

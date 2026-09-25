@@ -107,6 +107,55 @@ safety_report_t safety_report()
     return report;
 }
 
+// ---- stack high-water marks ----
+
+extern "C" uint32_t __StackBottom, __StackTop, __StackOneBottom, __StackOneTop;
+
+namespace {
+constexpr uint32_t stack_pattern = 0x5AC0FFEE;
+
+void stack_range(int core, uint32_t *&bottom, uint32_t *&top)
+{
+    bottom = core == 0 ? &__StackBottom : &__StackOneBottom;
+    top = core == 0 ? &__StackTop : &__StackOneTop;
+}
+}  // namespace
+
+void safety_paint_stacks()
+{
+    // Core0's own stack: everything below the current frame (with margin).
+    uint32_t marker;
+    uint32_t *sp = &marker - 32;
+    for (uint32_t *p = &__StackBottom; p < sp; p++)
+    {
+        *p = stack_pattern;
+    }
+    // Core1's isn't in use yet.
+    for (uint32_t *p = &__StackOneBottom; p < &__StackOneTop; p++)
+    {
+        *p = stack_pattern;
+    }
+}
+
+uint32_t safety_stack_used(int core)
+{
+    uint32_t *bottom, *top;
+    stack_range(core, bottom, top);
+    uint32_t *p = bottom;
+    while (p < top && *p == stack_pattern)
+    {
+        p++;
+    }
+    return (uint32_t)((top - p) * sizeof(uint32_t));
+}
+
+uint32_t safety_stack_size(int core)
+{
+    uint32_t *bottom, *top;
+    stack_range(core, bottom, top);
+    return (uint32_t)((top - bottom) * sizeof(uint32_t));
+}
+
 // ---- fault handler (both cores share the vector table) ----
 
 extern "C" void __attribute__((used)) safety_fault(uint32_t *frame)

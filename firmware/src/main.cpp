@@ -569,6 +569,7 @@ const uint64_t uptime_print_interval_us = 5'000'000;   // 5 seconds
 int main() {
     // Before anything that could crash: crash-loop escape + watchdog.
     safety_boot();
+    safety_paint_stacks();
     //set_sys_clock_48();
     stdio_init_all();
 

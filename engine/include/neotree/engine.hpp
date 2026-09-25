@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <span>
 
+#include "neotree/behavior.hpp"
 #include "neotree/clock.hpp"
 #include "neotree/geometry.hpp"
 #include "neotree/random.hpp"
@@ -72,6 +73,11 @@ public:
     // rate relative to ticks - or be skipped.
     void render(std::span<Rgb> out);
 
+    // The same frame, finished straight to 8-bit color in one pass (master
+    // stage + rounding fused) - what a device sends to its LEDs. Uses an
+    // engine-owned float buffer for the composite.
+    void render_bytes(std::span<Rgb8> out);
+
     // The scene, entities, forces and master settings are edited directly by
     // the platform between calls (single-threaded: the firmware applies
     // commands on core0 between frames).
@@ -90,6 +96,13 @@ public:
     void destroy_entities_in_slot(int slot);
     const EntityPool &entities() const { return entities_; }
 
+    // Collisions, rules, templates and emitters (neotree/behavior.hpp).
+    Behavior &behavior() { return behavior_; }
+    const Behavior &behavior() const { return behavior_; }
+    // Raises an input event (e.g. an app button) for slot's rules, handled
+    // next tick.
+    void input(uint8_t slot, uint8_t id, float value = 0.0f);
+
     int64_t time_us() const { return clock_.time_us(); }
     const SimClock &clock() const { return clock_; }
     const EngineStats &stats() const { return stats_; }
@@ -107,7 +120,9 @@ private:
     Scene scene_{};
     MasterSettings master_{};
     EntityPool entities_{};
+    Behavior behavior_{};
     EntityScratch scratch_{};
+    Rgb frame_[LedGeometry::max_leds] = {};   // render_bytes' composite
     Forces forces_{};
     World world_{};
     Rng rng_{};

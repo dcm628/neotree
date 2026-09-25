@@ -44,6 +44,7 @@ object TreeProtocol {
      */
     val DEMOS = listOf(
         "Off", "Layers", "Lighthouse", "Sweep", "Drop", "Launch", "Bounce", "Snow", "Orbit",
+        "Fireworks", "Chain", "Mixer",
     )
     fun demo(id: Int): ByteArray = byteArrayOf(DEMO.toByte(), id.toByte())
 

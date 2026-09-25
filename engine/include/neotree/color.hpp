@@ -22,6 +22,14 @@ struct Rgba8
 
 constexpr float byte_to_unit = 1.0f / 255.0f;
 
+// Final 8-bit output color (Engine::render_bytes).
+struct Rgb8
+{
+    uint8_t r = 0;
+    uint8_t g = 0;
+    uint8_t b = 0;
+};
+
 inline Rgb to_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
     return {r * byte_to_unit, g * byte_to_unit, b * byte_to_unit};
