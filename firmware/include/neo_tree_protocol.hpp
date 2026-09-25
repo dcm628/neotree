@@ -56,10 +56,13 @@ enum class serial_msg_type : uint8_t
     REBOOT,
     // [type]: leave the WiFi network and rejoin.
     WIFI_RECONNECT,
+    // Reboot into BOOTSEL (USB mass-storage flashing) - the network escape
+    // hatch for when USB serial is unavailable. No payload.
+    BOOTSEL,
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::WIFI_RECONNECT) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::BOOTSEL) + 1;
 
 // Set by TREE_OUTPUT (core0), read by the LED output path and reported to
 // network clients in HELLO (core1).

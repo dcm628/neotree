@@ -44,7 +44,20 @@ void loop_monitor_pass_begin(uint64_t now_us)
 
     uint32_t irq = spin_lock_blocking(lock);
     stats.passes++;
-    if (gap >= loop_stall_threshold_us)
+    // Every long gap goes in the recent list (with what the pass did), but
+    // only unexplained ones - where the pass did no deliberate work, like
+    // rendering a frame - count as stalls.
+    const uint8_t deliberate = loop_pass_heartbeat | loop_pass_commands | loop_pass_frame_prep;
+    if (gap >= loop_stall_threshold_us && (prev_flags & deliberate))
+    {
+        ring[ring_next] = {(uint32_t)(now_us / 1000), gap, prev_flags};
+        ring_next = (ring_next + 1) % loop_stall_log_size;
+        if (ring_count < loop_stall_log_size)
+        {
+            ring_count++;
+        }
+    }
+    else if (gap >= loop_stall_threshold_us)
     {
         uint32_t at_ms = (uint32_t)(now_us / 1000);
         stats.stalls_500us++;

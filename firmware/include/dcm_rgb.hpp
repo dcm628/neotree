@@ -163,6 +163,7 @@ class RGB_LED_3D
         }
         void init_RGB_LED_3D(dcm_rgb_data startup_color,int16_t set_z, uint16_t set_radius, uint16_t set_omega);
         uint32_t get_grb_word();
+        dcm_rgb_data get_base_RGB() const { return rgb_data_base; }   // boot pattern, read by the engine's Canvas
         void set_secondary_toggle(bool toggle_in);
         void set_secondary_RGB(dcm_rgb_data rgb_data_in, bool clear_on_zero = true);
         void set_base_RGB(dcm_rgb_data rgb_data_in);

@@ -31,7 +31,7 @@ endif()
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../engine ${CMAKE_BINARY_DIR}/engine)
 
 # Shared by the CLI and viewer: loading positions, argument helpers.
-add_library(neotree_sim_common STATIC common/positions_csv.cpp)
+add_library(neotree_sim_common STATIC common/positions_csv.cpp common/demo_scenes.cpp)
 target_include_directories(neotree_sim_common PUBLIC ${CMAKE_CURRENT_LIST_DIR}/common)
 target_link_libraries(neotree_sim_common PUBLIC neotree_engine)
 target_compile_definitions(neotree_sim_common PUBLIC

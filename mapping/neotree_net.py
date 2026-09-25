@@ -24,6 +24,9 @@ REPLY_STATUS = 0x82
 
 STATUS_REQUEST_MSG_TYPE = 18
 REBOOT_MSG_TYPE = 19
+# Reboots the Pico into BOOTSEL (USB flashing mode) - for when USB serial is
+# unavailable but WiFi works; the Pi's pi_flash.py can then flash it.
+BOOTSEL_MSG_TYPE = 21
 WIFI_RECONNECT_MSG_TYPE = 20
 
 STATUS_NAMES = {

@@ -9,6 +9,8 @@
 add_library(neotree_engine STATIC
     src/engine.cpp
     src/geometry.cpp
+    src/mask.cpp
+    src/scene.cpp
 )
 
 target_include_directories(neotree_engine PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)

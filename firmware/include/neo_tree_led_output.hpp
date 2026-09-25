@@ -12,7 +12,7 @@
 // the real tree - see docs/LED_OUTPUT.md before changing the grouping.
 //
 // Frame sequence on core0:
-//   led_output_prepare_frame();            // any time - fills the back buffer
+//   led_output_prepare_frame(words);       // any time - fills the back buffer
 //   if (led_output_ready()) led_output_start_frame();
 
 // LEDs per string, in string_vec order: string 0 is LEDs 0-299 (GP2), string 1
@@ -27,7 +27,9 @@ void led_output_init();
 // Packs every LED's current color (or zeros while the lights are off) into
 // the back buffer. Safe while the previous frame is still going out - that
 // one is in the other buffer.
-void led_output_prepare_frame();
+// Copies the next frame in: one word per LED (0-999), packed
+// (red << 24) | (green << 16) | (blue << 8) - the order the strings take.
+void led_output_prepare_frame(const uint32_t *words);
 
 // True once the previous frame has fully left every state machine (DMA done,
 // FIFOs drained, line held low) and the WS2812 latch gap has passed.

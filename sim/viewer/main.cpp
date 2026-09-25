@@ -2,10 +2,12 @@
 // positions (docs/RENDERER.md section 11.1).
 //
 //   neotree_view [--positions FILE] [--seed N] [--tick-hz N]
-//                [--colors output|source|height] [--screenshot FILE.png]
+//                [--scene NAME] [--colors output|source|height] [--at SECONDS]
+//                [--screenshot FILE.png]
 //
-// --screenshot renders a moment, saves the window to FILE.png, and exits
-// (for checking the view without watching it).
+// --at starts the simulation that far in. --screenshot renders a moment,
+// saves the window to FILE.png, and exits (for checking the view without
+// watching it).
 //
 // Controls:
 //   mouse      left-drag orbit, right-drag raise/lower, wheel zoom
@@ -13,6 +15,7 @@
 //   Up / Down  speed x2 / /2 (0.1x - 1000x)
 //   PgUp       jump +1 min (Shift: +10 min) - simulated, not rendered
 //   C          color view: engine output / position source / height
+//   S          next demo scene
 //   R          restart from t = 0 with the same seed
 
 #include <algorithm>
@@ -23,6 +26,7 @@
 #include <vector>
 
 #include "neotree/engine.hpp"
+#include "demo_scenes.hpp"
 #include "positions_csv.hpp"
 #include "raylib.h"
 
@@ -83,6 +87,8 @@ int main(int argc, char **argv)
 {
     std::string positions = NEOTREE_SIM_DEFAULT_POSITIONS;
     std::string screenshot;
+    std::string scene = "layers";
+    double start_at_s = 0.0;
     ColorView view = ColorView::output;
     neotree::EngineConfig config;
     config.max_ticks_per_advance = 0;
@@ -106,9 +112,17 @@ int main(int argc, char **argv)
             std::string v = argv[i + 1];
             view = v == "source" ? ColorView::source : v == "height" ? ColorView::height : ColorView::output;
         }
+        else if (a == "--scene")
+        {
+            scene = argv[i + 1];
+        }
         else if (a == "--screenshot")
         {
             screenshot = argv[i + 1];
+        }
+        else if (a == "--at")
+        {
+            start_at_s = std::strtod(argv[i + 1], nullptr);
         }
     }
 
@@ -119,6 +133,13 @@ int main(int argc, char **argv)
         return 1;
     }
     engine.init(geometry, config);
+    if (!neotree::sim::setup_demo(engine, scene))
+    {
+        std::fprintf(stderr, "unknown scene '%s' (have: %s)\n", scene.c_str(), neotree::sim::demo_scene_names());
+        return 2;
+    }
+    const char *scene_cycle[] = {"layers", "wedge", "canvas", "empty"};
+    engine.advance(static_cast<int64_t>(start_at_s * 1e6));
     std::vector<neotree::Rgb> frame(geometry.count());
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
@@ -169,6 +190,20 @@ int main(int argc, char **argv)
         if (IsKeyPressed(KEY_R))
         {
             engine.init(geometry, config);
+            neotree::sim::setup_demo(engine, scene);
+        }
+        if (IsKeyPressed(KEY_S))
+        {
+            int next = 0;
+            for (int k = 0; k < 4; k++)
+            {
+                if (scene == scene_cycle[k])
+                {
+                    next = (k + 1) % 4;
+                }
+            }
+            scene = scene_cycle[next];
+            neotree::sim::setup_demo(engine, scene);
         }
         if (IsKeyPressed(KEY_PAGE_UP))
         {
@@ -190,6 +225,7 @@ int main(int argc, char **argv)
             float real_dt = std::min(GetFrameTime(), 0.1f);
             engine.advance(static_cast<int64_t>(real_dt * speeds[speed_index] * 1e6f));
         }
+        neotree::sim::update_demo(engine, scene);
         engine.render(frame);
 
         // ---- draw ----
@@ -253,11 +289,14 @@ int main(int argc, char **argv)
         DrawText(TextFormat("ticks %llu (dropped %llu)   frames %llu   view %d fps", (unsigned long long)st.ticks,
                             (unsigned long long)st.ticks_dropped, (unsigned long long)st.frames, GetFPS()),
                  12, 38, 18, LIGHTGRAY);
+        DrawText(TextFormat("scene: %s   %u LED-layer evals/frame", scene.c_str(),
+                            (unsigned)engine.stats().last_frame_led_evals),
+                 12, 82, 18, LIGHTGRAY);
         DrawText(TextFormat("LEDs %u: %u mapped, %u synthetic   colors: %s", (unsigned)geometry.count(),
                             (unsigned)geometry.mapped_count(),
                             (unsigned)(geometry.positioned_count() - geometry.mapped_count()), color_view_name(view)),
                  12, 60, 18, LIGHTGRAY);
-        DrawText("Space pause  Right step  Up/Down speed  PgUp +1 min (Shift +10)  C colors  R restart  "
+        DrawText("Space pause  Right step  Up/Down speed  PgUp +1 min (Shift +10)  C colors  S scene  R restart  "
                  "mouse: L orbit, R raise, wheel zoom",
                  12, GetScreenHeight() - 26, 16, GRAY);
         EndDrawing();

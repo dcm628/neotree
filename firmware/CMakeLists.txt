@@ -68,10 +68,14 @@ target_sources(neo_tree PRIVATE
                 src/neo_tree_status.cpp
                 src/neo_tree_engine.cpp
                 src/neo_tree_loop_monitor.cpp
+                src/neo_tree_safety.cpp
                 )
 
 # The rendering engine (portable library shared with the host simulator).
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../engine ${CMAKE_CURRENT_BINARY_DIR}/engine)
+# Not yet: running the engine's loops from RAM (NEOTREE_HOT_IN_RAM=1, see
+# engine/include/neotree/hot.hpp) crashed core0 at boot on 2026-09-24 - cause
+# not found yet.
 
 # Project headers live in include/
 target_include_directories(neo_tree PRIVATE

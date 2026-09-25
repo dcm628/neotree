@@ -25,6 +25,7 @@
 #include "neo_tree_status.hpp"
 #include "neo_tree_engine.hpp"
 #include "neo_tree_loop_monitor.hpp"
+#include "neo_tree_safety.hpp"
 
 mutex core0_data_update;
 
@@ -188,6 +189,7 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
     case serial_msg_type::STATUS_REQUEST:
     case serial_msg_type::REBOOT:
     case serial_msg_type::WIFI_RECONNECT:
+    case serial_msg_type::BOOTSEL:
         return len == 1;
     default:
         // Includes RUN_SWEEP_SEQUENCE, which process_msg() never implemented.
@@ -280,21 +282,19 @@ void process_msg()
         break;
     case serial_msg_type::SINGLE_LED_UPDATE:
         memcpy(temp_update_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
-        // do update stuff
-        RGB_LED_3D::update_single(&(temp_update_msg.msg.s_msg));
+        engine_host_canvas_single(&(temp_update_msg.msg.s_msg));
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
     case serial_msg_type::COLOR_GROUP_RGB_UPDATE:
         memcpy(temp_group_led_update_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
-        RGB_LED_3D::update_group(&(temp_group_led_update_msg.msg.s_msg));
+        engine_host_canvas_group(&(temp_group_led_update_msg.msg.s_msg));
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
     case serial_msg_type::ALL_LED_UPDATE:
         memcpy(temp_all_led_update_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
-        // do update stuff
-        RGB_LED_3D::update_ALL(&(temp_all_led_update_msg.msg.s_msg));
+        engine_host_canvas_fill(&(temp_all_led_update_msg.msg.s_msg));
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
@@ -334,13 +334,13 @@ void process_msg()
         break;
     case serial_msg_type::SET_VOLUME_CARTESIAN:
         memcpy(temp_set_volume_cartesian_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
-        RGB_LED_3D::update_volume_cartesian(&(temp_set_volume_cartesian_msg.msg.s_msg));
+        engine_host_canvas_volume_cartesian(&(temp_set_volume_cartesian_msg.msg.s_msg));
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
     case serial_msg_type::SET_VOLUME_CYLINDRICAL:
         memcpy(temp_set_volume_cylindrical_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
-        RGB_LED_3D::update_volume_cylindrical(&(temp_set_volume_cylindrical_msg.msg.s_msg));
+        engine_host_canvas_volume_cylindrical(&(temp_set_volume_cylindrical_msg.msg.s_msg));
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
@@ -361,7 +361,7 @@ void process_msg()
         break;
     case serial_msg_type::ALL_LED_UPDATE_BASE:
         memcpy(temp_all_led_update_msg.buf,serial_buf_copy,sizeof(temp_update_msg.buf));    // extra copy fuck it - it works
-        RGB_LED_3D::update_ALL_base(&(temp_all_led_update_msg.msg.s_msg));
+        engine_host_canvas_base(&(temp_all_led_update_msg.msg.s_msg));
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
@@ -379,6 +379,7 @@ void process_msg()
         break;
     case serial_msg_type::TREE_OUTPUT:
         tree_output_enabled = (serial_buf_copy[1] != 0);
+        engine_host_set_output(tree_output_enabled);
         event_logf("tree output %s", tree_output_enabled ? "ON" : "OFF");
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
@@ -432,10 +433,15 @@ void process_msg()
         // The network ACK went out when the command was queued; the delay
         // gives lwIP time to actually transmit it.
         event_logf("reboot requested - restarting in 250ms");
+        safety_stop_feeding();   // or the main loop would keep deferring it
         watchdog_reboot(0, 0, 250);
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
+    case serial_msg_type::BOOTSEL:
+        event_logf("BOOTSEL requested - entering the USB flasher in 250ms");
+        sleep_ms(250);   // lets the network ACK go out
+        safety_reboot_to_bootsel();
     case serial_msg_type::WIFI_RECONNECT:
         wifi_request_reconnect();
         new_msg = serial_msg_type::NOOP;
@@ -551,6 +557,8 @@ volatile uint64_t last_uptime_print_us = 0;
 const uint64_t uptime_print_interval_us = 5'000'000;   // 5 seconds
 
 int main() {
+    // Before anything that could crash: crash-loop escape + watchdog.
+    safety_boot();
     //set_sys_clock_48();
     stdio_init_all();
 
@@ -560,10 +568,20 @@ int main() {
     // build is what's actually running.
     printf("\nDEPLOY MARKER: 081f4c04\n");
 
-    status_boot_was_watchdog = watchdog_caused_reboot();
+    safety_report_t safety = safety_report();
+    status_boot_was_watchdog = safety.crash_reboot;
     event_log_init();
     status_init();
     event_logf("boot (%s)", status_boot_was_watchdog ? "watchdog reboot" : "power-on or reset");
+    if (safety.fault_core >= 0)
+    {
+        event_logf("crash #%u: core%d fault pc 0x%08lx lr 0x%08lx", (unsigned)safety.crash_count,
+                   (int)safety.fault_core, (unsigned long)safety.fault_pc, (unsigned long)safety.fault_lr);
+    }
+    else if (safety.crash_reboot)
+    {
+        event_logf("crash #%u: a core stopped (hang, no fault)", (unsigned)safety.crash_count);
+    }
 
     // Claims its PIO SMs and DMA channels - finish before core1 starts the
     // CYW43 driver, whose own PIO/DMA allocation must land elsewhere.
@@ -573,6 +591,7 @@ int main() {
     multicore_launch_core1(main_core1);
 
     init_my_tree();
+    watchdog_update();
     // Load any persisted LED position config from flash (falls back to
     // compiled-in defaults if flash doesn't hold a valid config yet) and
     // apply it to the tree. Previously this only happened on an explicit
@@ -581,7 +600,9 @@ int main() {
     // existed but nothing ever loaded it back.
     load_pos_config_from_flash();
     RGB_LED_3D::initialize_from_config();
+    watchdog_update();
     engine_host_init();
+    watchdog_update();
     // grab first loop a abs time
     initial_abs_time_check = get_absolute_time();
     // adding a wait loop before starting the main while loop
@@ -597,6 +618,7 @@ int main() {
     {
         latest_abs_time_check = get_absolute_time();
         loop_monitor_pass_begin(latest_abs_time_check);
+        safety_poll(latest_abs_time_check, core1_loop_counter);
         if (latest_abs_time_check > (last_uptime_print_us + uptime_print_interval_us))
         {
             last_uptime_print_us = latest_abs_time_check;
@@ -627,10 +649,9 @@ int main() {
         // output itself runs on DMA, so this loop never blocks on it.
         if (!frame_prepared && latest_abs_time_check >= next_frame_us)
         {
-            // M1: the engine runs every frame for timing, but its output
-            // isn't used yet - the frame below still comes from RGB_LED_3D.
-            engine_host_frame(latest_abs_time_check);
-            led_output_prepare_frame();
+            static uint32_t frame_words[max_led_config_size];   // static: 4 KB
+            engine_host_frame(latest_abs_time_check, frame_words, max_led_config_size);
+            led_output_prepare_frame(frame_words);
             frame_prepared = true;
             loop_monitor_mark(loop_pass_frame_prep);
         }

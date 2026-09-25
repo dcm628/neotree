@@ -1,6 +1,6 @@
 # NeoTree Rendering Engine — Design
 
-**Status:** Design agreed · M1 (engine skeleton + simulator) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
+**Status:** Design agreed · M1 done · M2 (compositor + Canvas) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
 
 **Related:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) §6 defers volumetric
 rendering to this document. [`LED_OUTPUT.md`](./LED_OUTPUT.md) covers the
@@ -117,13 +117,23 @@ palette choices.
 
 Each slot composites its own layers bottom → top into a group result, then the
 scene composites slots bottom → top (each slot has its own blend, opacity,
-mask), then master. Working color is **linear float RGB**;
-gamma, brightness, and (later) temporal dithering happen only in the master
-stage, which removes today's visible steps at low brightness.
+mask), then master. Working color is **float RGB in LED drive levels**
+(0..1 = PWM duty), so a commanded byte comes out as the same byte. Gamma,
+brightness, and (later) temporal dithering happen only in the master stage;
+gamma defaults to off (1.0) to match today's output exactly - turning it on
+(and treating colors as perceptual) is a later choice.
+
+*M2 simplification:* slots are "pass-through" - a slot's layers blend
+straight onto what's below, with the slot's opacity applied per layer.
+Isolated slot groups (needed for per-slot crossfades) come with transitions
+in M5.
 
 **Mapping of today's state:** today's controls become an ordinary built-in
-mode, **Canvas** (§8.3) — background color → a solid layer; paint/secondary →
-a pixel layer above it; Region paint → a masked solid layer. There is no
+mode, **Canvas** (§8.3) — two pixel layers: background (opaque; starts as the
+per-LED boot pattern, so it can't be a solid layer) and paint above it
+(transparent until painted). Region paint *stamps* into the paint layer,
+exactly as the old firmware did (stamps accumulate unless "clear outside" is
+set); a masked solid layer is the live alternative for later. There is no
 separate "manual" layer group. This resolves the deferred base-vs-secondary
 color rework.
 
@@ -302,11 +312,10 @@ Manual control uses only the engine's normal parts; there is no carve-out.
 "Painting" is either editing a static layer (solid, masked solid, pixel) or
 creating entities — through ordinary scene edits (§9.5), like everything else.
 
-- **Canvas** is a built-in mode whose layers are a background solid, a masked
-  solid (region paint), and a pixel layer (single LEDs / groups). Its
-  parameters are those colors and the mask. It can sit in any slot, or several
-  slots, like any other mode — e.g. a Canvas over a snow mode, or snow over a
-  Canvas.
+- **Canvas** is a built-in mode whose layers are a background pixel layer
+  and a paint pixel layer (as built in M2 - see §5.2). It can sit in any
+  slot, or several slots, like any other mode — e.g. a Canvas over a snow
+  mode, or snow over a Canvas.
 - Lights on/off and brightness stay in the master stage: they control
   *output*, not scene content.
 - Existing protocol messages (FILL, BASE, SINGLE_LED, GROUP, VOL_*) are
@@ -510,7 +519,7 @@ configuration (stack editing, layer/entity/rule settings, presets, shows).
 | # | Milestone | Proof |
 |---|---|---|
 | M1 ✅ | Engine skeleton (portable library), host build, headless CLI, viewer skeleton, LED geometry module (real + synthetic positions) | Viewer shows the tree's point cloud; CLI runs an empty scene at thousands of fps |
-| M2 | Compositor: solid, pixel, field layers; masks; blends; master stage. Canvas mode; base scene = Canvas; existing messages translated to layer edits | Tree looks and behaves exactly as today; frame timing on the Debug page |
+| M2 ✅ | Compositor: solid, pixel, field layers; masks; blends; master stage. Canvas mode; base scene = Canvas; existing messages translated to layer edits | Tree looks and behaves exactly as today; frame timing on the Debug page |
 | M3 | Entities: shapes, falloff, integration, global forces, boundaries, surface constraint, z-culling | Gravity and launch sweeps recreated as entity demos, on the tree and in the sim |
 | M4 | Collision groups, response table, events, rules/actions, templates, emitters, runaway protection | Snow and fireworks demos; ball-collision spawn chain stays bounded |
 | M5 | Modes, slots (stacking), lifecycle (end conditions, loop/chain/revert/remove/hold), transitions, scene description format, base scene as any scene; describe/select/param/layer protocol; app: mode picker and parameters | Stacked snow-over-rainbow; a chained scene verified over hours of sim time |
@@ -595,6 +604,62 @@ while animations run. Options then, cheapest first: run core0's per-frame
 path from RAM (`__not_in_flash_func`), move the WiFi status refresh and the
 LED blink out of the steady state, or give the CYW43 driver a core1-owned
 alarm pool for its waits.
+
+### M2 — done 2026-09-24
+
+- `engine/`: colors and five blend modes (`color.hpp`), masks - box and
+  cylinder slice with angle wrap, feather, invert (`mask.hpp`), the scene -
+  4 slots x 6 layers, solid / pixel / field (height gradient, spinning
+  rainbow) layers, 6 pixel buffers (`scene.hpp`), and the master stage
+  (lights, brightness, gamma) in `Engine::render`. 42 unit tests, including
+  every byte surviving the pipeline unchanged and opaque paint over any
+  background giving exactly the paint's byte.
+- Firmware: the engine drives the LEDs. The base scene is the Canvas; FILL,
+  BASE, SINGLE_LED, GROUP and both VOLUME commands are translated into Canvas
+  layer edits (`neo_tree_engine.cpp`), lights on/off is the master stage, and
+  `led_output_prepare_frame` takes packed words. `RGB_LED_3D` is now only the
+  source of the boot pattern.
+- **Verified identical on the tree:** before switching over, both paths ran
+  and every frame was compared byte for byte through a 38-step command
+  sequence (all translated commands and their edge cases, 20 random single
+  LEDs, lights off/on): **0 mismatched frames of 1,562**.
+- Host: demo scenes `canvas`, `layers`, `wedge` (`sim/common/demo_scenes.cpp`)
+  in `neotree_sim --scene` and `neotree_view --scene` (S cycles, `--at` starts
+  mid-scene).
+- App: an Engine card on the Debug page - frame time, slow frames, work per
+  frame, rejected edits, core0 stalls, crash reports.
+
+Measured on the Pico (before the loop specialization below): the Canvas's
+two layers render in ~1.5 ms (~1.9 ms with the verification running). On the
+PC: canvas 2 µs, layers demo 32 µs per frame.
+
+**The crash, and the safety net it led to.** An optimization - specializing
+the per-layer loop by type and blend mode (kept; pure C++, tested on the
+host) and placing it in RAM via `NEOTREE_HOT` (reverted) - crashed core0 at
+boot on the tree. USB is serviced by core0, so the Pi couldn't reflash it,
+and core1's network server was stuck too: the Pico needed a hand on its
+BOOTSEL button. The cause isn't known (the RAM placement is the only
+hardware-specific change; stack use was fine at 328 bytes). So that this
+can't strand the tree again, `firmware/src/neo_tree_safety.cpp` adds:
+
+- a hardware watchdog (8 s) fed by core0 only while both cores make progress;
+- a fault handler that saves the faulting pc/lr/core in the watchdog scratch
+  registers, reported by the next boot (event log + status `safety`);
+- a crash-loop escape: 3 unplanned resets without 60 s of stable running and
+  the Pico reboots into BOOTSEL, where the Pi's `pi_flash.py` can reflash it;
+- a `BOOTSEL` protocol command (type 21) to send it there over WiFi.
+
+Tested on the tree: the WiFi BOOTSEL command followed by a Pi reflash,
+twice, with no physical access (the first run showed core1 faulting as the
+boot ROM took flash away; core1 is now stopped first, and a recorded fault is
+only reported after a real crash reset or crash-loop escape). Not yet
+exercised with a real crash: the fault reporter and the crash-loop escape.
+
+The core0 stall counters now count only unexplained gaps; gaps in passes
+that did deliberate work (rendering a frame, commands, the heartbeat) are
+still listed in `loop.recent` with their flags but aren't counted.
+
+RAM placement stays off until it can be retried under this net.
 
 ## 16. Memory estimate
 

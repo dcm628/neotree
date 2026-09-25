@@ -1,5 +1,7 @@
 #include "neotree/engine.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 
@@ -13,6 +15,8 @@ void Engine::init(const LedGeometry &geometry, const EngineConfig &config, LogFn
     clock_ = SimClock(config.tick_hz);
     rng_.reseed(config.seed);
     stats_ = {};
+    scene_.clear();
+    master_ = {};
     this->log("engine: %u LEDs, %u positioned (%u mapped), tick %u Hz, seed %u", (unsigned)geometry.count(),
               (unsigned)geometry.positioned_count(), (unsigned)geometry.mapped_count(), (unsigned)config.tick_hz,
               (unsigned)config.seed);
@@ -52,14 +56,30 @@ void Engine::tick()
 
 void Engine::render(std::span<Rgb> out)
 {
-    // The scene is empty until M2: everything renders black.
     size_t n = out.size() < geometry_->count() ? out.size() : geometry_->count();
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = Rgb{};
-    }
-    stats_.last_frame_led_evals = 0;
+    std::span<Rgb> leds = out.first(n);
     stats_.frames++;
+    if (!master_.output_enabled)
+    {
+        for (Rgb &px : leds)
+        {
+            px = Rgb{};
+        }
+        stats_.last_frame_led_evals = 0;
+        return;
+    }
+    stats_.last_frame_led_evals = composite(scene_, *geometry_, clock_.time_us(), leds);
+
+    const float k = master_.brightness;
+    const bool curve = master_.gamma != 1.0f;
+    auto finish = [&](float v) {
+        v = std::clamp(v * k, 0.0f, 1.0f);
+        return curve ? std::pow(v, master_.gamma) : v;
+    };
+    for (Rgb &px : leds)
+    {
+        px = {finish(px.r), finish(px.g), finish(px.b)};
+    }
 }
 
 void Engine::log(const char *fmt, ...) const

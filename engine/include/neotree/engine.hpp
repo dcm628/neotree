@@ -10,6 +10,7 @@
 #include "neotree/clock.hpp"
 #include "neotree/geometry.hpp"
 #include "neotree/random.hpp"
+#include "neotree/scene.hpp"
 #include "neotree/types.hpp"
 
 namespace neotree {
@@ -28,13 +29,24 @@ struct EngineConfig
     uint32_t max_ticks_per_advance = 8;
 };
 
+// The last stage before output (docs/RENDERER.md 5.2). Controls output, not
+// scene content.
+struct MasterSettings
+{
+    bool output_enabled = true;   // lights on/off: off renders all black, the scene is untouched
+    float brightness = 1.0f;      // scales everything
+    // Output curve: out = in ^ gamma. 1 = none, which keeps today's
+    // behavior of sending commanded bytes unchanged.
+    float gamma = 1.0f;
+};
+
 struct EngineStats
 {
     uint64_t ticks = 0;             // ticks run
     uint64_t ticks_dropped = 0;     // ticks skipped by max_ticks_per_advance
     uint64_t frames = 0;            // render() calls
     // Work done by the last render, a platform-independent cost measure
-    // (docs/RENDERER.md 11.4): LED-shape evaluations. Zero until M3.
+    // (docs/RENDERER.md 11.4): LED x layer evaluations that reached a blend.
     uint32_t last_frame_led_evals = 0;
 };
 
@@ -52,10 +64,18 @@ public:
     // stepping in the viewer, tests).
     void run_ticks(uint32_t n);
 
-    // Writes one linear color per LED (out.size() should be geometry.count();
-    // extra entries are left alone). Rendering never changes the simulation,
-    // so it can run at any rate relative to ticks - or be skipped.
+    // Writes one final color per LED, each channel 0..1 after the master
+    // stage (out.size() should be geometry.count(); extra entries are left
+    // alone). Rendering never changes the simulation, so it can run at any
+    // rate relative to ticks - or be skipped.
     void render(std::span<Rgb> out);
+
+    // The scene and master settings are edited directly by the platform
+    // between calls (single-threaded: the firmware applies commands on core0
+    // between frames).
+    Scene &scene() { return scene_; }
+    const Scene &scene() const { return scene_; }
+    MasterSettings &master() { return master_; }
 
     int64_t time_us() const { return clock_.time_us(); }
     const SimClock &clock() const { return clock_; }
@@ -71,6 +91,8 @@ private:
     EngineConfig config_{};
     LogFn log_ = nullptr;
     SimClock clock_{};
+    Scene scene_{};
+    MasterSettings master_{};
     Rng rng_{};
     EngineStats stats_{};
 };

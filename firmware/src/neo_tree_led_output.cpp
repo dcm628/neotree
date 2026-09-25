@@ -1,5 +1,7 @@
 #include "neo_tree_led_output.hpp"
 
+#include <cstring>
+
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
@@ -74,27 +76,13 @@ void led_output_init()
     latch_started_us = time_us_64();
 }
 
-void led_output_prepare_frame()
+void led_output_prepare_frame(const uint32_t *words)
 {
     uint64_t t0 = time_us_64();
-    uint32_t *buf = frame_buffers[back_buffer];
-    // Lights off (TREE_OUTPUT) still sends a full frame, just zeros - the
-    // LEDs keep whatever they were last sent, so they have to be actively
-    // written dark, and keep being written so they stay dark.
-    if (tree_output_enabled)
-    {
-        for (uint i = 0; i < total_leds; i++)
-        {
-            buf[i] = RGB_LED_3D::string_vec[i]->get_grb_word() << 8u;
-        }
-    }
-    else
-    {
-        for (uint i = 0; i < total_leds; i++)
-        {
-            buf[i] = 0;
-        }
-    }
+    // Lights off is rendered upstream as an all-zero frame: the LEDs keep
+    // whatever they were last sent, so they have to be actively written dark
+    // every frame.
+    memcpy(frame_buffers[back_buffer], words, sizeof(frame_buffers[back_buffer]));
     stats.last_prepare_us = (uint32_t)(time_us_64() - t0);
     if (stats.last_prepare_us > stats.max_prepare_us)
     {

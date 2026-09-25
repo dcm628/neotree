@@ -38,6 +38,7 @@ import java.util.Locale
 import kotlinx.coroutines.delay
 
 private val ERROR_RED = Color(0xFFC62828)
+private val WARN_AMBER = Color(0xFFE65100)
 
 /**
  * Debug page: connection + controls, the tree's own status snapshot (polled
@@ -73,6 +74,7 @@ fun DebugScreen(vm: TreeViewModel, contentPadding: PaddingValues) {
             TreeCard(s.json, ageSec)
             WifiCard(s.json.optJSONObject("wifi"))
             LedCard(s.json.optJSONObject("led"), rates?.fps)
+            EngineCard(s.json)
             NetworkCard(s.json, rates?.core1LoopsPerSec)
             TreeEventsCard(s.json.optJSONArray("events"), s.json.optLong("events_total"))
         }
@@ -286,6 +288,51 @@ private fun LedCard(led: JSONObject?, measuredFps: Double?) {
             "under ${led.optJSONArray("underflows").ints()}  over ${led.optJSONArray("overflows").ints()}",
             if (faults > 0) ERROR_RED else Color.Unspecified,
         )
+    }
+}
+
+/** The rendering engine's per-frame cost, core0 stalls, and crash reports. */
+@Composable
+private fun EngineCard(json: JSONObject) {
+    Section("Engine") {
+        val e = json.optJSONObject("engine")
+        if (e == null) {
+            Text("-"); return@Section
+        }
+        Kv("Frame time", "${e.optInt("advance_us")} + ${e.optInt("render_us")} µs (sim + render)")
+        Kv("Worst", "${e.optInt("max_advance_us")} + ${e.optInt("max_render_us")} µs")
+        Kv(
+            "Slow frames (>2 ms)",
+            e.optInt("slow_frames").toString(),
+            if (e.optInt("slow_frames") > 0) WARN_AMBER else Color.Unspecified,
+        )
+        Kv("Work per frame", "${e.optInt("led_evals")} LED × layer")
+        Kv("Positioned LEDs", "${e.optInt("positioned")} of ${e.optInt("leds")}")
+        Kv("Ticks dropped", e.optLong("ticks_dropped").toString())
+        Kv(
+            "Rejected edits",
+            e.optInt("rejected_edits").toString(),
+            if (e.optInt("rejected_edits") > 0) ERROR_RED else Color.Unspecified,
+        )
+        json.optJSONObject("loop")?.let { l ->
+            Kv(
+                "core0 stalls",
+                "${l.optInt("stalls_500us")} ≥0.5ms  ${l.optInt("stalls_2ms")} ≥2ms  ${l.optInt("stalls_10ms")} ≥10ms",
+                if (l.optInt("stalls_10ms") > 0) WARN_AMBER else Color.Unspecified,
+            )
+            Kv("Worst stall", "${l.optInt("max_gap_us")} µs at ${formatUptime(l.optLong("max_gap_at_ms"))}")
+        }
+        json.optJSONObject("safety")?.let { sf ->
+            val core = sf.optInt("fault_core", -1)
+            Kv(
+                "Crash reboots",
+                sf.optInt("crash_count").toString(),
+                if (sf.optBoolean("crash_reboot")) ERROR_RED else Color.Unspecified,
+            )
+            if (core >= 0) {
+                Kv("Last fault", "core$core at ${sf.optString("fault_pc")}", ERROR_RED)
+            }
+        }
     }
 }
 

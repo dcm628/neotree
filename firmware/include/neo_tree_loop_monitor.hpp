@@ -33,7 +33,7 @@ struct loop_stall_t
 struct loop_monitor_stats_t
 {
     uint32_t passes;
-    uint32_t stalls_500us;   // gaps >= 0.5 ms
+    uint32_t stalls_500us;   // unexplained gaps >= 0.5 ms (the pass did no deliberate work)
     uint32_t stalls_2ms;
     uint32_t stalls_10ms;
     uint32_t max_gap_us;

@@ -20,6 +20,9 @@ add_executable(neotree_engine_tests
     test_pool.cpp
     test_geometry.cpp
     test_engine.cpp
+    test_color.cpp
+    test_mask.cpp
+    test_scene.cpp
 )
 target_include_directories(neotree_engine_tests PRIVATE ${DOCTEST_DIR})
 target_link_libraries(neotree_engine_tests PRIVATE neotree_engine)
