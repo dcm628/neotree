@@ -1023,6 +1023,14 @@ samples stopped, and closing the connection removed everything it owned;
 phone - needs a person with the phone** (the Pi's camera doesn't see the
 tree); the app is installed.
 
+**Fixed after trying it (2026-09-25):** a fading entity - the brush after
+it lifts, the dim hover cursor, balls at the end of their life, and likewise
+snowflakes and sparks - darkened instead of turning see-through: fades and
+brightness scaled its color but not its coverage, so over a colored scene it
+dimmed toward black and then the scene snapped back when it went. Fades and
+brightness below 1 now scale coverage (brightness above 1 still brightens);
+the trails, a pixel layer fading by alpha, were already smooth.
+
 **Watch:** the modes description is 3,532 bytes of its 4 KB reply frame -
 a few more modes will need a more compact format (e.g. omitting default
 fields) or a bigger frame.

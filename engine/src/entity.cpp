@@ -389,6 +389,7 @@ struct ShapeDraw
     const LedGeometry &geometry;
     EntityScratch &scratch;
     Rgb c;
+    float opacity;   // fades and dimming: how see-through, not how dark
     Vec3 axis;
     Vec3 pos;
     float size;
@@ -401,8 +402,8 @@ struct ShapeDraw
     // square root and the falloff.
     float outer2;
 
-    ShapeDraw(const Entity &e, Vec3 axis_, Rgb c_, const LedGeometry &g, EntityScratch &s)
-        : geometry(g), scratch(s), c(c_), axis(axis_), pos(e.pos), size(e.size), thickness(e.thickness),
+    ShapeDraw(const Entity &e, Vec3 axis_, Rgb c_, float opacity_, const LedGeometry &g, EntityScratch &s)
+        : geometry(g), scratch(s), c(c_), opacity(opacity_), axis(axis_), pos(e.pos), size(e.size), thickness(e.thickness),
           half_length(e.length), angle(e.angle), inv_w(1.0f / std::max(e.edge_mm, 1e-3f))
     {
         const float outer = size + (S == Shape::shell ? thickness : 0.0f) + falloff_reach(e);
@@ -417,6 +418,7 @@ struct ShapeDraw
         const Vec3 p = pos;
         const Vec3 ax = axis;
         const Rgb col = c;
+        const float op = opacity;
         const float sz = size;
         const float thick = thickness;
         const float half = half_length;
@@ -471,7 +473,7 @@ struct ShapeDraw
                     d = std::sqrt(r2) - sz;
                 }
             }
-            float cov = falloff_at<F>(d, iw);
+            float cov = falloff_at<F>(d, iw) * op;
             if (cov > 0.0f)
             {
                 accumulate<Combine>(out, i, col, cov);
@@ -485,10 +487,10 @@ struct ShapeDraw
 // shells) test only the LEDs near them (LedGeometry::near); the rest, the
 // LEDs in their height range, or all of them if unbounded in height.
 template <EntityCombine Combine, Shape S, Falloff F>
-NEOTREE_INLINE uint32_t draw_with(const Entity &e, Vec3 axis, Rgb c, float reach, const LedGeometry &geometry,
-                                  EntityScratch &scratch)
+NEOTREE_INLINE uint32_t draw_with(const Entity &e, Vec3 axis, Rgb c, float opacity, float reach,
+                                  const LedGeometry &geometry, EntityScratch &scratch)
 {
-    const ShapeDraw<Combine, S, F> draw(e, axis, c, geometry, scratch);
+    const ShapeDraw<Combine, S, F> draw(e, axis, c, opacity, geometry, scratch);
     if constexpr (S == Shape::sphere || S == Shape::shell)
     {
         uint32_t n = 0;
@@ -502,15 +504,15 @@ NEOTREE_INLINE uint32_t draw_with(const Entity &e, Vec3 axis, Rgb c, float reach
 }
 
 template <EntityCombine Combine, Shape S>
-NEOTREE_INLINE uint32_t draw_falloff(const Entity &e, Vec3 axis, Rgb c, float reach, const LedGeometry &geometry,
-                                     EntityScratch &scratch)
+NEOTREE_INLINE uint32_t draw_falloff(const Entity &e, Vec3 axis, Rgb c, float opacity, float reach,
+                                     const LedGeometry &geometry, EntityScratch &scratch)
 {
     switch (e.falloff)
     {
-    case Falloff::hard: return draw_with<Combine, S, Falloff::hard>(e, axis, c, reach, geometry, scratch);
-    case Falloff::linear: return draw_with<Combine, S, Falloff::linear>(e, axis, c, reach, geometry, scratch);
-    case Falloff::smooth: return draw_with<Combine, S, Falloff::smooth>(e, axis, c, reach, geometry, scratch);
-    case Falloff::glow: return draw_with<Combine, S, Falloff::glow>(e, axis, c, reach, geometry, scratch);
+    case Falloff::hard: return draw_with<Combine, S, Falloff::hard>(e, axis, c, opacity, reach, geometry, scratch);
+    case Falloff::linear: return draw_with<Combine, S, Falloff::linear>(e, axis, c, opacity, reach, geometry, scratch);
+    case Falloff::smooth: return draw_with<Combine, S, Falloff::smooth>(e, axis, c, opacity, reach, geometry, scratch);
+    case Falloff::glow: return draw_with<Combine, S, Falloff::glow>(e, axis, c, opacity, reach, geometry, scratch);
     }
     return 0;
 }
@@ -523,7 +525,14 @@ NEOTREE_INLINE uint32_t draw_entity(const Entity &e, const LedGeometry &geometry
     {
         return 0;
     }
-    const Rgb c{e.color.r * k, e.color.g * k, e.color.b * k};
+    // Fading in or out, and brightness below 1, make the entity see-through:
+    // they scale its coverage, so what's below shows through. (Scaling its
+    // color instead darkened it over whatever was below - toward black on a
+    // colored scene - and the scene then snapped back when it went.)
+    // Brightness above 1 still brightens.
+    const float opacity = std::min(k, 1.0f);
+    const float gain = std::max(k, 1.0f);
+    const Rgb c{e.color.r * gain, e.color.g * gain, e.color.b * gain};
     // Only slabs and capsules have an axis; normalizing it costs a square
     // root and a divide per entity per frame.
     const bool has_axis = e.shape == Shape::slab || e.shape == Shape::capsule;
@@ -531,11 +540,11 @@ NEOTREE_INLINE uint32_t draw_entity(const Entity &e, const LedGeometry &geometry
     const float reach = z_reach(e, axis);
     switch (e.shape)
     {
-    case Shape::sphere: return draw_falloff<Combine, Shape::sphere>(e, axis, c, reach, geometry, scratch);
-    case Shape::slab: return draw_falloff<Combine, Shape::slab>(e, axis, c, reach, geometry, scratch);
-    case Shape::shell: return draw_falloff<Combine, Shape::shell>(e, axis, c, reach, geometry, scratch);
-    case Shape::capsule: return draw_falloff<Combine, Shape::capsule>(e, axis, c, reach, geometry, scratch);
-    case Shape::wedge: return draw_falloff<Combine, Shape::wedge>(e, axis, c, reach, geometry, scratch);
+    case Shape::sphere: return draw_falloff<Combine, Shape::sphere>(e, axis, c, opacity, reach, geometry, scratch);
+    case Shape::slab: return draw_falloff<Combine, Shape::slab>(e, axis, c, opacity, reach, geometry, scratch);
+    case Shape::shell: return draw_falloff<Combine, Shape::shell>(e, axis, c, opacity, reach, geometry, scratch);
+    case Shape::capsule: return draw_falloff<Combine, Shape::capsule>(e, axis, c, opacity, reach, geometry, scratch);
+    case Shape::wedge: return draw_falloff<Combine, Shape::wedge>(e, axis, c, opacity, reach, geometry, scratch);
     }
     return 0;
 }

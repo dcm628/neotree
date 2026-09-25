@@ -189,6 +189,39 @@ TEST_CASE("entity: lifetime ends it; fades scale brightness")
     CHECK(engine.entity(h) == nullptr);
 }
 
+TEST_CASE("entity: a fading entity turns see-through over a colored scene, not dark")
+{
+    setup(100);
+    // A red backdrop in slot 0; a white entity half faded in, over it.
+    const int backdrop = engine.scene().add_layer(0, LayerType::solid);
+    engine.scene().layer(0, static_cast<uint8_t>(backdrop))->color = {1.0f, 0.0f, 0.0f};
+    Entity e = sphere(1000.0f, Falloff::hard);
+    e.gravity_scale = 0.0f;
+    e.fade_in_s = 0.5f;
+    e.pos = {0.0f, 0.0f, 1000.0f};
+    e.layer = static_cast<uint8_t>(engine.scene().add_layer(1, LayerType::entity));
+    engine.spawn(e);
+    std::vector<Rgb> out(geometry.count());
+    engine.advance(250'000);
+    engine.render(out);
+    // Halfway between red and white - not white dimmed to grey over the red.
+    CHECK(out[10].r == doctest::Approx(1.0f).epsilon(0.03));
+    CHECK(out[10].g == doctest::Approx(0.5f).epsilon(0.03));
+    CHECK(out[10].b == doctest::Approx(0.5f).epsilon(0.03));
+
+    // Brightness above 1 brightens (the color), below 1 is see-through too.
+    setup(100);
+    Entity bright = sphere(1000.0f, Falloff::hard);
+    bright.gravity_scale = 0.0f;
+    bright.pos = {0.0f, 0.0f, 1000.0f};
+    bright.color = {0.4f, 0.4f, 0.4f};
+    bright.brightness = 2.0f;
+    bright.layer = static_cast<uint8_t>(engine.scene().add_layer(1, LayerType::entity));
+    engine.spawn(bright);
+    engine.render(out);
+    CHECK(out[10].r == doctest::Approx(0.8f).epsilon(0.03));
+}
+
 TEST_CASE("entity: surface constraint holds it on the envelope")
 {
     setup(100);
