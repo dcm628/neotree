@@ -424,7 +424,9 @@ decided). `firmware/src/neo_tree_clock.cpp`:
   dst, sync ages, counts, and the last correction. The app's Debug page has a
   Clock card.
 - Measured: within ~10-15 ms of true time (the measurement itself is good to
-  about +-12 ms).
+  about +-12 ms),
+  and drifting ~2 ppm between syncs (2 ms in 15 minutes; ~0.2 s a day with no
+  sync at all).
 
 ### 8.1 Goals
 
