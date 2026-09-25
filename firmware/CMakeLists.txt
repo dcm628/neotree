@@ -110,6 +110,7 @@ target_link_libraries(neo_tree PRIVATE    pico_stdlib
                                             pico_multicore
                                             pico_cyw43_arch_lwip_threadsafe_background
                                             pico_lwip_mdns
+                                            pico_rand
                                             hardware_flash)
 
 # enable usb output, disable uart output

@@ -1,5 +1,7 @@
 #include "neotree/engine.hpp"
 
+#include "neotree/direct.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
@@ -71,6 +73,7 @@ void Engine::tick()
         }
     };
     director_.tick(*this, dt);
+    direct_tick(*this);
     mark(profile_.director);
     behavior_.handle_events(*this, dt);
     mark(profile_.events);

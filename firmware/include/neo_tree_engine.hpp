@@ -37,6 +37,7 @@ struct engine_host_stats_t
     uint32_t actions_dropped;
     uint32_t spawns_over_quota;
     uint16_t peak_entities;
+    uint16_t direct_entities;     // owned by phones (direct control)
 };
 
 // A frame whose engine work takes longer than one frame at the target rate
@@ -68,7 +69,22 @@ bool engine_host_set_demo(uint8_t demo);
 // and applied at the start of the next frame; returns false if the queue is
 // full or the message too long. Invalid commands are logged when applied.
 constexpr size_t engine_mode_command_max_len = 72;   // SHOW_SET with 16 entries: 71
-bool engine_host_mode_command(const uint8_t *msg, size_t len);
+// owner: who sent it - what direct-control commands create belongs to them.
+bool engine_host_mode_command(const uint8_t *msg, size_t len, uint8_t owner = 0);
+
+// Owners for direct control (neotree/direct.hpp): each network connection
+// (1-4) and USB serial.
+constexpr uint8_t engine_host_owner_usb = 5;
+inline uint8_t engine_host_owner_network(uint8_t client_id) { return client_id; }
+
+// The UDP stream: a BRUSH message from owner. Only the newest per brush is
+// kept; core0 applies them at the start of its next frame. Safe from core1,
+// including lwIP callbacks.
+void engine_host_stream_brush(uint8_t owner, const uint8_t *msg);
+// The owner is gone (disconnected): drop its pending stream samples. Its
+// entities are removed by an ENTITY_KILL for all, queued in order after its
+// commands. Safe from core1.
+void engine_host_forget_owner(uint8_t owner);
 
 // The scene's state as JSON (director describe_state), as last published by
 // core0. Safe from either core. Returns the length written.

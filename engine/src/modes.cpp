@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "neotree/direct.hpp"
 #include "neotree/director.hpp"
 #include "neotree/engine.hpp"
 #include "json.hpp"
@@ -718,6 +719,191 @@ void mixer_setup(ModeContext &ctx)
 
 // ---- the registry ----
 
+// ---- play: what phones throw and paint (M7, neotree/direct.hpp) ----
+
+const ParamDef play_params[] = {
+    {"fade", "Trail fade (s, 0 = keep)", ParamType::number, 0, 30, 0.5f, 4},
+    {"gravity", "Ball gravity", ParamType::number, 0, 2, 0.1f, 1},
+    {"bounce", "Ball bounce", ParamType::number, 0, 1, 0.05f, 0.7f},
+};
+constexpr uint8_t play_trail_layer = 0;
+// Real gravity drops a ball the height of the tree in about half a second:
+// balls fall at a quarter of it (times the gravity parameter).
+constexpr float play_gravity_scale = 0.25f;
+// Trail alpha still to take off, carried between ticks (a tick's share of a
+// fade is usually a fraction of one step of alpha).
+float play_decay[max_slots] = {};
+
+void play_ball_physics(ModeContext &ctx)
+{
+    const float gravity = play_gravity_scale * ctx.num(1);
+    const float bounce = ctx.num(2);
+    if (Entity *ball = ctx.engine.behavior().template_at(ctx.slot, static_cast<uint8_t>(DirectKind::ball)))
+    {
+        ball->gravity_scale = gravity;
+        ball->restitution = bounce;
+    }
+    for_slot_entities(ctx.engine, ctx.slot, [&](Entity &e) {
+        if (e.direct_kind == static_cast<uint8_t>(DirectKind::ball))
+        {
+            e.gravity_scale = gravity;
+            e.restitution = bounce;
+        }
+    });
+}
+
+void play_setup(ModeContext &ctx)
+{
+    Scene &scene = ctx.engine.scene();
+    const int trail = scene.add_layer(ctx.slot, LayerType::pixel);
+    if (trail >= 0)
+    {
+        for (Rgba8 &px : scene.pixels(ctx.slot, static_cast<uint8_t>(trail)))
+        {
+            px = {0, 0, 0, 0};
+        }
+    }
+    const uint8_t layer = entity_layer(scene, ctx.slot, EntityCombine::max);
+    Behavior &b = ctx.engine.behavior();
+
+    Entity ball;   // template 0
+    ball.layer = layer;
+    ball.size = 70.0f;
+    ball.edge_mm = 60.0f;
+    ball.drag = 0.15f;
+    ball.floor = Bound::bounce;
+    ball.ceiling = Bound::bounce;
+    ball.outer = Bound::bounce;
+    ball.lifetime_s = 20.0f;
+    ball.fade_in_s = 0.1f;
+    ball.fade_out_s = 3.0f;
+    ball.group = 0;
+    b.add_template(ctx.slot, ball);
+
+    Entity brush;   // template 1: moved by the phone, never by forces
+    brush.layer = layer;
+    brush.size = 80.0f;
+    brush.edge_mm = 50.0f;
+    brush.kinematic = true;
+    brush.gravity_scale = 0.0f;
+    brush.lifetime_s = brush_lease_s;   // each sample starts it over
+    brush.fade_out_s = 0.3f;
+    brush.group = 1;
+    b.add_template(ctx.slot, brush);
+
+    // Balls bounce off each other and off brushes (which, being kinematic,
+    // bat them like an immovable paddle).
+    b.set_response(ctx.slot, 0, 0, Response::bounce);
+    b.set_response(ctx.slot, 0, 1, Response::bounce);
+    b.set_quota(ctx.slot, 64);
+    play_decay[ctx.slot] = 0.0f;
+    play_ball_physics(ctx);
+}
+
+void play_tick(ModeContext &ctx, float dt)
+{
+    const float fade = ctx.num(0);
+    if (fade <= 0.0f)
+    {
+        return;   // strokes are kept
+    }
+    // Linear fade: full alpha to none over `fade` seconds.
+    float &acc = play_decay[ctx.slot];
+    acc += 255.0f * dt / fade;
+    const int steps = static_cast<int>(acc);
+    if (steps == 0)
+    {
+        return;
+    }
+    acc -= static_cast<float>(steps);
+    std::span<Rgba8> px = ctx.engine.scene().pixels(ctx.slot, play_trail_layer);
+    for (uint16_t i : ctx.engine.geometry().z_order())
+    {
+        const int a = px[i].a;
+        px[i].a = static_cast<uint8_t>(a > steps ? a - steps : 0);
+    }
+}
+
+bool play_param(ModeContext &ctx, uint8_t index)
+{
+    if (index == 1 || index == 2)
+    {
+        play_ball_physics(ctx);
+    }
+    return true;   // fade is read every tick
+}
+
+// Paints a soft round dab into px at p (a point on the tree's surface): full
+// color inside half the radius, fading to nothing at the radius. Distance is
+// measured on the surface - each LED pushed out along its own radius to the
+// envelope - so a dab lights every LED under it, however deep inside the
+// tree, as someone looking at the tree sees it.
+void stamp(const LedGeometry &geometry, std::span<Rgba8> px, Vec3 p, Rgb color, float radius)
+{
+    const float r2 = radius * radius;
+    const float inv_edge = 2.0f / radius;
+    for (uint16_t i : geometry.in_z_range(p.z - radius, p.z + radius))
+    {
+        if (i >= px.size())
+        {
+            continue;
+        }
+        const float z = geometry.z(i);
+        const float out = geometry.envelope_radius(z) / std::max(geometry.radius(i), 1.0f);
+        const float dx = geometry.x(i) * out - p.x;
+        const float dy = geometry.y(i) * out - p.y;
+        const float dz = z - p.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > r2)
+        {
+            continue;
+        }
+        const float cover = clamp01((radius - std::sqrt(d2)) * inv_edge);
+        const uint8_t a = unit_to_byte(cover);
+        if (a == 0)
+        {
+            continue;
+        }
+        Rgba8 &q = px[i];
+        const Rgb old = q.a != 0 ? to_rgb(q.r, q.g, q.b) : color;
+        const Rgb mixed = lerp(old, color, cover);
+        q = {unit_to_byte(mixed.r), unit_to_byte(mixed.g), unit_to_byte(mixed.b), q.a > a ? q.a : a};
+    }
+}
+
+void play_stroke(ModeContext &ctx, Vec3 from, Vec3 to, Rgb color, float radius)
+{
+    Engine &engine = ctx.engine;
+    std::span<Rgba8> target = engine.scene().pixels(ctx.slot, play_trail_layer);
+    if (ctx.num(0) <= 0.0f)
+    {
+        // Kept strokes are paint on the Colors canvas (its paint layer) -
+        // the Home page's paint, there after this mode is gone.
+        for (uint8_t s = 0; s < max_slots; s++)
+        {
+            const Director::SlotInfo &info = engine.director().slot(s);
+            if (info.state != SlotState::empty && info.spec.mode == find_mode("canvas"))
+            {
+                target = engine.scene().pixels(s, 1);
+                break;
+            }
+        }
+    }
+    if (target.empty() || radius <= 0.0f)
+    {
+        return;
+    }
+    // Dabs along the segment, close enough together to join up.
+    const Vec3 d{to.x - from.x, to.y - from.y, to.z - from.z};
+    const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    const int steps = std::min(64, 1 + static_cast<int>(len / (0.35f * radius)));
+    for (int k = 0; k <= steps; k++)
+    {
+        const float t = static_cast<float>(k) / static_cast<float>(steps);
+        stamp(engine.geometry(), target, Vec3{from.x + d.x * t, from.y + d.y * t, from.z + d.z * t}, color, radius);
+    }
+}
+
 #define PARAMS(p) p, static_cast<uint8_t>(sizeof(p) / sizeof(p[0]))
 
 const ModeDef modes[] = {
@@ -743,6 +929,8 @@ const ModeDef modes[] = {
      chain_param},
     {"mixer", "Color mixer", "Red and blue balls swap colors as they pass through each other",
      PARAMS(mixer_params), mixer_setup},
+    {"play", "Play", "Flick balls and paint from the phone", PARAMS(play_params),
+     play_setup, play_tick, play_param, true, play_stroke},
 };
 constexpr uint8_t count_of_modes = static_cast<uint8_t>(sizeof(modes) / sizeof(modes[0]));
 

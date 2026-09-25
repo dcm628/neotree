@@ -51,6 +51,8 @@ uint8_t serial_buf[SERIAL_BUFFER_SIZE] = {};
 // core0-only: the message process_msg() is currently handling, copied out of
 // the command queue (zero-padded past its length).
 uint8_t serial_buf_copy[SERIAL_BUFFER_SIZE] = {};
+// Who sent it, for what it creates (engine_host_owner_*).
+uint8_t serial_buf_owner = 0;
 size_t buf_index = 0;   // size_t: a uint8_t wrapped to 0 on a 256-byte burst
 int16_t temp_char = -1; // init to a no bytes value
 // Runs on core1. Serial has no framing, so each read burst is treated as one
@@ -210,6 +212,12 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
         return len == 2;
     case serial_msg_type::BENCH:
         return len == 1;
+    case serial_msg_type::ENTITY_SPAWN:
+        return len == entity_spawn_len;
+    case serial_msg_type::ENTITY_KILL:
+        return len == 2;
+    case serial_msg_type::BRUSH:
+        return len == brush_len;
     case serial_msg_type::SLOT_SET:
     case serial_msg_type::SLOT_END:
         return len == (msg[0] == static_cast<uint8_t>(serial_msg_type::SLOT_SET) ? 4u : 3u);
@@ -503,9 +511,12 @@ void process_msg()
     case serial_msg_type::SHOW_PLAY:
     case serial_msg_type::SHOW_BOOT:
     case serial_msg_type::BENCH:
+    case serial_msg_type::ENTITY_SPAWN:
+    case serial_msg_type::ENTITY_KILL:
+    case serial_msg_type::BRUSH:
         // Messages are zero-padded in the buffer, so the queue's maximum
         // length covers every one of them.
-        if (!engine_host_mode_command(serial_buf_copy, engine_mode_command_max_len))
+        if (!engine_host_mode_command(serial_buf_copy, engine_mode_command_max_len, serial_buf_owner))
         {
             event_logf("mode command %u: queue full", (unsigned)serial_buf_copy[0]);
         }
@@ -730,6 +741,8 @@ int main() {
         for (int i = 0; i < max_commands_per_loop && command_queue_pop(&cmd); i++)
         {
             memcpy(serial_buf_copy, cmd.data, SERIAL_BUFFER_SIZE);
+            serial_buf_owner = cmd.source == command_source::network ? engine_host_owner_network(cmd.client_id)
+                                                                     : engine_host_owner_usb;
             memset(cmd.data, 0, sizeof(cmd.data));  // may hold WiFi credential bytes
             process_msg();
             loop_monitor_mark(loop_pass_commands);

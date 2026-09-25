@@ -16,6 +16,8 @@ import struct
 import time
 
 DEFAULT_PORT = 7777
+# The stream channel: UDP, newest-wins brush samples (see stream_brush()).
+STREAM_PORT = 7778
 PROTOCOL_VERSION = 1
 
 REPLY_ACK = 0x80
@@ -57,6 +59,11 @@ SHOW_BOOT_MSG_TYPE = 35
 SUBSCRIBE_MSG_TYPE = 36
 # Diagnostic: times the engine with core1 running / paused; results in the status events.
 BENCH_MSG_TYPE = 37
+# Direct control (engine/include/neotree/direct.hpp): in a slot running the
+# "play" mode. What a connection creates is removed when it disconnects.
+ENTITY_SPAWN_MSG_TYPE = 38
+ENTITY_KILL_MSG_TYPE = 39
+BRUSH_MSG_TYPE = 40
 NAME_LEN = 20
 
 STATUS_NAMES = {
@@ -88,6 +95,11 @@ class NeotreeNet:
         if self.protocol_version != PROTOCOL_VERSION:
             raise NeotreeNetError(f"tree speaks protocol v{self.protocol_version}, "
                                   f"this client v{PROTOCOL_VERSION}")
+        # This connection's token on the UDP stream (older firmware: none).
+        self.host = host
+        self.stream_token = struct.unpack("<I", hello[3:7])[0] if len(hello) >= 7 else None
+        self._stream_sock = None
+        self._stream_seq = 0
 
     def _recv_exact(self, n):
         buf = b""
@@ -214,6 +226,41 @@ class NeotreeNet:
         """The show to play at power-up; None for the base scene."""
         self.write(bytes([SHOW_BOOT_MSG_TYPE, 0xFF if index is None else index]))
 
+    # ---- direct control ----
+
+    @staticmethod
+    def _xyz(v):
+        return struct.pack("<hhh", *(max(-32768, min(32767, int(round(c)))) for c in v))
+
+    def spawn_ball(self, slot, ball_id, pos, vel=(0, 0, 0), rgb=(255, 255, 255), size_mm=0):
+        """A ball in the slot's play mode at pos (mm), moving at vel (mm/s)."""
+        self.write(bytes([ENTITY_SPAWN_MSG_TYPE, slot, ball_id, 0]) + self._xyz(pos) + self._xyz(vel) +
+                   bytes(rgb) + bytes([int(size_mm)]))
+
+    def kill(self, entity_id=0xFF):
+        """Removes one of this connection's entities (0xFF: all of them)."""
+        self.write(bytes([ENTITY_KILL_MSG_TYPE, entity_id]))
+
+    @classmethod
+    def _brush_msg(cls, slot, brush_id, pos, rgb, radius_mm, pen_down):
+        return (bytes([BRUSH_MSG_TYPE, slot, brush_id, 1 if pen_down else 0]) + cls._xyz(pos) + bytes(rgb) +
+                bytes([int(radius_mm)]))
+
+    def brush(self, slot, brush_id, pos, rgb=(255, 255, 255), radius_mm=80, pen_down=True):
+        """A brush sample over TCP (acked). For a live stroke use stream_brush()."""
+        self.write(self._brush_msg(slot, brush_id, pos, rgb, radius_mm, pen_down))
+
+    def stream_brush(self, slot, brush_id, pos, rgb=(255, 255, 255), radius_mm=80, pen_down=True):
+        """A brush sample over the UDP stream: no ack, newest wins."""
+        if self.stream_token is None:
+            raise NeotreeNetError("this tree's firmware has no stream channel")
+        if self._stream_sock is None:
+            self._stream_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._stream_seq = (self._stream_seq + 1) & 0xFFFF
+        packet = (b"N" + bytes([1]) + struct.pack("<IH", self.stream_token, self._stream_seq) +
+                  self._brush_msg(slot, brush_id, pos, rgb, radius_mm, pen_down))
+        self._stream_sock.sendto(packet, (self.host, STREAM_PORT))
+
     def set_slot(self, slot, mode_index, fade=True):
         """Puts a mode (by DESCRIBE index; None = empty) in a slot."""
         self.write(bytes([SLOT_SET_MSG_TYPE, slot, 0xFF if mode_index is None else mode_index, 1 if fade else 0]))
@@ -259,6 +306,8 @@ class NeotreeNet:
 
     def close(self):
         self.sock.close()
+        if self._stream_sock is not None:
+            self._stream_sock.close()
 
     def __enter__(self):
         return self

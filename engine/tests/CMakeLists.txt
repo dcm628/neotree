@@ -26,6 +26,7 @@ add_executable(neotree_engine_tests
     test_entity.cpp
     test_render_bytes.cpp
     test_behavior.cpp
+    test_direct.cpp
     test_director.cpp
     test_library.cpp
 )

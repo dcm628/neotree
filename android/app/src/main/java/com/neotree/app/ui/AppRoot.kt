@@ -3,6 +3,7 @@ package com.neotree.app.ui
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
@@ -22,10 +23,14 @@ import com.neotree.app.TreeViewModel
 
 private const val TAB_HOME = 0
 private const val TAB_MODES = 1
-private const val TAB_RENDERER = 2
-private const val TAB_DEBUG = 3
+private const val TAB_PLAY = 2
+private const val TAB_RENDERER = 3
+private const val TAB_DEBUG = 4
 
-/** Four pages - Home (the colors), Modes (scenes), Renderer (3D view) and Debug - switched from a bottom bar. */
+/**
+ * Five pages - Home (the colors), Modes (scenes), Play (paint and flick
+ * balls), Renderer (3D view) and Debug - switched from a bottom bar.
+ */
 @Composable
 fun AppRoot(vm: TreeViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(TAB_HOME) }
@@ -51,6 +56,12 @@ fun AppRoot(vm: TreeViewModel) {
                     label = { Text("Modes") },
                 )
                 NavigationBarItem(
+                    selected = tab == TAB_PLAY,
+                    onClick = { tab = TAB_PLAY },
+                    icon = { Icon(Icons.Filled.Create, contentDescription = null) },
+                    label = { Text("Play") },
+                )
+                NavigationBarItem(
                     selected = tab == TAB_RENDERER,
                     onClick = { tab = TAB_RENDERER },
                     icon = { Icon(Icons.Filled.Star, contentDescription = null) },
@@ -68,6 +79,7 @@ fun AppRoot(vm: TreeViewModel) {
         when (tab) {
             TAB_HOME -> HomeScreen(vm, padding, onOpenDebug = { tab = TAB_DEBUG })
             TAB_MODES -> ModesScreen(vm, padding)
+            TAB_PLAY -> PlayScreen(vm, padding)
             TAB_RENDERER -> RendererScreen(vm, padding)
             else -> DebugScreen(vm, padding)
         }

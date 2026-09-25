@@ -87,10 +87,23 @@ enum class serial_msg_type : uint8_t
     // with it paused (and a few math functions); results in the event log.
     // Pauses WiFi for a few tens of milliseconds.
     BENCH,          // 37
+    // Direct control (engine/include/neotree/direct.hpp): entities a phone
+    // spawns and moves in a slot running the "play" mode. They belong to the
+    // sender and go when it disconnects. Positions are int16 LE mm (engine
+    // space: z up, trunk on the z axis), velocities int16 LE mm/s.
+    ENTITY_SPAWN,   // 38: [slot][id][kind: 0 ball, 1 brush][x][y][z][vx][vy][vz][r][g][b][size mm, 0 = default]
+    ENTITY_KILL,    // 39: [id, 0xFF = all of the sender's]
+    // A brush sample: moves (or creates) the sender's brush `id`; with the
+    // pen down it paints from its last sample. Usually sent over the UDP
+    // stream (neo_tree_net_server.hpp) 30-60 times a second; also accepted here.
+    BRUSH,          // 40: [slot][id][flags: bit 0 pen down][x][y][z][r][g][b][radius mm]
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::BENCH) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::BRUSH) + 1;
+
+const size_t entity_spawn_len = 20;
+const size_t brush_len = 14;
 
 // SCENE_SAVE / SHOW_SET name field size (neotree::name_size).
 const size_t protocol_name_len = 20;

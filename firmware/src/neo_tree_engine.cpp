@@ -14,6 +14,7 @@
 #include "neo_tree_scene_store.hpp"
 #include "hardware/structs/m33.h"
 #include "hardware/sync.h"
+#include "neotree/direct.hpp"
 #include "neotree/engine.hpp"
 
 namespace {
@@ -77,10 +78,23 @@ struct pending_command
 {
     uint8_t bytes[engine_mode_command_max_len];
     uint8_t len;
+    uint8_t owner;
 };
 constexpr uint8_t max_pending_commands = 8;
 pending_command pending[max_pending_commands];
 uint8_t pending_count = 0;
+
+// The UDP stream's brush samples: the newest per owner and brush id (0-3),
+// written by core1, taken by core0 each frame. Under stream_lock.
+constexpr uint8_t stream_owners = engine_host_owner_usb + 1;
+constexpr uint8_t stream_brushes = 4;
+struct stream_sample
+{
+    bool fresh;
+    uint8_t msg[brush_len];
+};
+stream_sample stream_box[stream_owners][stream_brushes];
+spin_lock_t *stream_lock = nullptr;
 
 void log_event(const char *text) { event_logf("%s", text); }
 
@@ -243,6 +257,7 @@ void engine_host_init()
         d.apply_scene(engine, d.library().base(), neotree::Transition::cut);
     }
     scene_lock = spin_lock_init(spin_lock_claim_unused(true));
+    stream_lock = spin_lock_init(spin_lock_claim_unused(true));
     publish_scene();
     publish_library();
     last_frame_us = time_us_64();
@@ -357,6 +372,80 @@ static void run_bench()
                (unsigned)math_on[3], (unsigned)math_off[3]);
 }
 
+static int16_t read_i16(const uint8_t *p) { return static_cast<int16_t>(p[0] | (p[1] << 8)); }
+
+static neotree::Vec3 read_vec(const uint8_t *p)
+{
+    return {static_cast<float>(read_i16(p)), static_cast<float>(read_i16(p + 2)), static_cast<float>(read_i16(p + 4))};
+}
+
+// BRUSH: [40][slot][id][flags][x][y][z][r][g][b][radius]
+static bool apply_brush(const uint8_t *msg, uint8_t owner)
+{
+    neotree::BrushSample s;
+    s.pen_down = (msg[3] & 1) != 0;
+    s.pos = read_vec(msg + 4);
+    s.color = neotree::to_rgb(msg[10], msg[11], msg[12]);
+    s.radius_mm = msg[13] != 0 ? static_cast<float>(msg[13]) : 80.0f;
+    return neotree::direct_brush(engine, msg[1], owner, msg[2], s);
+}
+
+// ENTITY_SPAWN, ENTITY_KILL, BRUSH.
+static bool apply_direct_command(const uint8_t *msg, uint8_t owner)
+{
+    using namespace neotree;
+    if (owner == 0)
+    {
+        return false;
+    }
+    switch (static_cast<serial_msg_type>(msg[0]))
+    {
+    case serial_msg_type::ENTITY_SPAWN:
+        if (msg[3] > static_cast<uint8_t>(DirectKind::brush))
+        {
+            return false;
+        }
+        return direct_spawn(engine, msg[1], owner, msg[2], static_cast<DirectKind>(msg[3]), read_vec(msg + 4),
+                            read_vec(msg + 10), to_rgb(msg[16], msg[17], msg[18]), static_cast<float>(msg[19]));
+    case serial_msg_type::ENTITY_KILL:
+        direct_kill(engine, owner, msg[1]);
+        return true;
+    case serial_msg_type::BRUSH:
+        return apply_brush(msg, owner);
+    default:
+        return false;
+    }
+}
+
+// Applies the stream's newest brush samples (taken under the lock, applied
+// outside it).
+static void apply_stream()
+{
+    if (stream_lock == nullptr)
+    {
+        return;
+    }
+    for (uint8_t o = 1; o < stream_owners; o++)
+    {
+        for (uint8_t b = 0; b < stream_brushes; b++)
+        {
+            uint8_t msg[brush_len];
+            uint32_t irq = spin_lock_blocking(stream_lock);
+            const bool fresh = stream_box[o][b].fresh;
+            if (fresh)
+            {
+                memcpy(msg, stream_box[o][b].msg, sizeof(msg));
+                stream_box[o][b].fresh = false;
+            }
+            spin_unlock(stream_lock, irq);
+            if (fresh)
+            {
+                apply_brush(msg, o);
+            }
+        }
+    }
+}
+
 // SCENE_SAVE, LIBRARY_DELETE, SHOW_SET, SHOW_PLAY, SHOW_BOOT.
 static bool apply_library_command(const uint8_t *msg)
 {
@@ -430,7 +519,7 @@ static bool apply_library_command(const uint8_t *msg)
     }
 }
 
-static bool apply_mode_command(const uint8_t *msg, size_t len)
+static bool apply_mode_command(const uint8_t *msg, size_t len, uint8_t owner)
 {
     using namespace neotree;
     if (msg[0] == static_cast<uint8_t>(serial_msg_type::DEMO))
@@ -535,6 +624,11 @@ static bool apply_mode_command(const uint8_t *msg, size_t len)
     case serial_msg_type::BENCH:
         run_bench();
         break;
+    case serial_msg_type::ENTITY_SPAWN:
+    case serial_msg_type::ENTITY_KILL:
+    case serial_msg_type::BRUSH:
+        // No scene change to publish: entities aren't part of it.
+        return apply_direct_command(msg, owner);
     default:
         return false;
     }
@@ -542,7 +636,7 @@ static bool apply_mode_command(const uint8_t *msg, size_t len)
     return ok;
 }
 
-static bool queue_command(const uint8_t *msg, size_t len)
+static bool queue_command(const uint8_t *msg, size_t len, uint8_t owner = 0)
 {
     if (len > sizeof(pending[0].bytes) || pending_count >= max_pending_commands)
     {
@@ -550,8 +644,36 @@ static bool queue_command(const uint8_t *msg, size_t len)
     }
     memcpy(pending[pending_count].bytes, msg, len);
     pending[pending_count].len = static_cast<uint8_t>(len);
+    pending[pending_count].owner = owner;
     pending_count++;
     return true;
+}
+
+void engine_host_stream_brush(uint8_t owner, const uint8_t *msg)
+{
+    if (stream_lock == nullptr || owner == 0 || owner >= stream_owners)
+    {
+        return;
+    }
+    stream_sample &s = stream_box[owner][msg[2] % stream_brushes];
+    uint32_t irq = spin_lock_blocking(stream_lock);
+    memcpy(s.msg, msg, sizeof(s.msg));
+    s.fresh = true;
+    spin_unlock(stream_lock, irq);
+}
+
+void engine_host_forget_owner(uint8_t owner)
+{
+    if (stream_lock == nullptr || owner == 0 || owner >= stream_owners)
+    {
+        return;
+    }
+    uint32_t irq = spin_lock_blocking(stream_lock);
+    for (stream_sample &s : stream_box[owner])
+    {
+        s.fresh = false;
+    }
+    spin_unlock(stream_lock, irq);
 }
 
 bool engine_host_set_demo(uint8_t id)
@@ -560,9 +682,9 @@ bool engine_host_set_demo(uint8_t id)
     return queue_command(msg, sizeof(msg));
 }
 
-bool engine_host_mode_command(const uint8_t *msg, size_t len)
+bool engine_host_mode_command(const uint8_t *msg, size_t len, uint8_t owner)
 {
-    return queue_command(msg, len);
+    return queue_command(msg, len, owner);
 }
 
 size_t engine_host_scene_json(char *out, size_t cap)
@@ -594,12 +716,15 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
 {
     for (uint8_t i = 0; i < pending_count; i++)
     {
-        if (!apply_mode_command(pending[i].bytes, pending[i].len))
+        // A refused brush sample isn't worth an event: they come 30-60 a second.
+        if (!apply_mode_command(pending[i].bytes, pending[i].len, pending[i].owner) &&
+            pending[i].bytes[0] != static_cast<uint8_t>(serial_msg_type::BRUSH))
         {
             event_logf("mode command %u rejected", (unsigned)pending[i].bytes[0]);
         }
     }
     pending_count = 0;
+    apply_stream();
 
     uint64_t t0 = time_us_64();
     engine.advance((int64_t)(now_us - last_frame_us));
@@ -627,6 +752,7 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     stats.actions_dropped = bs.actions_dropped;
     stats.spawns_over_quota = bs.spawns_over_quota;
     stats.peak_entities = bs.peak_entities;
+    stats.direct_entities = neotree::direct_count(engine);
     stats.last_advance_us = (uint32_t)(t1 - t0);
     stats.last_render_us = (uint32_t)(t2 - t1);
     uint32_t now_ms = (uint32_t)(t2 / 1000);
@@ -773,5 +899,6 @@ engine_host_stats_t engine_host_stats()
     s.actions_dropped = stats.actions_dropped;
     s.spawns_over_quota = stats.spawns_over_quota;
     s.peak_entities = stats.peak_entities;
+    s.direct_entities = stats.direct_entities;
     return s;
 }

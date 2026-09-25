@@ -19,6 +19,8 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import org.json.JSONObject
 
 /** A STATUS reply: the tree's JSON snapshot (firmware neo_tree_status.hpp). */
@@ -45,8 +47,11 @@ class TreeConnection(private val scope: CoroutineScope) {
     sealed interface State {
         data object Disconnected : State
         data class Connecting(val host: String) : State
-        /** lightsOn is null if the tree's firmware doesn't report it. */
-        data class Connected(val host: String, val port: Int, val lightsOn: Boolean?) : State
+        /**
+         * lightsOn is null if the tree's firmware doesn't report it; so is
+         * streamToken (this connection's key on the UDP stream, TreeStream).
+         */
+        data class Connected(val host: String, val port: Int, val lightsOn: Boolean?, val streamToken: Int? = null) : State
         data class Failed(val host: String, val reason: String) : State
     }
 
@@ -114,7 +119,12 @@ class TreeConnection(private val scope: CoroutineScope) {
                 acks = Channel(Channel.UNLIMITED)
                 readerJob = scope.launch(Dispatchers.IO) { readLoop(s, input, host) }
                 val lightsOn = if (hello.size >= 3) (hello[2].toInt() and TreeProtocol.HELLO_FLAG_OUTPUT_ON) != 0 else null
-                _state.value = State.Connected(host, port, lightsOn)
+                val token = if (hello.size >= 7) {
+                    ByteBuffer.wrap(hello, 3, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                } else {
+                    null
+                }
+                _state.value = State.Connected(host, port, lightsOn, token)
                 log("connected to $host:$port (protocol v$version)")
                 true
             } catch (e: IOException) {

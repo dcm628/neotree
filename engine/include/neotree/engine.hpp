@@ -125,6 +125,7 @@ public:
     // Removes every entity drawn into slot (all slots if slot < 0).
     void destroy_entities_in_slot(int slot);
     const EntityPool &entities() const { return entities_; }
+    EntityPool &entities_mut() { return entities_; }
 
     // Modes in slots, lifecycles and scenes (neotree/director.hpp).
     Director &director() { return director_; }

@@ -394,6 +394,9 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     /** Presets, shows, the base scene and the startup show (pushed by the tree). */
     val library: StateFlow<TreeLibrary?> get() = connection.library
 
+    /** The Play tab: this phone's brush and balls (direct control). */
+    val play = PlayController(viewModelScope, connection, scene) { _status.value = it }
+
     /**
      * Parameter values this phone just set, keyed by (slot, mode index, param),
      * shown instead of the tree's until the next STATUS can catch up - so a
@@ -607,6 +610,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        play.close()
         connection.close()
     }
 

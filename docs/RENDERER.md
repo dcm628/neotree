@@ -1,6 +1,6 @@
 # NeoTree Rendering Engine — Design
 
-**Status:** Design agreed · M1-M5 done · M6 (shows, stored library, pushes to phones, app scene editing) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
+**Status:** Design agreed · M1-M6 done · M7 (direct control, stream channel, paintbrush) done 2026-09-25 · **Owner:** Dan · **Last updated:** 2026-09-24
 
 **Related:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) §6 defers volumetric
 rendering to this document. [`LED_OUTPUT.md`](./LED_OUTPUT.md) covers the
@@ -487,15 +487,15 @@ both switch to the full map.
 - Scene state becomes the single source of truth, pushed to all connected
   phones on change (ties into the multi-phone sync item).
 
-**Later — designed for now, not built in v1:**
+**Built in M7** (see §15 for details):
 
-- **Direct entity control:** `ENTITY_SPAWN` / `ENTITY_UPDATE` / `ENTITY_KILL`
-  by handle, with an owning client and a lease — a phone's entities are
-  cleaned up if it disconnects. Kinematic entities are moved by the phone but
-  still collide and raise events. The v1 entity struct reserves the owner and
-  kinematic fields.
-- **Stream channel** for high-rate input (paintbrush pose samples, pixel
-  frames), likely UDP.
+- **Direct entity control:** `ENTITY_SPAWN` / `BRUSH` / `ENTITY_KILL` by the
+  phone's own ids, owned by the connection - its entities go when it
+  disconnects. The brush is kinematic: moved by the phone, it still collides
+  (it bats balls).
+- **Stream channel:** UDP, for brush samples at 30-60 a second; newest wins,
+  tied to the TCP connection by a token from HELLO. Pixel frames could use it
+  later.
 
 ## 13. Open questions
 
@@ -525,7 +525,7 @@ configuration (stack editing, layer/entity/rule settings, presets, shows).
 | M4 ✅ | Collision groups, response table, events, rules/actions, templates, emitters, runaway protection | Snow and fireworks demos; ball-collision spawn chain stays bounded |
 | M5 ✅ | Modes, slots (stacking), lifecycle (end conditions, loop/chain/revert/remove/hold), transitions, scene description format, base scene as any scene; describe/select/param/layer protocol; app: mode picker and parameters | Stacked snow-over-rainbow; a chained scene verified over hours of sim time |
 | M6 ✅ | Shows, persistence of base scene and presets, state push to all phones; app: stack editing and presets | A holiday show loops unattended |
-| M7 | Direct entity control from the phone, stream channel, paintbrush | Flick a ball from the phone into the tree |
+| M7 ✅ | Direct entity control from the phone, stream channel, paintbrush | Flick a ball from the phone into the tree |
 | M8+ | App: full scene configuration (layers, entities, rules, forces, lifecycle), built as needed | A new effect built entirely from the app |
 
 ## 15. Progress log
@@ -970,6 +970,62 @@ rest of the code in flash and made the entity step 65% slower - conflict
 misses in the 2-way flash cache, depending on which functions share cache
 sets. Same effect as the build-dependent core0 stalls (above). Left off;
 if frame times jump after an unrelated change, suspect layout first.
+
+### M7 — done 2026-09-25
+
+Decided with Dan: aim the brush **both** by touch on the app's 3D view and
+by pointing the phone at the tree; strokes leave **fading trails** (fade
+adjustable; "keep" paints the Colors canvas instead); a ball is **flicked by
+a swipe** on the 3D view.
+
+- **Direct control** (`engine/include/neotree/direct.hpp`): a mode offers it
+  with `ModeDef::direct` (template 0 a ball, 1 a brush) and takes strokes
+  through `ModeDef::stroke`. Entities carry their owner (1-4: network
+  connections, 5: USB serial) and the owner's id. A phone has at most 12
+  balls (the oldest goes); the same id replaces. A brush is kinematic, moved
+  by samples, with its velocity measured sample to sample (from the last
+  sample, not where it has glided since - measuring from an overshoot turned
+  it around and batted balls backwards); between samples it glides for up to
+  50 ms, then stops; without samples for its lease (1 s) it fades out. While
+  hovering it glows dimly (the phone's aim cursor); pen down, fully.
+- **The "play" mode** (mode 13): a trail pixel layer and an entity layer
+  over whatever is below. Balls bounce off each other, the tree, and brushes.
+  Strokes are dabs every 0.35 of the brush radius along each segment;
+  a dab's distance is measured **on the tree's surface** - each LED pushed
+  out along its radius to the envelope - so a stroke lights every LED under
+  it however deep inside the tree, as a viewer sees it (measuring in 3D lit
+  only the LEDs near the surface: a patchy spiral). Trails fade linearly
+  over `fade` seconds; `fade` 0 paints the Colors canvas's paint layer.
+  Params: fade, ball gravity (x quarter real gravity), ball bounce.
+- **Protocol:** ENTITY_SPAWN (38), ENTITY_KILL (39), BRUSH (40); the UDP
+  stream on port 7778 (`['N'][1][token][seq][BRUSH]`, stale sequence numbers
+  and unknown tokens dropped and counted). HELLO now carries the stream
+  token. When a connection ends the server forgets its pending stream samples
+  and queues an ENTITY_KILL for all its entities, in order after its own
+  commands. Status JSON: `engine.direct_entities`, `net.stream_rx / old /
+  bad`.
+- **App:** a Play tab. Paint: drag on the 3D view (touch ray-marched to the
+  tree's envelope, `render/TreeSurface.kt`). Flick: a swipe throws a ball
+  from where it started, at the swipe's speed in the view plane plus a push
+  into the tree. Aim: the rotation sensor's pointing direction (the phone's
+  top edge), calibrated by pointing at the tree's centre and tapping, mapped
+  onto the tree's front from a standing distance and side; hold a button to
+  paint. Brush color and size, trail fade / keep, clear trails, clear my
+  balls. Opening the tab puts the play mode in the top free slot.
+- `neotree_sim --scene play_demo` / `neotree_view`: a scripted spiral and
+  six balls, as a phone would.
+- 101 engine tests (5 new), 31 app tests (6 new).
+
+**On the tree:** a UDP stroke at 60 Hz arrived whole (118 of 118), stale and
+wrong-token datagrams were dropped, the brush left a second after its
+samples stopped, and closing the connection removed everything it owned;
+1.6 ms frames with balls and a brush. **The proof - flicking a ball from the
+phone - needs a person with the phone** (the Pi's camera doesn't see the
+tree); the app is installed.
+
+**Watch:** the modes description is 3,532 bytes of its 4 KB reply frame -
+a few more modes will need a more compact format (e.g. omitting default
+fields) or a bigger frame.
 
 ## 16. Memory estimate
 

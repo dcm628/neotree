@@ -142,13 +142,13 @@ static size_t build_locked(char *out, size_t cap)
     j.raw(",\"engine\":{\"ticks\":%llu,\"ticks_dropped\":%llu,\"frames\":%llu,\"advance_us\":%u,"
           "\"max_advance_us\":%u,\"render_us\":%u,\"max_render_us\":%u,\"max_advance_at_ms\":%u,\"max_render_at_ms\":%u,"
           "\"slow_frames\":%u,\"led_evals\":%u,\"geometry_us\":%u,\"leds\":%u,\"positioned\":%u,"
-          "\"rejected_edits\":%u,\"entities\":%u,\"spawns_failed\":%u,\"demo\":%u,\"rule_fires\":%u,"
+          "\"rejected_edits\":%u,\"entities\":%u,\"direct_entities\":%u,\"spawns_failed\":%u,\"demo\":%u,\"rule_fires\":%u,"
           "\"events_dropped\":%u,\"actions_dropped\":%u,\"spawns_over_quota\":%u,\"peak_entities\":%u}",
           (unsigned long long)eng.ticks, (unsigned long long)eng.ticks_dropped, (unsigned long long)eng.frames,
           (unsigned)eng.last_advance_us, (unsigned)eng.max_advance_us, (unsigned)eng.last_render_us,
           (unsigned)eng.max_render_us, (unsigned)eng.max_advance_at_ms, (unsigned)eng.max_render_at_ms,
           (unsigned)eng.slow_frames, (unsigned)eng.led_evals, (unsigned)eng.geometry_build_us, (unsigned)eng.leds,
-          (unsigned)eng.positioned, (unsigned)eng.rejected_edits, (unsigned)eng.entities,
+          (unsigned)eng.positioned, (unsigned)eng.rejected_edits, (unsigned)eng.entities, (unsigned)eng.direct_entities,
           (unsigned)eng.spawns_failed, (unsigned)eng.demo, (unsigned)eng.rule_fires, (unsigned)eng.events_dropped,
           (unsigned)eng.actions_dropped, (unsigned)eng.spawns_over_quota, (unsigned)eng.peak_entities);
 
@@ -202,10 +202,12 @@ static size_t build_locked(char *out, size_t cap)
 
     net_server_diag_t nd = net_server_diag();
     j.raw(",\"net\":{\"clients\":%u,\"commands\":%u,\"accepts\":%u,\"accept_errors\":%u,\"writes_deferred\":%u,"
-          "\"write_failures\":%u,\"overflow_closes\":%u,\"status_dropped\":%u}",
+          "\"write_failures\":%u,\"overflow_closes\":%u,\"status_dropped\":%u,\"stream_rx\":%u,\"stream_old\":%u,"
+          "\"stream_bad\":%u}",
           (unsigned)net_server_client_count(), (unsigned)net_server_commands_received(), (unsigned)nd.accepts,
           (unsigned)nd.accept_errors, (unsigned)nd.writes_deferred, (unsigned)nd.write_failures,
-          (unsigned)nd.overflow_closes, (unsigned)nd.status_dropped);
+          (unsigned)nd.overflow_closes, (unsigned)nd.status_dropped, (unsigned)nd.stream_rx, (unsigned)nd.stream_old,
+          (unsigned)nd.stream_bad);
 
     j.raw(",\"lwip\":{\"heap_used\":%u,\"heap_max\":%u,\"heap_size\":%u,\"heap_errors\":%u}",
           (unsigned)lwip_stats.mem.used, (unsigned)lwip_stats.mem.max, (unsigned)lwip_stats.mem.avail,

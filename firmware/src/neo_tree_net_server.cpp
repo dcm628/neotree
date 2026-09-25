@@ -5,7 +5,9 @@
 #include <cstring>
 
 #include "pico/cyw43_arch.h"
+#include "pico/rand.h"
 #include "lwip/tcp.h"
+#include "lwip/udp.h"
 #include "lwip/ip_addr.h"
 #include "lwip/apps/mdns.h"
 #include "lwip/memp.h"
@@ -63,10 +65,16 @@ struct client_slot
     uint8_t push_now;
     uint32_t scene_rev_sent;
     uint32_t library_rev_sent;
+    // The UDP stream: this connection's token (from its HELLO) and the
+    // newest sequence number seen.
+    uint32_t stream_token;
+    uint16_t stream_seq;
+    bool stream_seen;
 };
 
 static client_slot clients[net_server_max_clients];
 static struct tcp_pcb *listen_pcb = nullptr;
+static struct udp_pcb *stream_pcb = nullptr;
 static volatile bool push_requested = false;   // a client just subscribed
 static volatile uint32_t commands_received = 0;
 static volatile net_server_diag_t diag = {};
@@ -183,6 +191,16 @@ static void send_ack(client_slot *c, uint8_t cmd_type, net_status status)
     send_frame(c, ack, sizeof(ack));
 }
 
+// A connection that's ending: what it owned in the engine goes (direct
+// control), queued after its own commands so none of them outlive it.
+static void release_client(client_slot *c)
+{
+    const uint8_t client_id = slot_index(c) + 1;
+    engine_host_forget_owner(engine_host_owner_network(client_id));
+    const uint8_t kill_all[2] = {static_cast<uint8_t>(serial_msg_type::ENTITY_KILL), 0xFF};
+    command_queue_push(command_source::network, client_id, kill_all, sizeof(kill_all));
+}
+
 static void reset_slot(client_slot *c)
 {
     c->pcb = nullptr;
@@ -194,6 +212,8 @@ static void reset_slot(client_slot *c)
     c->overflowed = false;
     c->subscribed = 0;
     c->push_now = 0;
+    c->stream_token = 0;
+    c->stream_seen = false;
 }
 
 static void detach_callbacks(struct tcp_pcb *pcb)
@@ -210,6 +230,7 @@ static void detach_callbacks(struct tcp_pcb *pcb)
 static err_t close_client(client_slot *c)
 {
     struct tcp_pcb *pcb = c->pcb;
+    release_client(c);
     reset_slot(c);
     detach_callbacks(pcb);
     if (tcp_close(pcb) != ERR_OK)
@@ -229,6 +250,7 @@ static err_t drop_overflowed_client(client_slot *c)
     diag.overflow_closes = diag.overflow_closes + 1;
     log_event(net_event_type::OVERFLOWED, slot_index(c), &c->pcb->remote_ip, c->pcb->remote_port);
     struct tcp_pcb *pcb = c->pcb;
+    release_client(c);
     reset_slot(c);
     detach_callbacks(pcb);
     tcp_abort(pcb);
@@ -370,6 +392,7 @@ static void on_err(void *arg, err_t err)
     if (c != nullptr)
     {
         log_event(net_event_type::ERRORED, slot_index(c), IP_ADDR_ANY, 0);
+        release_client(c);
         reset_slot(c);
     }
 }
@@ -466,6 +489,7 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
         }
         log_event(net_event_type::EVICTED, slot_index(c), &c->pcb->remote_ip, c->pcb->remote_port);
         struct tcp_pcb *old = c->pcb;
+        release_client(c);
         reset_slot(c);
         detach_callbacks(old);
         tcp_abort(old);
@@ -486,12 +510,54 @@ static err_t on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
     newpcb->keep_intvl = keepalive_interval_ms;
     newpcb->keep_cnt = keepalive_count;
 
-    uint8_t hello[3] = {static_cast<uint8_t>(net_reply_type::HELLO), net_protocol_version,
-                        static_cast<uint8_t>(tree_output_enabled ? hello_flag_output_on : 0)};
+    c->stream_token = get_rand_32() | 1u;   // never 0: 0 marks a free slot
+    const uint32_t token = c->stream_token;
+    uint8_t hello[7] = {static_cast<uint8_t>(net_reply_type::HELLO), net_protocol_version,
+                        static_cast<uint8_t>(tree_output_enabled ? hello_flag_output_on : 0),
+                        static_cast<uint8_t>(token), static_cast<uint8_t>(token >> 8),
+                        static_cast<uint8_t>(token >> 16), static_cast<uint8_t>(token >> 24)};
     send_frame(c, hello, sizeof(hello));
     flush(newpcb);
     log_event(net_event_type::CONNECTED, slot_index(c), &newpcb->remote_ip, newpcb->remote_port);
     return ERR_OK;
+}
+
+// The stream channel (see neo_tree_net_server.hpp): a datagram is
+// ['N'][1][token u32][seq u16][BRUSH message]. lwIP IRQ context on core1.
+static void on_stream(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
+{
+    constexpr size_t header = 8;
+    uint8_t d[header + brush_len];
+    const size_t n = pbuf_copy_partial(p, d, sizeof(d), 0);
+    const size_t total = p->tot_len;
+    pbuf_free(p);
+    if (n != total || n != sizeof(d) || d[0] != 'N' || d[1] != 1 ||
+        d[header] != static_cast<uint8_t>(serial_msg_type::BRUSH))
+    {
+        diag.stream_bad = diag.stream_bad + 1;
+        return;
+    }
+    const uint32_t token = d[2] | (d[3] << 8) | (d[4] << 16) | (static_cast<uint32_t>(d[5]) << 24);
+    const uint16_t seq = static_cast<uint16_t>(d[6] | (d[7] << 8));
+    for (auto &c : clients)
+    {
+        if (c.pcb == nullptr || c.stream_token != token)
+        {
+            continue;
+        }
+        // Newest wins: anything not after the newest seen is stale (wraps at 16 bits).
+        if (c.stream_seen && static_cast<int16_t>(seq - c.stream_seq) <= 0)
+        {
+            diag.stream_old = diag.stream_old + 1;
+            return;
+        }
+        c.stream_seq = seq;
+        c.stream_seen = true;
+        diag.stream_rx = diag.stream_rx + 1;
+        engine_host_stream_brush(engine_host_owner_network(slot_index(&c) + 1), d + header);
+        return;
+    }
+    diag.stream_bad = diag.stream_bad + 1;
 }
 
 // TXT record: lets a client check the protocol version before connecting.
@@ -525,6 +591,18 @@ bool net_server_start()
     else if (pcb != nullptr)
     {
         tcp_close(pcb);
+    }
+    if (ok)
+    {
+        stream_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
+        if (stream_pcb != nullptr && udp_bind(stream_pcb, IP_ANY_TYPE, net_stream_port) == ERR_OK)
+        {
+            udp_recv(stream_pcb, on_stream, nullptr);
+        }
+        else
+        {
+            printf("net: stream channel FAILED to start on UDP port %u\n", net_stream_port);
+        }
     }
     // Discovery: <hostname>.local plus a _neotree._tcp service record that
     // points at the command port. Announces automatically each time the link
@@ -665,6 +743,9 @@ net_server_diag_t net_server_diag()
     d.writes_deferred = diag.writes_deferred;
     d.overflow_closes = diag.overflow_closes;
     d.status_dropped = diag.status_dropped;
+    d.stream_rx = diag.stream_rx;
+    d.stream_old = diag.stream_old;
+    d.stream_bad = diag.stream_bad;
     return d;
 }
 

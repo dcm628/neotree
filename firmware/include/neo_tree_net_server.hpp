@@ -11,9 +11,10 @@
 //   (byte 0 = serial_msg_type, see neo_tree_protocol.hpp). The server checks
 //   it and pushes it onto the shared command queue.
 // Tree -> client: byte 0 >= 0x80 identifies the reply:
-//   HELLO  [0x81][protocol_version][flags]     sent once on connect
-//          flags bit 0: lights on (TREE_OUTPUT). Older clients that only
-//          read the first two bytes are unaffected.
+//   HELLO  [0x81][protocol_version][flags][stream token, u32 LE]   sent once on connect
+//          flags bit 0: lights on (TREE_OUTPUT). The token identifies this
+//          connection on the UDP stream (below). Older clients that only read
+//          the first bytes are unaffected.
 //   ACK    [0x80][command type][net_status]    one per received command
 //   STATUS [0x82][JSON]                        reply to STATUS_REQUEST (neo_tree_status.hpp),
 //                                              sent just before that command's ACK
@@ -23,10 +24,18 @@
 //   LIBRARY [0x85][JSON]                       presets and shows: reply to LIBRARY, and
 //                                              pushed to SUBSCRIBEd clients when it changes
 // ACK means "accepted onto the command queue", not "already applied".
+//
+// Stream channel: UDP port net_stream_port, for high-rate input where only
+// the newest matters (docs/ARCHITECTURE.md 7). Each datagram is
+//   ['N'][1][token u32 LE][seq u16 LE][message]
+// with the token from this client's HELLO; the message is a BRUSH command.
+// Nothing is sent back. Datagrams older than the newest seen (by seq) are
+// dropped, as are unknown tokens; losing one only means a coarser stroke.
 // Pushed frames can arrive between a command and its ACK; clients that
 // don't SUBSCRIBE never get them.
 
 const uint16_t net_server_port = 7777;
+const uint16_t net_stream_port = 7778;
 const uint8_t net_protocol_version = 1;
 const size_t net_server_max_clients = 4;
 const uint8_t hello_flag_output_on = 0x01;
@@ -73,6 +82,9 @@ struct net_server_diag_t
     uint32_t status_dropped;    // STATUS replies not sent (lwIP out of memory, or replies backlogged)
     uint32_t output_failures;   // tcp_output failed
     int32_t last_write_error;   // lwIP err_t of the most recent write failure
+    uint32_t stream_rx;         // stream datagrams accepted
+    uint32_t stream_old;        // ... dropped as older than one already seen
+    uint32_t stream_bad;        // ... dropped as malformed or with an unknown token
 };
 net_server_diag_t net_server_diag();
 // One heartbeat line of lwIP heap/pool usage and allocation failures.

@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "neotree/color.hpp"
+#include "neotree/types.hpp"
 
 namespace neotree {
 
@@ -61,6 +62,13 @@ struct ModeDef
     // Applies a change to params[index] live; return false (or leave null)
     // to have the mode set up again instead.
     bool (*on_param)(ModeContext &ctx, uint8_t index) = nullptr;
+    // Direct control (neotree/direct.hpp): phones may spawn and move
+    // entities in this mode's slot - a ball from template 0, a brush from
+    // template 1.
+    bool direct = false;
+    // A brush stroke from `from` to `to` (mm) with its pen down: what the
+    // mode leaves behind.
+    void (*stroke)(ModeContext &ctx, Vec3 from, Vec3 to, Rgb color, float radius_mm) = nullptr;
 };
 
 struct ModeContext

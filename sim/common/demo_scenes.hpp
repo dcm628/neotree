@@ -2,7 +2,8 @@
 // Scenes for the host tools, by name: a preset or a built-in show
 // (neotree/library.hpp - by its name in lowercase with underscores, e.g.
 // "holiday_show", "holiday_evening"), a single mode id (e.g. "snow", run in
-// slot 0), or "empty".
+// slot 0), "play_demo" (the play mode over a dark backdrop, a
+// brush spiral painted and balls thrown, as a phone would), or "empty".
 
 #include <string>
 

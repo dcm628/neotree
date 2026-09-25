@@ -104,8 +104,12 @@ struct Entity
     uint8_t group = no_group;        // collision group, 0..max_groups-1
     float collide_radius = 0.0f;     // 0 = from the shape (sphere: size, capsule: size + length)
 
-    // Reserved for later milestones
-    uint8_t owner = 0;               // mode instance / controlling phone (M5+)
+    // Direct control (neotree/direct.hpp): 0 = the slot's mode; otherwise
+    // the phone (or other client) that spawned it, under its own id.
+    uint8_t owner = 0;
+    uint8_t direct_id = 0;
+    uint8_t direct_kind = 0;         // DirectKind
+    bool pen_down = false;           // a brush's last sample
 };
 
 using EntityPool = Pool<Entity, max_entities>;

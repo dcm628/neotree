@@ -117,6 +117,37 @@ class Projection {
         return true
     }
 
+    /**
+     * The ray through screen point ([sx], [sy]): writes the eye into
+     * [origin] and a unit direction into [dir] (engine space).
+     */
+    fun ray(sx: Float, sy: Float, origin: FloatArray, dir: FloatArray) {
+        val cx = (sx - centerX) / focalPx
+        val cy = (centerY - sy) / focalPx
+        var dx = fwdX + cx * rightX + cy * upX
+        var dy = fwdY + cx * rightY + cy * upY
+        var dz = fwdZ + cy * upZ
+        val len = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+        dx /= len; dy /= len; dz /= len
+        origin[0] = eyeX; origin[1] = eyeY; origin[2] = eyeZ
+        dir[0] = dx; dir[1] = dy; dir[2] = dz
+    }
+
+    /** A screen-space velocity (px/s, y down) as a world velocity (mm/s) at [depth] mm, in the view plane. */
+    fun screenToWorldVelocity(vxPx: Float, vyPx: Float, depth: Float, out: FloatArray) {
+        val mmPerPx = depth / focalPx
+        val rx = vxPx * mmPerPx
+        val uy = -vyPx * mmPerPx
+        out[0] = rx * rightX + uy * upX
+        out[1] = rx * rightY + uy * upY
+        out[2] = uy * upZ
+    }
+
+    /** The view direction (unit, engine space) into [out]. */
+    fun forward(out: FloatArray) {
+        out[0] = fwdX; out[1] = fwdY; out[2] = fwdZ
+    }
+
     /** On-screen size, px, of something [sizeMm] across at [depth]. */
     fun sizePx(sizeMm: Float, depth: Float): Float = sizeMm * focalPx / depth
 

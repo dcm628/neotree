@@ -14,6 +14,8 @@ import java.nio.ByteOrder
  */
 object TreeProtocol {
     const val DEFAULT_PORT = 7777
+    /** The stream channel: UDP, newest-wins brush samples (TreeStream). */
+    const val STREAM_PORT = 7778
     const val PROTOCOL_VERSION = 1
     const val SERVICE_TYPE = "_neotree._tcp"
 
@@ -47,6 +49,10 @@ object TreeProtocol {
     private const val SHOW_PLAY = 34
     private const val SHOW_BOOT = 35
     private const val SUBSCRIBE = 36
+    private const val ENTITY_SPAWN = 38
+    private const val ENTITY_KILL = 39
+    private const val BRUSH = 40
+    const val BRUSH_LEN = 14
 
     /** Names on the wire: 20 bytes, NUL-padded (at most 19 used). */
     private const val NAME_LEN = 20
@@ -157,6 +163,48 @@ object TreeProtocol {
             put(15)   // over 1.5 s
         }
 
+    // ---- direct control (firmware engine/include/neotree/direct.hpp) ----
+    // In a slot running the "play" mode. What this connection creates is its
+    // own, removed when it disconnects. Positions in mm, engine space (z up,
+    // trunk on the z axis); velocities in mm/s.
+
+    /** Kinds of entity a phone can make. */
+    enum class DirectKind(val code: Int) { BALL(0), BRUSH(1) }
+
+    /** A ball at [pos], moving at [vel]; [id] is this phone's own (the same id again replaces it). */
+    fun spawnBall(slot: Int, id: Int, pos: FloatArray, vel: FloatArray, color: Rgb, sizeMm: Int = 0): ByteArray =
+        message(20) {
+            put(ENTITY_SPAWN.toByte()); put(slot.toByte()); put(id.toByte()); put(DirectKind.BALL.code.toByte())
+            putXyz(pos); putXyz(vel)
+            putRgb(color)
+            put(sizeMm.coerceIn(0, 255).toByte())
+        }
+
+    /** Removes one of this phone's entities; -1 all of them. */
+    fun killEntity(id: Int): ByteArray = byteArrayOf(ENTITY_KILL.toByte(), (if (id < 0) 0xFF else id).toByte())
+
+    /** A brush sample (see TreeStream for sending them live over UDP). */
+    fun brush(slot: Int, id: Int, pos: FloatArray, color: Rgb, radiusMm: Int, penDown: Boolean): ByteArray =
+        message(BRUSH_LEN) {
+            put(BRUSH.toByte()); put(slot.toByte()); put(id.toByte()); put((if (penDown) 1 else 0).toByte())
+            putXyz(pos)
+            putRgb(color)
+            put(radiusMm.coerceIn(1, 255).toByte())
+        }
+
+    /** A stream datagram: ['N'][1][token u32][seq u16][message]. */
+    fun streamPacket(token: Int, seq: Int, message: ByteArray): ByteArray {
+        val buf = ByteBuffer.allocate(8 + message.size).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put('N'.code.toByte()); buf.put(1)
+        buf.putInt(token); buf.putShort(seq.toShort())
+        buf.put(message)
+        return buf.array()
+    }
+
+    private fun ByteBuffer.putXyz(v: FloatArray) {
+        for (k in 0 until 3) putShort(v[k].toInt().coerceIn(-32768, 32767).toShort())
+    }
+
     /** Lifecycle policies, in the firmware's order (EndPolicy). */
     enum class EndPolicy(val label: String) {
         LOOP("Start again"), CHAIN("Change to another mode"), REVERT("Back to the base scene"),
@@ -242,6 +290,10 @@ object TreeProtocol {
         34 -> "SHOW_PLAY"
         35 -> "SHOW_BOOT"
         36 -> "SUBSCRIBE"
+        37 -> "BENCH"
+        38 -> "ENTITY_SPAWN"
+        39 -> "ENTITY_KILL"
+        40 -> "BRUSH"
         else -> "TYPE_$type"
     }
 
