@@ -7,10 +7,13 @@
 
 #include "neotree/director.hpp"
 #include "neotree/engine.hpp"
+#include "json.hpp"
 
 namespace neotree {
 
 namespace {
+
+using detail::Json;
 
 float deg(float d) { return d * pi / 180.0f; }
 
@@ -95,18 +98,31 @@ void canvas_setup(ModeContext &ctx)
 {
     Scene &scene = ctx.engine.scene();
     int background = scene.add_layer(ctx.slot, LayerType::pixel);
-    scene.add_layer(ctx.slot, LayerType::pixel);
-    if (background >= 0)
+    int paint = scene.add_layer(ctx.slot, LayerType::pixel);
+    if (background < 0 || paint < 0)
     {
-        auto bg = scene.pixels(ctx.slot, static_cast<uint8_t>(background));
-        for (Rgba8 &px : bg)
+        return;
+    }
+    auto bg = scene.pixels(ctx.slot, static_cast<uint8_t>(background));
+    auto fg = scene.pixels(ctx.slot, static_cast<uint8_t>(paint));
+    const Engine::CanvasMemory &memory = ctx.engine.canvas_memory();
+    if (memory.saved)
+    {
+        // Back as it was when the Canvas last left the scene.
+        for (size_t i = 0; i < bg.size() && i < fg.size(); i++)
         {
-            px = {0, 0, 0, 255};
+            bg[i] = memory.background[i];
+            fg[i] = memory.paint[i];
         }
-        if (ctx.engine.config().canvas_seed != nullptr)
-        {
-            ctx.engine.config().canvas_seed(bg);
-        }
+        return;
+    }
+    for (Rgba8 &px : bg)
+    {
+        px = {0, 0, 0, 255};
+    }
+    if (ctx.engine.config().canvas_seed != nullptr)
+    {
+        ctx.engine.config().canvas_seed(bg);
     }
 }
 
@@ -729,55 +745,6 @@ const ModeDef modes[] = {
      PARAMS(mixer_params), mixer_setup},
 };
 constexpr uint8_t count_of_modes = static_cast<uint8_t>(sizeof(modes) / sizeof(modes[0]));
-
-// Minimal JSON writer over a fixed buffer (truncates safely).
-struct Json
-{
-    char *out;
-    size_t cap;
-    size_t len = 0;
-
-    void raw(const char *fmt, ...)
-    {
-        if (len + 1 >= cap)
-        {
-            return;
-        }
-        va_list args;
-        va_start(args, fmt);
-        int n = vsnprintf(out + len, cap - len, fmt, args);
-        va_end(args);
-        if (n > 0)
-        {
-            len = len + static_cast<size_t>(n) < cap ? len + static_cast<size_t>(n) : cap - 1;
-        }
-    }
-    // Numbers the same on every printf: integers plainly, otherwise up to
-    // three decimals with trailing zeros trimmed (the Pico's %g pads).
-    void num(double v)
-    {
-        char buf[24];
-        long whole = static_cast<long>(v);
-        if (static_cast<double>(whole) == v)
-        {
-            std::snprintf(buf, sizeof(buf), "%ld", whole);
-        }
-        else
-        {
-            std::snprintf(buf, sizeof(buf), "%.3f", v);
-            char *end = buf + std::strlen(buf) - 1;
-            while (end > buf && *end == '0')
-            {
-                *end-- = '\0';
-            }
-        }
-        raw("%s", buf);
-    }
-    void hex(Rgb c)
-    {
-        raw("\"#%02x%02x%02x\"", unit_to_byte(c.r), unit_to_byte(c.g), unit_to_byte(c.b));
-    }
-};
 
 }  // namespace
 

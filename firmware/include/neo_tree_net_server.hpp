@@ -17,7 +17,14 @@
 //   ACK    [0x80][command type][net_status]    one per received command
 //   STATUS [0x82][JSON]                        reply to STATUS_REQUEST (neo_tree_status.hpp),
 //                                              sent just before that command's ACK
+//   DESCRIBE [0x83][JSON]                      reply to DESCRIBE: the modes
+//   SCENE  [0x84][JSON]                        the running scene, pushed to SUBSCRIBEd clients
+//                                              when it changes (not as time passes)
+//   LIBRARY [0x85][JSON]                       presets and shows: reply to LIBRARY, and
+//                                              pushed to SUBSCRIBEd clients when it changes
 // ACK means "accepted onto the command queue", not "already applied".
+// Pushed frames can arrive between a command and its ACK; clients that
+// don't SUBSCRIBE never get them.
 
 const uint16_t net_server_port = 7777;
 const uint8_t net_protocol_version = 1;
@@ -30,6 +37,8 @@ enum class net_reply_type : uint8_t
     HELLO = 0x81,
     STATUS = 0x82,   // [0x82][JSON] - reply to STATUS_REQUEST, sent before its ACK
     DESCRIBE = 0x83, // [0x83][JSON] - reply to DESCRIBE: modes and presets
+    SCENE = 0x84,    // [0x84][JSON] - pushed: the scene (Director::describe_state)
+    LIBRARY = 0x85,  // [0x85][JSON] - reply to LIBRARY, and pushed (Library::describe)
 };
 
 enum class net_status : uint8_t

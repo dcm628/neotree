@@ -28,7 +28,7 @@ void seed_canvas(std::span<Rgba8> background)
     }
 }
 
-int scene_count() { return 1 + preset_count() + mode_count(); }
+int scene_count() { return 1 + preset_count() + builtin_show_count() + mode_count(); }
 
 std::string scene_name(int index)
 {
@@ -40,7 +40,12 @@ std::string scene_name(int index)
     {
         return slug(preset_at(static_cast<uint8_t>(index - 1)).name);
     }
-    const ModeDef *def = mode_at(static_cast<uint8_t>(index - 1 - preset_count()));
+    index -= preset_count();
+    if (index <= builtin_show_count())
+    {
+        return slug(builtin_show_at(static_cast<uint8_t>(index - 1)).name);
+    }
+    const ModeDef *def = mode_at(static_cast<uint8_t>(index - 1 - builtin_show_count()));
     return def != nullptr ? def->id : "empty";
 }
 
@@ -65,9 +70,16 @@ bool setup_scene(Engine &engine, const std::string &name)
     {
         if (slug(preset_at(i).name) == name)
         {
-            engine.director().set_base_scene(preset_at(0));   // "Colors", for reverts
             engine.director().apply_scene(engine, preset_at(i), Transition::cut);
             return true;
+        }
+    }
+    const Library &lib = engine.director().library();
+    for (uint8_t i = 0; i < lib.show_count(); i++)
+    {
+        if (slug(lib.show(i).name) == name)
+        {
+            return engine.director().play_show(engine, i);
         }
     }
     uint8_t mode = find_mode(name.c_str());

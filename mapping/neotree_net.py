@@ -22,6 +22,9 @@ REPLY_ACK = 0x80
 REPLY_HELLO = 0x81
 REPLY_STATUS = 0x82
 REPLY_DESCRIBE = 0x83
+# Pushed to clients that subscribe(): the scene / the library, on every change.
+REPLY_SCENE = 0x84
+REPLY_LIBRARY = 0x85
 
 STATUS_REQUEST_MSG_TYPE = 18
 REBOOT_MSG_TYPE = 19
@@ -43,6 +46,16 @@ SLOT_LIFE_MSG_TYPE = 27
 INPUT_MSG_TYPE = 28
 PRESET_MSG_TYPE = 29
 POLICIES = ["loop", "chain", "revert", "remove", "hold"]
+# The library (engine/include/neotree/library.hpp) - see library() for
+# preset / show indices. Changes are stored in the tree's flash.
+LIBRARY_MSG_TYPE = 30
+SCENE_SAVE_MSG_TYPE = 31
+LIBRARY_DELETE_MSG_TYPE = 32
+SHOW_SET_MSG_TYPE = 33
+SHOW_PLAY_MSG_TYPE = 34
+SHOW_BOOT_MSG_TYPE = 35
+SUBSCRIBE_MSG_TYPE = 36
+NAME_LEN = 20
 
 STATUS_NAMES = {
     0: "QUEUED",
@@ -61,6 +74,9 @@ class NeotreeNet:
     def __init__(self, host, port=DEFAULT_PORT, timeout=3.0, wait_for_ack=True):
         self.wait_for_ack = wait_for_ack
         self.last_status = None
+        self.last_describe = None
+        self.last_library = None
+        self.pushed = []   # (time, "scene" | "library", dict) - after subscribe()
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         hello = self.read_frame()
@@ -100,6 +116,9 @@ class NeotreeNet:
             if frame and frame[0] == REPLY_DESCRIBE:
                 self.last_describe = json.loads(frame[1:].decode("utf-8", errors="replace"))
                 continue
+            if frame and frame[0] in (REPLY_SCENE, REPLY_LIBRARY):
+                self._keep_pushed(frame)
+                continue
             if len(frame) != 3 or frame[0] != REPLY_ACK:
                 raise NeotreeNetError(f"expected ACK, got {frame!r}")
             return frame[1], STATUS_NAMES.get(frame[2], f"status {frame[2]}")
@@ -120,6 +139,78 @@ class NeotreeNet:
         if self.last_describe is None:
             raise NeotreeNetError("no DESCRIBE reply (tree out of memory? try again)")
         return self.last_describe
+
+    def _keep_pushed(self, frame):
+        data = json.loads(frame[1:].decode("utf-8", errors="replace"))
+        if frame[0] == REPLY_LIBRARY:
+            self.last_library = data
+        self.pushed.append((time.time(), "scene" if frame[0] == REPLY_SCENE else "library", data))
+
+    def subscribe(self, scene=True, library=True):
+        """Have the tree push the scene / library on every change (and once
+        now). Pushed frames are collected in self.pushed as they're read -
+        see wait_pushed()."""
+        self.write(bytes([SUBSCRIBE_MSG_TYPE, (1 if scene else 0) | (2 if library else 0)]))
+
+    def wait_pushed(self, seconds):
+        """Reads pushed frames for this long; returns those that arrived."""
+        start = len(self.pushed)
+        end = time.time() + seconds
+        old = self.sock.gettimeout()
+        try:
+            while True:
+                left = end - time.time()
+                if left <= 0:
+                    break
+                self.sock.settimeout(left)
+                try:
+                    frame = self.read_frame()
+                except (socket.timeout, TimeoutError):
+                    break
+                if frame and frame[0] in (REPLY_SCENE, REPLY_LIBRARY):
+                    self._keep_pushed(frame)
+        finally:
+            self.sock.settimeout(old)
+        return self.pushed[start:]
+
+    def library(self):
+        """Presets (built-ins, then the user's) and shows, the base scene and
+        the startup show."""
+        self.last_library = None
+        self.write(bytes([LIBRARY_MSG_TYPE]))
+        if self.last_library is None:
+            raise NeotreeNetError("no LIBRARY reply (tree out of memory? try again)")
+        return self.last_library
+
+    @staticmethod
+    def _name(name):
+        raw = name.encode("utf-8")[:NAME_LEN - 1]
+        return raw + bytes(NAME_LEN - len(raw))
+
+    def save_scene(self, name=None):
+        """Saves the live scene as a preset called name (replacing the user
+        preset of that name), or as the base scene if name is None."""
+        what = 0 if name is None else 1
+        self.write(bytes([SCENE_SAVE_MSG_TYPE, what]) + self._name(name or ""))
+
+    def delete(self, what, index=0):
+        """what: "base" (back to the default), "preset" or "show" (by library index)."""
+        self.write(bytes([LIBRARY_DELETE_MSG_TYPE, ["base", "preset", "show"].index(what), index]))
+
+    def set_show(self, name, entries, loop=True, shuffle=False):
+        """Saves a show: entries = [(preset index, seconds), ...] (seconds 0 =
+        the preset's own duration)."""
+        body = b"".join(bytes([p]) + struct.pack("<H", int(s)) for p, s in entries)
+        self.write(bytes([SHOW_SET_MSG_TYPE, (1 if loop else 0) | (2 if shuffle else 0), len(entries)]) +
+                   self._name(name) + body)
+
+    def play_show(self, index):
+        """Plays a show (library index); None stops it (the scene stays)."""
+        self.write(bytes([SHOW_PLAY_MSG_TYPE, 0xFF if index is None else index]))
+
+    def set_boot_show(self, index):
+        """The show to play at power-up; None for the base scene."""
+        self.write(bytes([SHOW_BOOT_MSG_TYPE, 0xFF if index is None else index]))
 
     def set_slot(self, slot, mode_index, fade=True):
         """Puts a mode (by DESCRIBE index; None = empty) in a slot."""

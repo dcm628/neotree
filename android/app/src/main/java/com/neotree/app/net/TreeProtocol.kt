@@ -23,6 +23,10 @@ object TreeProtocol {
     const val REPLY_STATUS = 0x82
     /** [0x83][JSON] - reply to DESCRIBE (ModeCatalog), sent just before its ACK. */
     const val REPLY_DESCRIBE = 0x83
+    /** [0x84][JSON] - the scene (SceneState), pushed after SUBSCRIBE whenever it changes. */
+    const val REPLY_SCENE = 0x84
+    /** [0x85][JSON] - the library (TreeLibrary): reply to LIBRARY, and pushed after SUBSCRIBE. */
+    const val REPLY_LIBRARY = 0x85
 
     private const val NOOP = 0
     private const val COLOR_GROUP_RGB_UPDATE = 2
@@ -34,7 +38,22 @@ object TreeProtocol {
     private const val SLOT_SET = 24
     private const val PARAM_SET = 25
     private const val SLOT_END = 26
+    private const val SLOT_LIFE = 27
     private const val PRESET = 29
+    private const val LIBRARY = 30
+    private const val SCENE_SAVE = 31
+    private const val LIBRARY_DELETE = 32
+    private const val SHOW_SET = 33
+    private const val SHOW_PLAY = 34
+    private const val SHOW_BOOT = 35
+    private const val SUBSCRIBE = 36
+
+    /** Names on the wire: 20 bytes, NUL-padded (at most 19 used). */
+    private const val NAME_LEN = 20
+    // The tree's library limits (firmware engine/include/neotree/library.hpp).
+    const val MAX_SHOW_ENTRIES = 16
+    const val MAX_USER_PRESETS = 8
+    const val MAX_USER_SHOWS = 4
 
     /** Round-trip check - the tree just ACKs it. */
     fun noop(): ByteArray = byteArrayOf(NOOP.toByte())
@@ -79,8 +98,94 @@ object TreeProtocol {
     /** Back to the base scene (the Canvas with your colors, as the tree boots). */
     fun revertScene(): ByteArray = byteArrayOf(SLOT_END.toByte(), 0xFF.toByte(), SlotEnd.REVERT.code.toByte())
 
-    /** Applies a preset scene (ModeCatalog.presets index). */
+    /** Applies a preset scene (TreeLibrary.presets index). */
     fun preset(index: Int): ByteArray = byteArrayOf(PRESET.toByte(), index.toByte())
+
+    // ---- the library (firmware engine/include/neotree/library.hpp) ----
+
+    /** Asks for the library (REPLY_LIBRARY). */
+    fun library(): ByteArray = byteArrayOf(LIBRARY.toByte())
+
+    /** Has the tree push the scene and the library on every change (and once now). */
+    fun subscribe(scene: Boolean = true, library: Boolean = true): ByteArray =
+        byteArrayOf(SUBSCRIBE.toByte(), ((if (scene) 1 else 0) or (if (library) 2 else 0)).toByte())
+
+    /** Saves the live scene as a preset (replacing the user preset of that name). */
+    fun savePreset(name: String): ByteArray = byteArrayOf(SCENE_SAVE.toByte(), 1) + nameBytes(name)
+
+    /** Makes the live scene the base scene - what the tree boots into and reverts to. */
+    fun saveAsBase(): ByteArray = byteArrayOf(SCENE_SAVE.toByte(), 0) + ByteArray(NAME_LEN)
+
+    fun resetBase(): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 0, 0)
+    fun deletePreset(index: Int): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 1, index.toByte())
+    fun deleteShow(index: Int): ByteArray = byteArrayOf(LIBRARY_DELETE.toByte(), 2, index.toByte())
+
+    /** Saves a show (replacing the user show of that name): entries are (preset index, seconds). */
+    fun saveShow(name: String, entries: List<Pair<Int, Int>>, loop: Boolean, shuffle: Boolean): ByteArray {
+        require(entries.size in 1..MAX_SHOW_ENTRIES)
+        return message(3 + NAME_LEN + 3 * entries.size) {
+            put(SHOW_SET.toByte())
+            put(((if (loop) 1 else 0) or (if (shuffle) 2 else 0)).toByte())
+            put(entries.size.toByte())
+            put(nameBytes(name))
+            for ((preset, seconds) in entries) {
+                put(preset.toByte())
+                putShort(seconds.coerceIn(0, 0xFFFF).toShort())
+            }
+        }
+    }
+
+    /** Plays a show (TreeLibrary.shows index); -1 stops it, leaving the scene as it is. */
+    fun playShow(index: Int): ByteArray = byteArrayOf(SHOW_PLAY.toByte(), (if (index < 0) 0xFF else index).toByte())
+
+    /** The show to play at power-up; -1 for none (the base scene). */
+    fun bootShow(index: Int): ByteArray = byteArrayOf(SHOW_BOOT.toByte(), (if (index < 0) 0xFF else index).toByte())
+
+    /**
+     * What a slot does when its mode ends (SLOT_LIFE): after [durationSec]
+     * and/or [cycles] (0 = never), [policy]; chain goes to mode [nextMode].
+     */
+    fun slotLife(slot: Int, durationSec: Int, cycles: Int, policy: EndPolicy, nextMode: Int = -1, repeats: Int = 0): ByteArray =
+        message(11) {
+            put(SLOT_LIFE.toByte()); put(slot.toByte())
+            putShort(durationSec.coerceIn(0, 0xFFFF).toShort())
+            putShort(cycles.coerceIn(0, 0xFFFF).toShort())
+            put(policy.ordinal.toByte())
+            put(repeats.coerceIn(0, 255).toByte())
+            put((if (nextMode < 0) 0xFF else nextMode).toByte())
+            put(1)    // fade
+            put(15)   // over 1.5 s
+        }
+
+    /** Lifecycle policies, in the firmware's order (EndPolicy). */
+    enum class EndPolicy(val label: String) {
+        LOOP("Start again"), CHAIN("Change to another mode"), REVERT("Back to the base scene"),
+        REMOVE("Clear the slot"), HOLD("Keep going");
+
+        companion object {
+            fun from(name: String): EndPolicy = entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: HOLD
+        }
+    }
+
+    /** The name the tree will store for [name] (see nameBytes). */
+    fun storedName(name: String): String {
+        val bytes = nameBytes(name)
+        val end = bytes.indexOf(0).let { if (it < 0) bytes.size else it }
+        return String(bytes, 0, end, Charsets.UTF_8).trim()
+    }
+
+    /** A name as the tree stores it: UTF-8, at most 19 bytes (never splitting a character), NUL-padded. */
+    fun nameBytes(name: String): ByteArray {
+        val out = ByteArray(NAME_LEN)
+        var used = 0
+        for (ch in name.trim().codePoints()) {
+            val bytes = String(Character.toChars(ch)).toByteArray(Charsets.UTF_8)
+            if (used + bytes.size > NAME_LEN - 1) break
+            bytes.copyInto(out, used)
+            used += bytes.size
+        }
+        return out
+    }
 
     /** LEDs per string, in order - strings 1-4 are LEDs 0-299, 300-599, 600-799, 800-999. */
     val STRING_LENGTHS = intArrayOf(300, 300, 200, 200)
@@ -130,6 +235,13 @@ object TreeProtocol {
         27 -> "SLOT_LIFE"
         28 -> "INPUT"
         29 -> "PRESET"
+        30 -> "LIBRARY"
+        31 -> "SCENE_SAVE"
+        32 -> "LIBRARY_DELETE"
+        33 -> "SHOW_SET"
+        34 -> "SHOW_PLAY"
+        35 -> "SHOW_BOOT"
+        36 -> "SUBSCRIBE"
         else -> "TYPE_$type"
     }
 

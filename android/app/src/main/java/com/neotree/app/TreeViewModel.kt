@@ -10,6 +10,7 @@ import com.neotree.app.net.ModeCatalog
 import com.neotree.app.net.ParamValue
 import com.neotree.app.net.Rgb
 import com.neotree.app.net.SceneState
+import com.neotree.app.net.TreeLibrary
 import com.neotree.app.net.TreeConnection
 import com.neotree.app.net.TreeDiscovery
 import com.neotree.app.net.TreeProtocol
@@ -25,8 +26,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -117,8 +119,14 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             connection.state.collect { s ->
                 if (s is TreeConnection.State.Connected && s.lightsOn != null) _lightsOn.value = s.lightsOn
-                // Every connect: the modes may have changed with a firmware update.
-                if (s is TreeConnection.State.Connected) launch { connection.send(TreeProtocol.describe()) }
+                // Every connect: the modes may have changed with a firmware
+                // update, and the scene and library are pushed from then on.
+                if (s is TreeConnection.State.Connected) {
+                    launch {
+                        connection.send(TreeProtocol.describe())
+                        connection.send(TreeProtocol.subscribe())
+                    }
+                }
             }
         }
         viewModelScope.launch {
@@ -322,7 +330,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun updatePolling() {
-        if ((debugVisible || modesVisible) && foreground) {
+        if (debugVisible && foreground) {
             if (pollJob?.isActive != true) {
                 pollJob = viewModelScope.launch {
                     while (true) {
@@ -370,10 +378,21 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     /** The tree's modes and presets (null until its DESCRIBE reply arrives). */
     val catalog: StateFlow<ModeCatalog?> get() = connection.catalog
 
-    /** The running scene, from the latest STATUS (polled while the modes page shows). */
-    val scene: StateFlow<SceneState?> = connection.status
-        .map { SceneState.parse(it?.json?.optJSONObject("scene")) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** The running scene and when the tree reported it (its ages and a show's time left are as of then). */
+    data class LiveScene(val scene: SceneState, val atMs: Long)
+
+    /**
+     * The running scene: pushed by the tree on every change, or from a
+     * STATUS reply (the debug page's polling) if that's newer.
+     */
+    val scene: StateFlow<LiveScene?> = combine(connection.scene, connection.status) { pushed, status ->
+        val polled = status?.let { s -> SceneState.parse(s.json.optJSONObject("scene"))?.let { LiveScene(it, s.receivedAtMs) } }
+        val fromPush = pushed?.let { LiveScene(it.scene, it.receivedAtMs) }
+        listOfNotNull(fromPush, polled).maxByOrNull { it.atMs }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Presets, shows, the base scene and the startup show (pushed by the tree). */
+    val library: StateFlow<TreeLibrary?> get() = connection.library
 
     /**
      * Parameter values this phone just set, keyed by (slot, mode index, param),
@@ -383,13 +402,13 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     data class ParamKey(val slot: Int, val mode: Int, val param: Int)
     private data class ParamEdit(val value: ParamValue, val atMs: Long)
     private val _paramEdits = MutableStateFlow<Map<ParamKey, ParamEdit>>(emptyMap())
-    private var modesVisible = false
 
+    /** The modes page needs no polling - the tree pushes changes - just the catalog and library once. */
     fun setModesVisible(visible: Boolean) {
-        modesVisible = visible
-        updatePolling()
-        if (visible && connection.catalog.value == null) {
-            viewModelScope.launch { connection.send(TreeProtocol.describe()) }
+        if (!visible || connection.state.value !is TreeConnection.State.Connected) return
+        viewModelScope.launch {
+            if (connection.catalog.value == null) connection.send(TreeProtocol.describe())
+            if (connection.library.value == null) connection.send(TreeProtocol.library())
         }
     }
 
@@ -404,9 +423,71 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     val paramEdits: StateFlow<Map<ParamKey, *>> get() = _paramEdits
 
     fun applyPreset(index: Int) {
-        val name = connection.catalog.value?.presets?.getOrNull(index) ?: "Preset $index"
+        val name = connection.library.value?.presets?.getOrNull(index)?.name ?: "Preset $index"
         sendThenRefresh(name, TreeProtocol.preset(index))
     }
+
+    /** Lifecycle: after [durationSec] / [cycles] (0 = never), [policy]; chain goes to mode [nextMode]. */
+    fun setLifecycle(slot: Int, durationSec: Int, cycles: Int, policy: TreeProtocol.EndPolicy, nextMode: Int) =
+        sendThenRefresh("Slot ${slot + 1}: when it ends", TreeProtocol.slotLife(slot, durationSec, cycles, policy, nextMode))
+
+    // ---- library ----
+
+    /** Why a name can't be used for a new user preset / show, or null if it can. */
+    fun presetNameProblem(name: String): String? {
+        val lib = connection.library.value ?: return "The tree's library hasn't arrived yet"
+        val n = name.trim()
+        val existing = lib.presets.firstOrNull { it.name == n }
+        return when {
+            n.isEmpty() -> "Give it a name"
+            existing != null && !existing.user -> "That's a built-in scene's name"
+            existing == null && lib.presets.count { it.user } >= TreeProtocol.MAX_USER_PRESETS -> "The tree holds ${TreeProtocol.MAX_USER_PRESETS} saved scenes - delete one first"
+            else -> null
+        }
+    }
+
+    fun showNameProblem(name: String): String? {
+        val lib = connection.library.value ?: return "The tree's library hasn't arrived yet"
+        val n = name.trim()
+        val existing = lib.shows.firstOrNull { it.name == n }
+        return when {
+            n.isEmpty() -> "Give it a name"
+            existing != null && !existing.user -> "That's a built-in show's name"
+            existing == null && lib.shows.count { it.user } >= TreeProtocol.MAX_USER_SHOWS -> "The tree holds ${TreeProtocol.MAX_USER_SHOWS} shows - delete one first"
+            else -> null
+        }
+    }
+
+    /** Saves what's running as a preset. Confirmed once the tree's library shows it (it stores it in flash). */
+    fun savePreset(name: String) {
+        val n = name.trim()
+        sendThenConfirm("Saved \"$n\"", TreeProtocol.savePreset(n)) { lib -> lib.presets.any { it.user && it.name == TreeProtocol.storedName(n) } }
+    }
+
+    fun deletePreset(index: Int) = sendThenRefresh("Scene deleted", TreeProtocol.deletePreset(index))
+
+    fun saveAsBase() = sendThenRefresh("This is now the base scene", TreeProtocol.saveAsBase())
+    fun resetBase() = sendThenRefresh("Base scene back to Colors", TreeProtocol.resetBase())
+
+    fun saveShow(name: String, entries: List<Pair<Int, Int>>, loop: Boolean, shuffle: Boolean) {
+        val n = name.trim()
+        sendThenConfirm("Saved show \"$n\"", TreeProtocol.saveShow(n, entries, loop, shuffle)) { lib ->
+            lib.shows.any { it.user && it.name == TreeProtocol.storedName(n) }
+        }
+    }
+
+    fun deleteShow(index: Int) = sendThenRefresh("Show deleted", TreeProtocol.deleteShow(index))
+
+    fun playShow(index: Int) {
+        val name = connection.library.value?.shows?.getOrNull(index)?.name ?: "Show"
+        sendThenRefresh("Playing $name", TreeProtocol.playShow(index))
+    }
+
+    fun stopShow() = sendThenRefresh("Show stopped", TreeProtocol.playShow(-1))
+
+    /** The show to play at power-up, -1 for none. */
+    fun setBootShow(index: Int) =
+        sendThenRefresh(if (index < 0) "No show at power-up" else "Plays at power-up", TreeProtocol.bootShow(index))
 
     /** Starts a mode in a slot (fading between them), or empties it (mode -1). */
     fun setSlotMode(slot: Int, mode: Int) {
@@ -452,20 +533,29 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // The tree pushes the scene and library when they change, so there's
+    // nothing to refresh by hand.
     private fun sendThenRefresh(label: String, message: ByteArray) {
         viewModelScope.launch {
-            val status = connection.send(message)
-            _status.value = when (status) {
+            _status.value = when (connection.send(message)) {
                 AckStatus.QUEUED -> "$label ✓"
                 null -> "Not connected to the tree"
                 else -> "$label: tree rejected the command"
             }
-            // Show the change without waiting for the next poll (the tree
-            // applies it at its next frame).
-            if (status == AckStatus.QUEUED) {
-                delay(150)
-                connection.send(TreeProtocol.statusRequest())
+        }
+    }
+
+    // A queued command can still be refused when the tree applies it (full,
+    // or a name clash): wait for the pushed library to show it worked.
+    private fun sendThenConfirm(label: String, message: ByteArray, done: (TreeLibrary) -> Boolean) {
+        viewModelScope.launch {
+            val status = connection.send(message)
+            if (status != AckStatus.QUEUED) {
+                _status.value = if (status == null) "Not connected to the tree" else "$label: tree rejected the command"
+                return@launch
             }
+            val ok = withTimeoutOrNull(LIBRARY_CONFIRM_MS) { connection.library.first { it != null && done(it) } } != null
+            _status.value = if (ok) "$label ✓" else "$label: the tree didn't save it"
         }
     }
 
@@ -524,6 +614,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         const val DISCOVERY_TIMEOUT_MS = 4000L
         const val STATUS_POLL_MS = 1000L
         const val PARAM_EDIT_HOLD_MS = 2500L
+        const val LIBRARY_CONFIRM_MS = 3000L
         // Radius is a uint16 on the wire; putShort keeps the bit pattern, so
         // 0xFFFF arrives as 65535 = "any radius".
         const val UNLIMITED_RADIUS_MM = 0xFFFF

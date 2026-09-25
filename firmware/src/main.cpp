@@ -196,7 +196,18 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
     case serial_msg_type::PRESET:
         return len == 2;
     case serial_msg_type::DESCRIBE:
+    case serial_msg_type::LIBRARY:
         return len == 1;
+    case serial_msg_type::SCENE_SAVE:
+        return len == 2 + protocol_name_len;
+    case serial_msg_type::LIBRARY_DELETE:
+        return len == 3;
+    case serial_msg_type::SHOW_SET:
+        return len >= 3 && msg[2] <= protocol_max_show_entries && len == 3 + protocol_name_len + 3u * msg[2];
+    case serial_msg_type::SHOW_PLAY:
+    case serial_msg_type::SHOW_BOOT:
+    case serial_msg_type::SUBSCRIBE:
+        return len == 2;
     case serial_msg_type::SLOT_SET:
     case serial_msg_type::SLOT_END:
         return len == (msg[0] == static_cast<uint8_t>(serial_msg_type::SLOT_SET) ? 4u : 3u);
@@ -463,15 +474,37 @@ void process_msg()
         msg_process_counter++;
         break;
     }
+    case serial_msg_type::LIBRARY:
+    {
+        // Over the network the server answers this on core1.
+        static char library_json[status_json_max];   // static: keep it off core0's stack
+        engine_host_library_json(library_json, sizeof(library_json));
+        printf("library: %s\n", library_json);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    }
+    case serial_msg_type::SUBSCRIBE:
+        // Network only - the server handles it; nothing to push over serial.
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
     case serial_msg_type::SLOT_SET:
     case serial_msg_type::PARAM_SET:
     case serial_msg_type::SLOT_END:
     case serial_msg_type::SLOT_LIFE:
     case serial_msg_type::INPUT:
     case serial_msg_type::PRESET:
+    case serial_msg_type::SCENE_SAVE:
+    case serial_msg_type::LIBRARY_DELETE:
+    case serial_msg_type::SHOW_SET:
+    case serial_msg_type::SHOW_PLAY:
+    case serial_msg_type::SHOW_BOOT:
+        // Messages are zero-padded in the buffer, so the queue's maximum
+        // length covers every one of them.
         if (!engine_host_mode_command(serial_buf_copy, engine_mode_command_max_len))
         {
-            event_logf("mode command %u rejected", (unsigned)serial_buf_copy[0]);
+            event_logf("mode command %u: queue full", (unsigned)serial_buf_copy[0]);
         }
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;

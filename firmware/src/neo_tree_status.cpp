@@ -11,6 +11,7 @@
 #include "neo_tree_engine.hpp"
 #include "neo_tree_loop_monitor.hpp"
 #include "neo_tree_safety.hpp"
+#include "neo_tree_scene_store.hpp"
 #include "neo_tree_led_output.hpp"
 #include "neo_tree_net_server.hpp"
 #include "neo_tree_protocol.hpp"
@@ -184,9 +185,17 @@ static size_t build_locked(char *out, size_t cap)
           (unsigned long)sr.fault_pc, (unsigned long)sr.fault_lr, (unsigned)safety_stack_used(0),
           (unsigned)safety_stack_used(1), (unsigned)safety_stack_size(0), (unsigned)safety_stack_size(1));
 
-    static char scene[1600];   // static: keep it off the stack
+    static char scene[2048];   // static: keep it off the stack
     engine_host_scene_json(scene, sizeof(scene));
     j.raw(",\"scene\":%s", scene[0] ? scene : "{}");
+
+    // The stored library (neo_tree_scene_store).
+    const scene_store_stats_t ss = scene_store_stats();
+    static const char *const load_names[] = {"none", "loaded", "invalid"};
+    j.raw(",\"library\":{\"load\":\"%s\",\"stored_bytes\":%u,\"saves\":%u,\"save_failures\":%u,"
+          "\"last_save_ms\":%u}",
+          load_names[static_cast<int>(ss.load)], (unsigned)ss.stored_bytes, (unsigned)ss.saves,
+          (unsigned)ss.save_failures, (unsigned)(ss.last_save_us / 1000));
 
     j.raw(",\"queue\":{\"level\":%u,\"dropped\":%u},\"core1_loops\":%u", (unsigned)command_queue_level(),
           (unsigned)command_queue_dropped(), (unsigned)core1_loop_counter);

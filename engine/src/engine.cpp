@@ -15,6 +15,7 @@ void Engine::init(const LedGeometry &geometry, const EngineConfig &config, LogFn
     clock_ = SimClock(config.tick_hz);
     rng_.reseed(config.seed);
     stats_ = {};
+    canvas_memory_.saved = false;
     scene_.clear();
     master_ = {};
     entities_.clear();

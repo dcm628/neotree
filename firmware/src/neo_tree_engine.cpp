@@ -9,6 +9,7 @@
 #include "neo_tree_config.hpp"
 #include "neo_tree_event_log.hpp"
 #include "neo_tree_protocol.hpp"
+#include "neo_tree_scene_store.hpp"
 #include "hardware/sync.h"
 #include "neotree/engine.hpp"
 
@@ -28,12 +29,28 @@ constexpr uint8_t canvas_paint = 1;
 // The old DEMO command's modes go here, over the Canvas.
 constexpr uint8_t demo_slot = 1;
 
-// The scene's state as JSON, published by core0 for the status report
-// (built on core1): a snapshot under a lock, not a live read of the engine.
-constexpr size_t scene_json_max = 1600;
+// The scene's state and the library as JSON, published by core0 for the
+// status report and the pushes to apps (built on core1): snapshots under a
+// lock, not live reads of the engine.
+constexpr size_t scene_json_max = 2048;
 char scene_json[scene_json_max] = "{}";
+uint32_t scene_revision = 0;
+constexpr size_t library_json_max = 2048;
+char library_json[library_json_max] = "{}";
+uint32_t library_revision = 0;
 spin_lock_t *scene_lock = nullptr;
 uint64_t scene_published_us = 0;
+
+// Library changes are written to flash once they settle: a second after the
+// last one (a flash write pauses both cores for tens of milliseconds).
+constexpr uint64_t store_settle_us = 1'000'000;
+uint32_t stored_revision = 0;
+uint32_t pending_revision = 0;
+uint64_t pending_since_us = 0;
+
+// Scratch for the library commands - too big for core0's stack.
+neotree::SceneSpec scratch_scene;
+neotree::Show scratch_show;
 
 // Static: the geometry is ~31 KB and the engine (pixel buffers, entities,
 // its own float frame) ~95 KB - far too big for core0's stack.
@@ -104,10 +121,54 @@ void publish_scene()
 {
     static char next[scene_json_max];   // static: keep it off core0's stack
     engine.director().describe_state(next, sizeof(next));
+    const uint32_t rev = engine.director().revision();
     uint32_t irq = spin_lock_blocking(scene_lock);
     memcpy(scene_json, next, sizeof(scene_json));
+    scene_revision = rev;
     spin_unlock(scene_lock, irq);
     scene_published_us = time_us_64();
+}
+
+void publish_library()
+{
+    static char next[library_json_max];
+    const neotree::Library &lib = engine.director().library();
+    lib.describe(next, sizeof(next));
+    uint32_t irq = spin_lock_blocking(scene_lock);
+    memcpy(library_json, next, sizeof(library_json));
+    library_revision = lib.revision();
+    spin_unlock(scene_lock, irq);
+}
+
+size_t copy_snapshot(const char *src, size_t src_max, char *out, size_t cap)
+{
+    if (scene_lock == nullptr || cap == 0)
+    {
+        return 0;
+    }
+    uint32_t irq = spin_lock_blocking(scene_lock);
+    size_t n = strnlen(src, src_max);
+    n = n < cap - 1 ? n : cap - 1;
+    memcpy(out, src, n);
+    out[n] = '\0';
+    spin_unlock(scene_lock, irq);
+    return n;
+}
+
+// Saves the library once changes have settled.
+void store_when_settled(uint64_t now_us)
+{
+    const uint32_t rev = engine.director().library().revision();
+    if (rev != pending_revision)
+    {
+        pending_revision = rev;
+        pending_since_us = now_us;
+    }
+    if (pending_revision != stored_revision && now_us - pending_since_us >= store_settle_us)
+    {
+        scene_store_save(engine.director().library());
+        stored_revision = pending_revision;   // a failed save is logged; retried on the next change
+    }
 }
 
 float read_f32(const uint8_t *p)
@@ -155,12 +216,20 @@ void engine_host_init()
     config.max_ticks_per_advance = 8;
     config.canvas_seed = seed_canvas;
     engine.init(geometry, config, log_event);
-    // The base scene - what the tree boots into and reverts to - is the
-    // "Colors" preset: the Canvas alone.
-    engine.director().set_base_scene(neotree::preset_at(0));
-    engine.director().apply_scene(engine, neotree::preset_at(0), neotree::Transition::cut);
+    // The stored library (user presets and shows, the base scene, the
+    // startup show); the built-ins if there's none. Then the startup show,
+    // or the base scene - the "Colors" preset (the Canvas alone) by default.
+    neotree::Director &d = engine.director();
+    scene_store_load(d.library());
+    stored_revision = pending_revision = d.library().revision();
+    const uint8_t boot_show = d.library().boot_show();
+    if (boot_show == neotree::no_index || !d.play_show(engine, boot_show))
+    {
+        d.apply_scene(engine, d.library().base(), neotree::Transition::cut);
+    }
     scene_lock = spin_lock_init(spin_lock_claim_unused(true));
     publish_scene();
+    publish_library();
     last_frame_us = time_us_64();
 }
 
@@ -187,6 +256,79 @@ static bool apply_demo(uint8_t id)
     stats.demo = id;
     publish_scene();
     return true;
+}
+
+// SCENE_SAVE, LIBRARY_DELETE, SHOW_SET, SHOW_PLAY, SHOW_BOOT.
+static bool apply_library_command(const uint8_t *msg)
+{
+    using namespace neotree;
+    Director &d = engine.director();
+    Library &lib = d.library();
+    switch (static_cast<serial_msg_type>(msg[0]))
+    {
+    case serial_msg_type::SCENE_SAVE:
+    {
+        char name[name_size];
+        if (msg[1] == 0)
+        {
+            d.capture_scene(scratch_scene, "Base");
+            lib.set_base(scratch_scene);
+            return true;
+        }
+        if (msg[1] != 1 || !copy_name(name, reinterpret_cast<const char *>(msg + 2), protocol_name_len))
+        {
+            return false;
+        }
+        d.capture_scene(scratch_scene, name);
+        return lib.save_preset(scratch_scene, name) != no_index;
+    }
+    case serial_msg_type::LIBRARY_DELETE:
+        switch (msg[1])
+        {
+        case 0: lib.reset_base(); return true;
+        case 1: return lib.delete_preset(msg[2]);
+        case 2: return lib.delete_show(msg[2]);
+        default: return false;
+        }
+    case serial_msg_type::SHOW_SET:
+    {
+        const uint8_t count = msg[2];
+        if (count > max_show_entries || count == 0)
+        {
+            return false;
+        }
+        clear_show(scratch_show);
+        if (!copy_name(scratch_show.name, reinterpret_cast<const char *>(msg + 3), protocol_name_len))
+        {
+            return false;
+        }
+        scratch_show.loop = (msg[1] & 1) != 0;
+        scratch_show.shuffle = (msg[1] & 2) != 0;
+        const uint8_t *e = msg + 3 + protocol_name_len;
+        for (uint8_t i = 0; i < count; i++, e += 3)
+        {
+            if (e[0] >= lib.preset_count())
+            {
+                return false;
+            }
+            memcpy(scratch_show.entries[i].preset, lib.preset(e[0]).name, name_size);
+            scratch_show.entries[i].duration_s = static_cast<uint16_t>(e[1] | (e[2] << 8));
+        }
+        scratch_show.count = count;
+        return lib.save_show(scratch_show) != no_index;
+    }
+    case serial_msg_type::SHOW_PLAY:
+        if (msg[1] == no_index)
+        {
+            d.stop_show();
+            return true;
+        }
+        return d.play_show(engine, msg[1]);
+    case serial_msg_type::SHOW_BOOT:
+        return lib.set_boot_show(msg[1]);
+    default:
+        return false;
+    }
 }
 
 static bool apply_mode_command(const uint8_t *msg, size_t len)
@@ -228,6 +370,8 @@ static bool apply_mode_command(const uint8_t *msg, size_t len)
     case serial_msg_type::SLOT_END:
         if (slot == 0xFF && msg[2] == 1)
         {
+            // "Back to base" also ends a show - it's how to turn one off.
+            d.stop_show();
             d.revert_scene(engine);
             break;
         }
@@ -276,11 +420,18 @@ static bool apply_mode_command(const uint8_t *msg, size_t len)
         engine.input(slot, msg[2], read_f32(msg + 3));
         break;
     case serial_msg_type::PRESET:
-        if (msg[1] >= preset_count())
+        if (msg[1] >= d.library().preset_count())
         {
             return false;
         }
-        d.apply_scene(engine, preset_at(msg[1]));
+        d.apply_scene(engine, d.library().preset(msg[1]));
+        break;
+    case serial_msg_type::SCENE_SAVE:
+    case serial_msg_type::LIBRARY_DELETE:
+    case serial_msg_type::SHOW_SET:
+    case serial_msg_type::SHOW_PLAY:
+    case serial_msg_type::SHOW_BOOT:
+        ok = apply_library_command(msg);
         break;
     default:
         return false;
@@ -314,17 +465,22 @@ bool engine_host_mode_command(const uint8_t *msg, size_t len)
 
 size_t engine_host_scene_json(char *out, size_t cap)
 {
-    if (scene_lock == nullptr || cap == 0)
-    {
-        return 0;
-    }
-    uint32_t irq = spin_lock_blocking(scene_lock);
-    size_t n = strnlen(scene_json, scene_json_max);
-    n = n < cap - 1 ? n : cap - 1;
-    memcpy(out, scene_json, n);
-    out[n] = '\0';
-    spin_unlock(scene_lock, irq);
-    return n;
+    return copy_snapshot(scene_json, scene_json_max, out, cap);
+}
+
+uint32_t engine_host_scene_revision()
+{
+    return scene_revision;   // one aligned word: no lock needed to read it
+}
+
+size_t engine_host_library_json(char *out, size_t cap)
+{
+    return copy_snapshot(library_json, library_json_max, out, cap);
+}
+
+uint32_t engine_host_library_revision()
+{
+    return library_revision;
 }
 
 void engine_host_set_output(bool enabled)
@@ -372,11 +528,17 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     stats.last_advance_us = (uint32_t)(t1 - t0);
     stats.last_render_us = (uint32_t)(t2 - t1);
     uint32_t now_ms = (uint32_t)(t2 / 1000);
-    // Lifecycles move on their own: republish the scene state a few times a second.
-    if (t2 - scene_published_us > 250'000)
+    // Republish the scene state when it changes (apps are pushed it), and a
+    // few times a second anyway for the ages in the status report.
+    if (engine.director().revision() != scene_revision || t2 - scene_published_us > 250'000)
     {
         publish_scene();
     }
+    if (engine.director().library().revision() != library_revision)
+    {
+        publish_library();
+    }
+    store_when_settled(t2);
     if (stats.last_advance_us > stats.max_advance_us)
     {
         stats.max_advance_us = stats.last_advance_us;

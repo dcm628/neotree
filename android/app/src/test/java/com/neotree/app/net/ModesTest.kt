@@ -80,4 +80,61 @@ class ModesTest {
         assertEquals(0.75f, ByteBuffer.wrap(p, 3, 4).order(ByteOrder.LITTLE_ENDIAN).float)
         assertArrayEquals(byteArrayOf(1, 2, 3), p.copyOfRange(7, 10))
     }
+
+    @Test
+    fun parsesTheLibraryAndAPlayingShow() {
+        val lib = TreeLibrary.parse(
+            JSONObject(
+                """{"rev":7,"presets":[{"n":"Colors"},{"n":"Mine","u":1}],
+                "shows":[{"n":"Holiday evening","loop":1,"shuffle":0,"e":[[1,240],[-1,60]]},
+                         {"n":"Ours","u":1,"loop":0,"shuffle":1,"e":[[0,0]]}],
+                "boot":"Ours","base":{"custom":1,"slots":["rainbow","snow","",""]}}""",
+            ),
+        )
+        assertEquals(listOf("Colors", "Mine"), lib.presets.map { it.name })
+        assertTrue(lib.presets[1].user)
+        assertEquals(2, lib.shows.size)
+        assertEquals(ShowEntryInfo(-1, 60), lib.shows[0].entries[1])
+        assertTrue(lib.shows[1].user && lib.shows[1].shuffle && !lib.shows[1].loop)
+        assertEquals("Ours", lib.bootShow)
+        assertTrue(lib.baseCustom)
+        assertEquals("snow", lib.baseSlots[1])
+
+        val scene = SceneState.parse(
+            JSONObject(
+                """{"rev":42,"scene":"Holiday show","slots":[],"base":[],
+                "show":{"n":"Holiday evening","entry":"Holiday show","pos":1,"of":5,"round":2,"left":312}}""",
+            ),
+        )!!
+        assertEquals(42L, scene.revision)
+        assertEquals(ShowState("Holiday evening", "Holiday show", 1, 5, 2, 312), scene.show)
+        assertEquals(null, SceneState.parse(JSONObject("""{"scene":"x","slots":[],"show":null}"""))!!.show)
+    }
+
+    @Test
+    fun encodesLibraryCommands() {
+        val save = TreeProtocol.savePreset("Snowy")
+        assertEquals(22, save.size)
+        assertArrayEquals(byteArrayOf(31, 1, 'S'.code.toByte()), save.copyOfRange(0, 3))
+        assertEquals(0, save[7].toInt())   // NUL-padded after the name
+
+        // Names stop at 19 bytes without splitting a character.
+        assertEquals("abcdefghijklmnopqrs", TreeProtocol.storedName("abcdefghijklmnopqrstuvwxyz"))
+        assertEquals("abcdefghijklmnopqé", TreeProtocol.storedName("abcdefghijklmnopqé!")) // é is 2 bytes: 17 + 2 = 19 fits
+        assertEquals("abcdefghijklmnopqr", TreeProtocol.storedName("abcdefghijklmnopqré"))
+
+        val show = TreeProtocol.saveShow("Night", listOf(1 to 240, 5 to 90), loop = true, shuffle = true)
+        assertEquals(3 + 20 + 6, show.size)
+        assertArrayEquals(byteArrayOf(33, 3, 2), show.copyOfRange(0, 3))
+        assertArrayEquals(byteArrayOf(1, (240 and 0xFF).toByte(), 0, 5, 90, 0), show.copyOfRange(23, 29))
+
+        assertArrayEquals(byteArrayOf(34, 0xFF.toByte()), TreeProtocol.playShow(-1))
+        assertArrayEquals(byteArrayOf(35, 2), TreeProtocol.bootShow(2))
+        assertArrayEquals(byteArrayOf(36, 3), TreeProtocol.subscribe())
+        assertArrayEquals(byteArrayOf(32, 1, 6), TreeProtocol.deletePreset(6))
+
+        val life = TreeProtocol.slotLife(1, 600, 0, TreeProtocol.EndPolicy.CHAIN, nextMode = 8)
+        assertEquals(11, life.size)
+        assertArrayEquals(byteArrayOf(27, 1, 0x58, 0x02, 0, 0, 1, 0, 8, 1, 15), life)
+    }
 }

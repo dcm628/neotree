@@ -48,21 +48,40 @@ import com.neotree.app.net.Rgb
 import com.neotree.app.net.SlotState
 import com.neotree.app.net.TreeConnection
 import kotlin.math.roundToInt
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.text.input.KeyboardType
+import com.neotree.app.net.TreeProtocol
+import kotlinx.coroutines.delay
 
 /**
- * Modes page: preset scenes, then the scene's slots (bottom to top), each
- * with a mode picker and controls built from the mode's parameters as the
- * tree describes them - nothing about any mode is hard-coded here.
+ * Modes page: shows, scenes (presets, saving what's running, the base
+ * scene), then the scene's slots (bottom to top), each with a mode picker,
+ * controls built from the mode's parameters as the tree describes them, and
+ * what happens when it ends. The tree pushes every change, so nothing here
+ * polls; ages and time left count on locally between pushes.
  */
 @Composable
 fun ModesScreen(vm: TreeViewModel, contentPadding: PaddingValues) {
     val state by vm.connection.state.collectAsState()
     val catalog by vm.catalog.collectAsState()
-    val scene by vm.scene.collectAsState()
+    val live by vm.scene.collectAsState()
+    val library by vm.library.collectAsState()
     val status by vm.status.collectAsState()
     // Read so the page recomposes when this phone edits a parameter.
     vm.paramEdits.collectAsState().value
     val connected = state is TreeConnection.State.Connected
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(1000)
+            value = System.currentTimeMillis()
+        }
+    }
+    val elapsedSec = live?.let { ((now - it.atMs) / 1000).coerceAtLeast(0) } ?: 0L
 
     Column(
         modifier = Modifier
@@ -76,55 +95,37 @@ fun ModesScreen(vm: TreeViewModel, contentPadding: PaddingValues) {
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         val c = catalog
+        val lib = library
+        val scene = live?.scene
         when {
             !connected -> Hint("Not connected to the tree.")
-            c == null -> Hint("Asking the tree for its modes…")
+            c == null || lib == null -> Hint("Asking the tree for its modes…")
+            scene == null -> Hint("Waiting for the tree's scene…")
             else -> {
-                PresetsCard(vm, c, scene?.name)
-                val slots = scene?.slots
-                if (slots == null) {
-                    Hint("Waiting for the tree's scene…")
-                } else {
-                    slots.forEachIndexed { i, slot -> SlotCard(vm, c, i, slots.size, slot) }
-                }
+                ShowsCard(vm, lib, scene.show, elapsedSec)
+                ScenesCard(vm, c, lib, scene)
+                scene.slots.forEachIndexed { i, slot -> SlotCard(vm, c, i, scene.slots.size, slot, elapsedSec) }
             }
         }
     }
 }
 
 @Composable
-private fun Hint(text: String) {
+internal fun Hint(text: String) {
     Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable
-private fun ModesCard(content: @Composable () -> Unit) {
+internal fun ModesCard(content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { content() }
     }
 }
 
 @Composable
-private fun PresetsCard(vm: TreeViewModel, catalog: ModeCatalog, current: String?) {
-    ModesCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Scenes", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            TextButton(onClick = { vm.revertScene() }) { Text("Back to base") }
-        }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            catalog.presets.forEachIndexed { i, name ->
-                FilterChip(selected = name == current, onClick = { vm.applyPreset(i) }, label = { Text(name) })
-            }
-        }
-        if (!current.isNullOrEmpty() && current !in catalog.presets) {
-            Text("Now: $current", style = MaterialTheme.typography.bodySmall)
-        }
-    }
-}
-
-@Composable
-private fun SlotCard(vm: TreeViewModel, catalog: ModeCatalog, index: Int, count: Int, slot: SlotState) {
+private fun SlotCard(vm: TreeViewModel, catalog: ModeCatalog, index: Int, count: Int, slot: SlotState, elapsedSec: Long) {
     val mode = if (slot.empty) null else catalog.modes.getOrNull(slot.modeIndex)
+    var editLife by remember { mutableStateOf(false) }
     ModesCard {
         val where = when (index) {
             0 -> " · bottom"
@@ -134,7 +135,7 @@ private fun SlotCard(vm: TreeViewModel, catalog: ModeCatalog, index: Int, count:
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Slot ${index + 1}$where", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text(slotSummary(slot), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(slotSummary(slot, elapsedSec), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             ModePicker(catalog, mode) { vm.setSlotMode(index, it) }
         }
@@ -145,25 +146,104 @@ private fun SlotCard(vm: TreeViewModel, catalog: ModeCatalog, index: Int, count:
                 val value = vm.paramValue(key, slot.params.getOrNull(p.index), p.default)
                 ParamControl(p, value) { vm.setParam(key, it) }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { vm.endSlot(index) }) { Text("End") }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { editLife = true }) { Text("When it ends…") }
+                OutlinedButton(onClick = { vm.endSlot(index) }) { Text("End now") }
                 OutlinedButton(onClick = { vm.setSlotMode(index, -1) }) { Text("Clear") }
             }
         }
     }
+    if (editLife && mode != null) {
+        LifecycleDialog(
+            catalog = catalog,
+            slot = slot,
+            onDismiss = { editLife = false },
+            onSave = { duration, cycles, policy, next ->
+                editLife = false
+                vm.setLifecycle(index, duration, cycles, policy, next)
+            },
+        )
+    }
 }
 
-private fun slotSummary(slot: SlotState): String {
+private fun slotSummary(slot: SlotState, elapsedSec: Long): String {
     if (slot.empty) return "Empty"
-    val parts = mutableListOf("${slot.state} ${formatAge(slot.ageSec)}")
-    if (slot.durationSec > 0) parts += "of ${formatAge(slot.durationSec)}"
-    if (slot.cycles > 0) parts += "${slot.cycles} cycles"
+    // Ages count on between pushes while the mode runs.
+    val moving = slot.state == "running" || slot.state == "entering"
+    val age = slot.ageSec + if (moving) elapsedSec else 0
+    val parts = mutableListOf("${slot.state} ${formatDuration(age)}")
+    if (slot.durationSec > 0) parts += "of ${formatDuration(slot.durationSec)}"
+    if (slot.cycleLimit > 0) parts += "${slot.cycles} of ${slot.cycleLimit} cycles"
+    else if (slot.cycles > 0) parts += "${slot.cycles} cycles"
     if (slot.loops > 0) parts += "loop ${slot.loops + 1}"
     if (slot.policy.isNotEmpty() && slot.policy != "hold") parts += "then ${slot.policy}"
     return parts.joinToString(" · ")
 }
 
-private fun formatAge(s: Long) = if (s < 60) "${s}s" else "${s / 60}m ${s % 60}s"
+internal fun formatDuration(s: Long) = when {
+    s < 60 -> "${s}s"
+    s % 60 == 0L -> "${s / 60} min"
+    else -> "${s / 60}m ${s % 60}s"
+}
+
+/** What a slot does when its mode ends: after a time and/or a number of cycles, a policy. */
+@Composable
+private fun LifecycleDialog(
+    catalog: ModeCatalog,
+    slot: SlotState,
+    onDismiss: () -> Unit,
+    onSave: (durationSec: Int, cycles: Int, policy: TreeProtocol.EndPolicy, nextMode: Int) -> Unit,
+) {
+    var minutes by remember { mutableStateOf(if (slot.durationSec > 0) formatMinutes(slot.durationSec) else "") }
+    var cycles by remember { mutableStateOf(if (slot.cycleLimit > 0) slot.cycleLimit.toString() else "") }
+    var policy by remember { mutableStateOf(TreeProtocol.EndPolicy.from(slot.policy)) }
+    var next by remember { mutableIntStateOf(-1) }
+    val durationSec = ((minutes.replace(',', '.').toFloatOrNull() ?: 0f) * 60).roundToInt().coerceIn(0, 0xFFFF)
+    val cycleCount = cycles.toIntOrNull()?.coerceIn(0, 0xFFFF) ?: 0
+    val never = durationSec == 0 && cycleCount == 0
+    val chainOk = policy != TreeProtocol.EndPolicy.CHAIN || next >= 0
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("When it ends") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Ends after (either one; leave both empty to run until changed):", style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = minutes, onValueChange = { minutes = it }, label = { Text("Minutes") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = cycles, onValueChange = { cycles = it.filter(Char::isDigit) }, label = { Text("Cycles") },
+                        singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Text("Then:", style = MaterialTheme.typography.bodySmall)
+                TreeProtocol.EndPolicy.entries.forEach { p ->
+                    Row(Modifier.fillMaxWidth().clickable { policy = p }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = policy == p, onClick = { policy = p })
+                        Text(p.label)
+                    }
+                }
+                if (policy == TreeProtocol.EndPolicy.CHAIN) {
+                    ModePicker(catalog, catalog.modes.getOrNull(next)) { next = it }
+                }
+                if (never && policy != TreeProtocol.EndPolicy.HOLD) {
+                    Text("Set a time or a number of cycles for this to happen.", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(durationSec, cycleCount, policy, next) }, enabled = chainOk) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+private fun formatMinutes(sec: Long): String =
+    if (sec % 60 == 0L) (sec / 60).toString() else "%.1f".format(sec / 60f)
 
 @Composable
 private fun ModePicker(catalog: ModeCatalog, current: ModeInfo?, onPick: (Int) -> Unit) {

@@ -36,7 +36,8 @@ void safety_boot();
 // progress (core1_loops = its loop counter).
 void safety_poll(uint64_t now_us, uint32_t core1_loops);
 
-// Stops feeding the watchdog, for a deliberate watchdog_reboot().
+// Stops feeding the watchdog, for a deliberate watchdog_reboot() - which
+// the next boot then doesn't count as a crash.
 void safety_stop_feeding();
 
 // Reboots straight into BOOTSEL (the BOOTSEL protocol command).

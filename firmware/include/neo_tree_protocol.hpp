@@ -59,9 +59,8 @@ enum class serial_msg_type : uint8_t
     // Reboot into BOOTSEL (USB mass-storage flashing) - the network escape
     // hatch for when USB serial is unavailable. No payload.
     BOOTSEL,
-    // Runs a built-in engine demo (neotree/demos.hpp) in slot 1, above the
-    // Canvas: [22][demo id]. 0 = none (back to the Canvas). Stand-in for the
-    // mode picker until modes exist (M5).
+    // Runs one of the former demos (now modes) in slot 1, above the Canvas:
+    // [22][demo id]. 0 = none (back to the Canvas).
     DEMO,
     // Modes (engine/include/neotree/modes.hpp, director.hpp). Mode and
     // preset indices come from DESCRIBE.
@@ -71,11 +70,27 @@ enum class serial_msg_type : uint8_t
     SLOT_END,       // 26: [slot][op: 0 end (its policy), 1 revert, 2 remove, 3 restart]; slot 0xFF + op 1 = revert the scene
     SLOT_LIFE,      // 27: [slot][u16 LE duration s][u16 LE cycles][policy][repeats][next mode index][transition][transition x0.1 s]
     INPUT,          // 28: [slot][id][f32 LE value] - an input event for the slot's rules
-    PRESET,         // 29: [preset index]
+    PRESET,         // 29: [preset index] (built-ins, then the user's - see LIBRARY)
+    // The library (engine/include/neotree/library.hpp): presets, shows, the
+    // base scene. Preset and show indices come from LIBRARY; names are 20
+    // bytes, NUL-padded. Changes are stored in flash (neo_tree_scene_store).
+    LIBRARY,        // 30: -> [0x85][JSON]: presets, shows, base scene, startup show
+    SCENE_SAVE,     // 31: [0 = as the base scene, 1 = as a preset][name] - saves the live scene; a preset replaces the user preset of that name
+    LIBRARY_DELETE, // 32: [0 = base scene (back to the default), 1 = preset, 2 = show][index] - user items only
+    SHOW_SET,       // 33: [flags: bit 0 loop, bit 1 shuffle][count][name][(preset index, u16 LE seconds) x count] - saves a user show (replaces by name)
+    SHOW_PLAY,      // 34: [show index, 0xFF = stop (the scene stays)]
+    SHOW_BOOT,      // 35: [show index, 0xFF = none] - the show to play at power-up
+    // Network only: [flags: bit 0 scene, bit 1 library] - this connection is
+    // sent SCENE / LIBRARY frames whenever they change (and once now).
+    SUBSCRIBE,      // 36
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::PRESET) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::SUBSCRIBE) + 1;
+
+// SCENE_SAVE / SHOW_SET name field size (neotree::name_size).
+const size_t protocol_name_len = 20;
+const uint8_t protocol_max_show_entries = 16;
 
 // Set by TREE_OUTPUT (core0), read by the LED output path and reported to
 // network clients in HELLO (core1).

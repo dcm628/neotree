@@ -6,10 +6,13 @@
 #include <cstring>
 
 #include "neotree/engine.hpp"
+#include "json.hpp"
 
 namespace neotree {
 
 namespace {
+
+using detail::Json;
 
 const char *state_name(SlotState s)
 {
@@ -72,50 +75,6 @@ int param_index(const ModeDef *def, const char *id)
     return -1;
 }
 
-struct Json
-{
-    char *out;
-    size_t cap;
-    size_t len = 0;
-
-    void raw(const char *fmt, ...)
-    {
-        if (len + 1 >= cap)
-        {
-            return;
-        }
-        va_list args;
-        va_start(args, fmt);
-        int n = vsnprintf(out + len, cap - len, fmt, args);
-        va_end(args);
-        if (n > 0)
-        {
-            len = len + static_cast<size_t>(n) < cap ? len + static_cast<size_t>(n) : cap - 1;
-        }
-    }
-    // Numbers the same on every printf: integers plainly, otherwise up to
-    // three decimals with trailing zeros trimmed (the Pico's %g pads).
-    void num(double v)
-    {
-        char buf[24];
-        long whole = static_cast<long>(v);
-        if (static_cast<double>(whole) == v)
-        {
-            std::snprintf(buf, sizeof(buf), "%ld", whole);
-        }
-        else
-        {
-            std::snprintf(buf, sizeof(buf), "%.3f", v);
-            char *end = buf + std::strlen(buf) - 1;
-            while (end > buf && *end == '0')
-            {
-                *end-- = '\0';
-            }
-        }
-        raw("%s", buf);
-    }
-};
-
 }  // namespace
 
 // ---- SlotSpec ----
@@ -176,9 +135,11 @@ void Director::reset()
     {
         rt = SlotRuntime{};
     }
-    base_ = SceneSpec{};
+    library_.reset();
     current_ = SceneSpec{};
     scene_age_s_ = 0.0f;
+    show_.active = false;
+    revision_++;
     stats_ = {};
 }
 
@@ -192,6 +153,20 @@ void Director::set_opacity(Engine &engine, uint8_t slot, float k)
 
 void Director::clear_slot_content(Engine &engine, uint8_t slot)
 {
+    // A Canvas leaving keeps its pixels for when a Canvas comes back.
+    const SlotRuntime &rt = slots_[slot];
+    if (rt.info.state != SlotState::empty && rt.info.spec.mode == find_mode("canvas"))
+    {
+        auto bg = engine.scene().pixels(slot, 0);
+        auto fg = engine.scene().pixels(slot, 1);
+        Engine::CanvasMemory &memory = engine.canvas_memory();
+        for (size_t i = 0; i < bg.size() && i < fg.size(); i++)
+        {
+            memory.background[i] = bg[i];
+            memory.paint[i] = fg[i];
+        }
+        memory.saved = !bg.empty() && !fg.empty();
+    }
     engine.scene().clear_slot(slot);
     engine.destroy_entities_in_slot(slot);
     engine.behavior().clear_slot(slot);
@@ -206,6 +181,7 @@ void Director::setup_now(Engine &engine, uint8_t slot, const SlotSpec &spec, Tra
     rt.info.cycles_done = 0;
     rt.held = false;
     rt.pending = false;
+    revision_++;
     const ModeDef *def = mode_at(spec.mode);
     if (def == nullptr)
     {
@@ -242,6 +218,7 @@ void Director::start(Engine &engine, uint8_t slot, const SlotSpec &spec, Transit
         return;
     }
     // Fade the current mode out first; the new one starts when it's gone.
+    revision_++;
     rt.pending = true;
     rt.pending_spec = spec;
     rt.pending_transition = transition;
@@ -253,10 +230,15 @@ void Director::start(Engine &engine, uint8_t slot, const SlotSpec &spec, Transit
     }
 }
 
-void Director::apply_scene(Engine &engine, const SceneSpec &scene, Transition transition)
+void Director::apply_scene(Engine &engine, const SceneSpec &scene, Transition transition, bool timed)
 {
-    current_ = scene;
+    current_ = scene;   // (scene may be current_ itself: a scene looping)
+    if (!timed)
+    {
+        current_.duration_s = 0.0f;
+    }
     scene_age_s_ = 0.0f;
+    revision_++;
     for (uint8_t s = 0; s < max_slots; s++)
     {
         SlotRuntime &rt = slots_[s];
@@ -304,6 +286,7 @@ bool Director::set_param(Engine &engine, uint8_t slot, uint8_t index, const Para
         return false;
     }
     rt.info.spec.params[index] = value;
+    revision_++;
     ModeContext ctx{engine, slot, *def, rt.info.spec.params};
     if (def->on_param != nullptr && def->on_param(ctx, index))
     {
@@ -329,6 +312,7 @@ void Director::set_lifecycle(uint8_t slot, const Lifecycle &life, const SlotSpec
     }
     SlotRuntime &rt = slots_[slot];
     rt.info.spec.life = life;
+    revision_++;
     rt.has_chain = chain_to != nullptr;
     if (chain_to != nullptr)
     {
@@ -379,7 +363,7 @@ void Director::revert_slot(Engine &engine, uint8_t slot)
         return;
     }
     SlotRuntime &rt = slots_[slot];
-    const SlotSpec &spec = base_.specs[slot];
+    const SlotSpec &spec = library_.base().specs[slot];
     bool live = rt.info.state == SlotState::running || rt.info.state == SlotState::entering;
     if (live && rt.info.spec.same_mode_and_params(spec))
     {
@@ -403,6 +387,7 @@ void Director::begin_ending(Engine &engine, uint8_t slot, EndPolicy policy, uint
     SlotRuntime &rt = slots_[slot];
     rt.resolved = policy;
     rt.resolved_next = next;
+    revision_++;
     if (policy == EndPolicy::hold)
     {
         rt.held = true;
@@ -461,12 +446,12 @@ void Director::finish_ending(Engine &engine, uint8_t slot)
         }
         else
         {
-            start(engine, slot, base_.specs[slot], life.transition);
+            start(engine, slot, library_.base().specs[slot], life.transition);
         }
         break;
     case EndPolicy::revert:
         rt.info.loops_done = 0;
-        start(engine, slot, base_.specs[slot], life.transition);
+        start(engine, slot, library_.base().specs[slot], life.transition);
         break;
     case EndPolicy::remove:
         start(engine, slot, SlotSpec{}, life.transition);
@@ -480,6 +465,23 @@ void Director::finish_ending(Engine &engine, uint8_t slot)
 
 void Director::tick(Engine &engine, float dt)
 {
+    if (show_.active)
+    {
+        show_.age_s += dt;
+        // At the tick nearest the end: summing float ticks drifts.
+        if (show_.age_s >= show_.len_s - dt * 0.5f)
+        {
+            if (next_show_position(engine))
+            {
+                start_show_entry(engine);
+            }
+            else
+            {
+                end_show(engine);
+            }
+        }
+    }
+
     scene_age_s_ += dt;
     if (current_.duration_s > 0.0f && scene_age_s_ >= current_.duration_s)
     {
@@ -499,7 +501,7 @@ void Director::tick(Engine &engine, float dt)
             break;
         }
         case EndPolicy::revert:
-            apply_scene(engine, base_);
+            apply_scene(engine, library_.base());
             break;
         default:
             current_.duration_s = 0.0f;   // hold: no further scene ending
@@ -528,6 +530,7 @@ void Director::tick(Engine &engine, float dt)
             if (rt.phase_t >= rt.phase_len)
             {
                 rt.info.state = SlotState::running;
+                revision_++;
                 set_opacity(engine, s, 1.0f);
             }
             else
@@ -590,7 +593,9 @@ size_t Director::describe_state(char *out, size_t cap) const
         return 0;
     }
     Json j{out, cap};
-    j.raw("{\"scene\":\"%s\",\"slots\":[", current_.name);
+    j.raw("{\"rev\":%lu,\"scene\":", static_cast<unsigned long>(revision_));
+    j.str(current_.name);
+    j.raw(",\"slots\":[");
     for (uint8_t s = 0; s < max_slots; s++)
     {
         const SlotRuntime &rt = slots_[s];
@@ -623,112 +628,188 @@ size_t Director::describe_state(char *out, size_t cap) const
     j.raw("],\"base\":[");
     for (uint8_t s = 0; s < max_slots; s++)
     {
-        j.raw("%s\"%s\"", s ? "," : "", mode_id(base_.specs[s].mode));
+        j.raw("%s\"%s\"", s ? "," : "", mode_id(library_.base().specs[s].mode));
     }
-    j.raw("]}");
+    j.raw("],\"show\":");
+    if (show_.active)
+    {
+        const ShowStatus st = show_status();
+        j.raw("{\"n\":");
+        j.str(st.name);
+        j.raw(",\"entry\":");
+        j.str(st.preset);
+        j.raw(",\"pos\":%u,\"of\":%u,\"round\":%lu,\"left\":%ld}", (unsigned)st.position, (unsigned)st.count,
+              static_cast<unsigned long>(st.rounds), static_cast<long>(st.entry_len_s - st.entry_age_s));
+    }
+    else
+    {
+        j.raw("null");
+    }
+    j.raw("}");
     return j.len;
 }
 
-// ---- presets ----
+// ---- capturing the live scene ----
 
-namespace {
-
-constexpr uint8_t count_of_presets = 5;
-SceneSpec presets[count_of_presets];
-bool presets_built = false;
-
-void name_scene(SceneSpec &scene, const char *name)
+void Director::capture_scene(SceneSpec &out, const char *name) const
 {
-    std::snprintf(scene.name, sizeof(scene.name), "%s", name);
+    out = current_;   // keeps the chain targets (specs 4-7) and the scene's own ending
+    std::snprintf(out.name, sizeof(out.name), "%s", name);
+    for (uint8_t s = 0; s < max_slots; s++)
+    {
+        const SlotRuntime &rt = slots_[s];
+        SlotSpec &spec = out.specs[s];
+        if (rt.info.state == SlotState::leaving && rt.pending)
+        {
+            spec = rt.pending_spec;   // what the slot is changing to
+        }
+        else if (rt.info.state == SlotState::empty)
+        {
+            spec = SlotSpec{};
+        }
+        else
+        {
+            spec = rt.info.spec;
+        }
+        // A chain target set over the protocol isn't one of the scene's
+        // specs: give it a free chain-target spec so the saved scene chains too.
+        if (rt.has_chain && spec.mode != no_mode)
+        {
+            for (uint8_t k = max_slots; k < max_specs; k++)
+            {
+                if (out.specs[k].mode == no_mode)
+                {
+                    out.specs[k] = rt.chain_spec;
+                    spec.life.next = k;
+                    break;
+                }
+            }
+        }
+    }
 }
 
-void build_presets()
+// ---- shows ----
+
+bool Director::play_show(Engine &engine, uint8_t index)
 {
-    if (presets_built)
+    if (index >= library_.show_count() || library_.show(index).count == 0)
+    {
+        return false;
+    }
+    show_.show = library_.show(index);
+    show_.active = true;
+    show_.rounds = 0;
+    show_.pos = 0;
+    order_show(engine);
+    engine.note("show: %s", show_.show.name);
+    start_show_entry(engine);
+    return show_.active;
+}
+
+void Director::stop_show()
+{
+    if (show_.active)
+    {
+        show_.active = false;
+        revision_++;
+    }
+}
+
+ShowStatus Director::show_status() const
+{
+    ShowStatus st;
+    if (!show_.active)
+    {
+        return st;
+    }
+    st.playing = true;
+    st.name = show_.show.name;
+    st.preset = show_.show.entries[show_.order[show_.pos]].preset;
+    st.position = show_.pos;
+    st.count = show_.show.count;
+    st.entry_age_s = show_.age_s;
+    st.entry_len_s = show_.len_s;
+    st.rounds = show_.rounds;
+    return st;
+}
+
+void Director::order_show(Engine &engine)
+{
+    const uint8_t n = show_.show.count;
+    const uint8_t last = n > 0 ? show_.order[n - 1] : 0;
+    for (uint8_t i = 0; i < n; i++)
+    {
+        show_.order[i] = i;
+    }
+    if (!show_.show.shuffle || n < 2)
     {
         return;
     }
-    presets_built = true;
-
-    // 0: today's manual colors - the default base scene.
-    SceneSpec &colors = presets[0];
-    name_scene(colors, "Colors");
-    colors.specs[0] = SlotSpec::of("canvas");
-
-    // 1: two modes stacked - snow (no backdrop) over a slow rainbow.
-    SceneSpec &snowbow = presets[1];
-    name_scene(snowbow, "Snow on rainbow");
-    snowbow.specs[0] = SlotSpec::of("rainbow").set("speed", 0.08f).set("brightness", 0.45f);
-    snowbow.specs[1] = SlotSpec::of("snow").set("backdrop", 0.0f);
-
-    // 2: a show - fireworks for 30 s, then snow for 45 s, then fireworks
-    // again, forever, over a night-sky gradient.
-    SceneSpec &show = presets[2];
-    name_scene(show, "Holiday show");
-    show.specs[0] = SlotSpec::of("gradient").set("bottom", Rgb{0.0f, 0.02f, 0.12f}).set("top", Rgb{0.08f, 0.0f, 0.1f});
-    show.specs[1] = SlotSpec::of("fireworks").set("backdrop", 0.0f);
-    show.specs[1].life.duration_s = 30.0f;
-    show.specs[1].life.policy = EndPolicy::chain;
-    show.specs[1].life.next = 4;
-    show.specs[4] = SlotSpec::of("snow").set("backdrop", 0.0f);
-    show.specs[4].life.duration_s = 45.0f;
-    show.specs[4].life.policy = EndPolicy::chain;
-    show.specs[4].life.next = 1;
-    show.specs[4].life.drain_timeout_s = 14.0f;   // flakes live 12 s: let them all settle and fade
-
-    // 3: the Pi's three sweeps in turn, by cycles: 5 linear passes, 3
-    // drops, 3 launches, repeat.
-    SceneSpec &sweeps = presets[3];
-    name_scene(sweeps, "Sweep tour");
-    sweeps.specs[0] = SlotSpec::of("solid").set("color", to_rgb(0, 140, 0));
-    sweeps.specs[1] = SlotSpec::of("sweep").set("motion", 0.0f).set("backdrop", 0.0f);
-    sweeps.specs[1].life.cycles = 5;
-    sweeps.specs[1].life.policy = EndPolicy::chain;
-    sweeps.specs[1].life.next = 4;
-    sweeps.specs[4] = SlotSpec::of("sweep").set("motion", 1.0f).set("backdrop", 0.0f);
-    sweeps.specs[4].life.cycles = 3;
-    sweeps.specs[4].life.policy = EndPolicy::chain;
-    sweeps.specs[4].life.next = 5;
-    sweeps.specs[5] = SlotSpec::of("sweep").set("motion", 2.0f).set("backdrop", 0.0f);
-    sweeps.specs[5].life.cycles = 3;
-    sweeps.specs[5].life.policy = EndPolicy::chain;
-    sweeps.specs[5].life.next = 1;
-
-    // 4: a dozen fireworks over the family's colors, then back to just the
-    // colors (revert: the base scene has nothing in slot 1).
-    SceneSpec &finale = presets[4];
-    name_scene(finale, "Fireworks finale");
-    finale.specs[0] = SlotSpec::of("canvas");
-    finale.specs[1] = SlotSpec::of("fireworks").set("backdrop", 0.0f).set("rate", 1.5f);
-    finale.specs[1].life.cycles = 12;
-    finale.specs[1].life.policy = EndPolicy::revert;
-}
-
-}  // namespace
-
-uint8_t preset_count()
-{
-    build_presets();
-    return count_of_presets;
-}
-
-const SceneSpec &preset_at(uint8_t index)
-{
-    build_presets();
-    return presets[index < count_of_presets ? index : 0];
-}
-
-uint8_t find_preset(const char *name)
-{
-    build_presets();
-    for (uint8_t i = 0; i < count_of_presets; i++)
+    for (uint8_t i = static_cast<uint8_t>(n - 1); i > 0; i--)
     {
-        if (std::strcmp(presets[i].name, name) == 0)
+        const uint8_t k = static_cast<uint8_t>(engine.rng().below(i + 1u));
+        const uint8_t t = show_.order[i];
+        show_.order[i] = show_.order[k];
+        show_.order[k] = t;
+    }
+    // Never the same entry twice in a row across rounds.
+    if (show_.rounds > 0 && show_.order[0] == last)
+    {
+        show_.order[0] = show_.order[1];
+        show_.order[1] = last;
+    }
+}
+
+bool Director::next_show_position(Engine &engine)
+{
+    if (++show_.pos < show_.show.count)
+    {
+        return true;
+    }
+    if (!show_.show.loop)
+    {
+        return false;
+    }
+    show_.rounds++;
+    stats_.show_rounds++;
+    show_.pos = 0;
+    order_show(engine);
+    return true;
+}
+
+void Director::start_show_entry(Engine &engine)
+{
+    // Entries whose preset has been deleted are skipped; a show with none
+    // left ends.
+    for (uint8_t tries = 0; tries <= show_.show.count; tries++)
+    {
+        const ShowEntry &e = show_.show.entries[show_.order[show_.pos]];
+        const uint8_t p = library_.find_preset(e.preset);
+        if (p != no_index)
         {
-            return i;
+            const SceneSpec &scene = library_.preset(p);
+            show_.len_s = e.duration_s > 0      ? static_cast<float>(e.duration_s)
+                          : scene.duration_s > 0 ? scene.duration_s
+                                                 : static_cast<float>(default_entry_s);
+            show_.age_s = 0.0f;
+            stats_.show_entries++;
+            apply_scene(engine, scene, Transition::fade, false);
+            return;
+        }
+        stats_.show_skips++;
+        if (!next_show_position(engine))
+        {
+            break;
         }
     }
-    return 0xFF;
+    end_show(engine);
+}
+
+void Director::end_show(Engine &engine)
+{
+    engine.note("show: %s finished", show_.show.name);
+    show_.active = false;
+    revert_scene(engine);
 }
 
 }  // namespace neotree

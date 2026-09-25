@@ -178,6 +178,10 @@ int main(int argc, char **argv)
                 "scene loops %u\n",
                 (unsigned)ds.ends[0], (unsigned)ds.ends[1], (unsigned)ds.ends[2], (unsigned)ds.ends[3],
                 (unsigned)ds.drain_timeouts, (unsigned)ds.scene_loops);
+    const neotree::ShowStatus show = engine.director().show_status();
+    std::printf("show          %s: %u entries played, %u rounds, %u skipped%s\n", show.playing ? show.name : "none",
+                (unsigned)ds.show_entries, (unsigned)ds.show_rounds, (unsigned)ds.show_skips,
+                show.playing ? ", still playing" : "");
     std::printf("mode starts  ");
     for (uint8_t m = 0; m < neotree::mode_count(); m++)
     {

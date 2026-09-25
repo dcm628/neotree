@@ -39,8 +39,10 @@ struct engine_host_stats_t
     uint16_t peak_entities;
 };
 
-// A frame whose engine work takes longer than this is counted as slow.
-constexpr uint32_t engine_slow_frame_us = 2000;
+// A frame whose engine work takes longer than one frame at the target rate
+// is counted as slow: it can't keep up. (It was 2 ms from M1, when the
+// engine drew nothing; real scenes take 3-10 ms, so every frame counted.)
+constexpr uint32_t engine_slow_frame_us = 1'000'000 / NEOTREE_FRAME_RATE;
 
 // Builds the LED geometry from the position config, starts the engine, and
 // sets up the base scene (the Canvas, seeded with the boot pattern from
@@ -60,17 +62,25 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count);
 // above the Canvas; 0 empties it. Returns false for an unknown id.
 bool engine_host_set_demo(uint8_t demo);
 
-// SLOT_SET, PARAM_SET, SLOT_END, SLOT_LIFE, INPUT and PRESET (see
-// neo_tree_protocol.hpp), at most engine_mode_command_max_len bytes (a
+// SLOT_SET, PARAM_SET, SLOT_END, SLOT_LIFE, INPUT, PRESET and the library
+// commands (see neo_tree_protocol.hpp), at most engine_mode_command_max_len bytes (a
 // zero-padded message may be passed with that length). The command is queued
 // and applied at the start of the next frame; returns false if the queue is
 // full or the message too long. Invalid commands are logged when applied.
-constexpr size_t engine_mode_command_max_len = 12;
+constexpr size_t engine_mode_command_max_len = 72;   // SHOW_SET with 16 entries: 71
 bool engine_host_mode_command(const uint8_t *msg, size_t len);
 
 // The scene's state as JSON (director describe_state), as last published by
 // core0. Safe from either core. Returns the length written.
 size_t engine_host_scene_json(char *out, size_t cap);
+// The published scene's revision: changes when what's running changes (not
+// as time passes) - when to push it to apps.
+uint32_t engine_host_scene_revision();
+
+// The library as JSON (Library::describe) and its revision, as last
+// published by core0. Safe from either core.
+size_t engine_host_library_json(char *out, size_t cap);
+uint32_t engine_host_library_revision();
 
 // Lights on/off (TREE_OUTPUT) - the master stage; the scene is untouched.
 void engine_host_set_output(bool enabled);

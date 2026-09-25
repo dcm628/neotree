@@ -12,6 +12,9 @@ constexpr uint32_t scratch_magic = 0x4e544231;   // "NTB1"
 // scratch[1] value marking a crash-loop escape into BOOTSEL, so the boot
 // after the reflash still reports the fault that caused it.
 constexpr uint32_t escaped_marker = 0xE5CA9E00;
+// scratch[1] value marking a requested reboot (REBOOT command): the watchdog
+// did it, but it isn't a crash.
+constexpr uint32_t planned_marker = 0x9EB0070;
 constexpr uint32_t watchdog_timeout_ms = 8000;
 constexpr uint32_t crashes_before_bootsel = 3;
 constexpr uint64_t stable_after_us = 60'000'000;
@@ -36,7 +39,8 @@ void safety_boot()
 {
     bool valid = scratch[0] == scratch_magic;
     bool escaped = valid && scratch[1] == escaped_marker;
-    report.crash_reboot = watchdog_caused_reboot();
+    bool planned = valid && scratch[1] == planned_marker;
+    report.crash_reboot = watchdog_caused_reboot() && !planned;
     report.crash_count = report.crash_reboot ? (valid && !escaped ? scratch[1] : 0) + 1 : 0;
     // A recorded fault counts only after a crash: this boot followed an
     // unplanned reset, or a crash-loop escape to BOOTSEL (and reflash).
@@ -87,6 +91,7 @@ void safety_poll(uint64_t now_us, uint32_t core1_loops)
 void safety_stop_feeding()
 {
     stop_feeding = true;
+    scratch[1] = planned_marker;   // so the next boot doesn't count it as a crash
 }
 
 void safety_reboot_to_bootsel()

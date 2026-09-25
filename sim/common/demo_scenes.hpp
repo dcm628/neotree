@@ -1,7 +1,8 @@
 #pragma once
-// Scenes for the host tools, by name: a preset (neotree/director.hpp - by
-// its name in lowercase with underscores, e.g. "holiday_show"), a single
-// mode id (e.g. "snow", run in slot 0), or "empty".
+// Scenes for the host tools, by name: a preset or a built-in show
+// (neotree/library.hpp - by its name in lowercase with underscores, e.g.
+// "holiday_show", "holiday_evening"), a single mode id (e.g. "snow", run in
+// slot 0), or "empty".
 
 #include <string>
 
@@ -12,7 +13,7 @@ namespace neotree::sim {
 // Names accepted by setup_scene(), for help text.
 std::string scene_names();
 
-// Every accepted name, presets first (for cycling in the viewer).
+// Every accepted name: presets, then shows, then modes (for cycling in the viewer).
 int scene_count();
 std::string scene_name(int index);
 

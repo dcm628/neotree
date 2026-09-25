@@ -9,6 +9,7 @@
 add_library(neotree_engine STATIC
     src/behavior.cpp
     src/director.cpp
+    src/library.cpp
     src/engine.cpp
     src/entity.cpp
     src/geometry.cpp

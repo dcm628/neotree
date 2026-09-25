@@ -178,6 +178,21 @@ TEST_CASE("director: reverting leaves an unchanged Canvas - and its paint - alon
     CHECK(dir().slot(1).state == SlotState::empty);
 }
 
+TEST_CASE("director: the Canvas keeps its colors while other scenes play")
+{
+    setup();
+    dir().apply_scene(engine, preset_at(find_preset("Colors")), Transition::cut);
+    engine.scene().pixels(0, 0)[5] = {1, 2, 3, 255};
+    engine.scene().pixels(0, 1)[6] = {9, 8, 7, 255};
+    dir().apply_scene(engine, preset_at(find_preset("Sweep tour")), Transition::cut);
+    seconds(3.0f);
+    CHECK(mode_of(0) == find_mode("solid"));
+    dir().apply_scene(engine, preset_at(find_preset("Colors")), Transition::cut);
+    CHECK(mode_of(0) == find_mode("canvas"));
+    CHECK(engine.scene().pixels(0, 0)[5].b == 3);
+    CHECK(engine.scene().pixels(0, 1)[6].r == 9);
+}
+
 TEST_CASE("director: parameters change live where supported, otherwise the mode rebuilds in place")
 {
     setup();

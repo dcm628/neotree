@@ -36,7 +36,9 @@ data class LogEntry(
  * (firmware/include/neo_tree_net_server.hpp). Frames are
  * [uint16 LE length][payload] both ways: the tree greets with HELLO, then
  * answers every command with an ACK carrying an AckStatus. A STATUS_REQUEST
- * also gets a STATUS frame, and a DESCRIBE a DESCRIBE frame, just before the ACK.
+ * also gets a STATUS frame, and a DESCRIBE a DESCRIBE frame, just before the
+ * ACK. After SUBSCRIBE the tree also pushes SCENE and LIBRARY frames whenever
+ * they change - at any time, including between a command and its ACK.
  */
 class TreeConnection(private val scope: CoroutineScope) {
 
@@ -58,6 +60,15 @@ class TreeConnection(private val scope: CoroutineScope) {
     private val _catalog = MutableStateFlow<ModeCatalog?>(null)
     /** The tree's modes and presets, from its latest DESCRIBE reply (null until one arrives). */
     val catalog: StateFlow<ModeCatalog?> = _catalog.asStateFlow()
+
+    /** The scene as last pushed (after SUBSCRIBE), with when it arrived. */
+    data class PushedScene(val scene: SceneState, val receivedAtMs: Long)
+    private val _scene = MutableStateFlow<PushedScene?>(null)
+    val scene: StateFlow<PushedScene?> = _scene.asStateFlow()
+
+    private val _library = MutableStateFlow<TreeLibrary?>(null)
+    /** The tree's library, from its latest LIBRARY reply or push. */
+    val library: StateFlow<TreeLibrary?> = _library.asStateFlow()
 
     private val _log = MutableStateFlow<List<LogEntry>>(emptyList())
     /** Recent commands and connection events, newest first. */
@@ -192,6 +203,14 @@ class TreeConnection(private val scope: CoroutineScope) {
                     runCatching { ModeCatalog.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
                         .onSuccess { _catalog.value = it }
                         .onFailure { log("DESCRIBE reply wasn't valid JSON (${frame.size}B)", ok = false) }
+                } else if (type == TreeProtocol.REPLY_SCENE) {
+                    runCatching { SceneState.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
+                        .onSuccess { s -> if (s != null) _scene.value = PushedScene(s, System.currentTimeMillis()) }
+                        .onFailure { log("SCENE push wasn't valid JSON (${frame.size}B)", ok = false) }
+                } else if (type == TreeProtocol.REPLY_LIBRARY) {
+                    runCatching { TreeLibrary.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
+                        .onSuccess { _library.value = it }
+                        .onFailure { log("LIBRARY reply wasn't valid JSON (${frame.size}B)", ok = false) }
                 }
             }
         } catch (e: IOException) {

@@ -12,6 +12,7 @@
 #include "lwip/stats.h"
 
 #include "neo_tree_command_queue.hpp"
+#include "neo_tree_engine.hpp"
 #include "neo_tree_protocol.hpp"
 #include "neo_tree_status.hpp"
 #include "neo_tree_event_log.hpp"
@@ -33,6 +34,12 @@ static const u32_t keepalive_count = 3;
 // ever have outstanding.
 static const size_t pending_max = 128;
 
+// SUBSCRIBE flags, and the least time between pushes (a slider drag changes
+// the scene every frame; phones need a few updates a second at most).
+static const uint8_t subscribe_scene = 0x01;
+static const uint8_t subscribe_library = 0x02;
+static const uint64_t push_interval_us = 200'000;
+
 struct client_slot
 {
     struct tcp_pcb *pcb;  // nullptr = free
@@ -50,10 +57,17 @@ struct client_slot
     uint8_t pending[pending_max];
     uint16_t pending_len;
     bool overflowed;
+    // SUBSCRIBE: what this client is pushed, what it was last sent, and
+    // what it must be sent regardless (just subscribed).
+    uint8_t subscribed;
+    uint8_t push_now;
+    uint32_t scene_rev_sent;
+    uint32_t library_rev_sent;
 };
 
 static client_slot clients[net_server_max_clients];
 static struct tcp_pcb *listen_pcb = nullptr;
+static volatile bool push_requested = false;   // a client just subscribed
 static volatile uint32_t commands_received = 0;
 static volatile net_server_diag_t diag = {};
 
@@ -178,6 +192,8 @@ static void reset_slot(client_slot *c)
     c->discarding = false;
     c->pending_len = 0;
     c->overflowed = false;
+    c->subscribed = 0;
+    c->push_now = 0;
 }
 
 static void detach_callbacks(struct tcp_pcb *pcb)
@@ -219,22 +235,38 @@ static err_t drop_overflowed_client(client_slot *c)
     return ERR_ABRT;
 }
 
-// Answers a STATUS_REQUEST with a STATUS frame ([len][0x82][JSON]) right here
-// on core1 - it doesn't touch core0's state machine, so it isn't queued. One
-// all-or-nothing tcp_write so a partial frame can never corrupt the stream;
-// if it can't go now it's dropped (the client polls again), and skipped
-// while ACKs are backlogged so it can't starve them.
-static void send_status(client_slot *c, bool describe = false)
+// Builds a JSON frame ([len][type][JSON]) of the given reply type into frame
+// (3 + status_json_max bytes) and sends it in one all-or-nothing tcp_write,
+// so a partial frame can never corrupt the stream. Not while ACKs are
+// backlogged, so it can't starve them. Returns false if it couldn't go now.
+static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame)
 {
-    static uint8_t frame[3 + status_json_max];   // static: IRQ context, one core
-    // DESCRIBE is static data (the built-in modes), safe to read from core1.
-    size_t json_len = describe ? neotree::describe_modes(reinterpret_cast<char *>(frame + 3), status_json_max)
-                               : status_build_json(reinterpret_cast<char *>(frame + 3), status_json_max);
+    char *json = reinterpret_cast<char *>(frame + 3);
+    size_t json_len = 0;
+    switch (type)
+    {
+    case net_reply_type::STATUS: json_len = status_build_json(json, status_json_max); break;
+    // The built-in modes: static data, safe to read from core1.
+    case net_reply_type::DESCRIBE: json_len = neotree::describe_modes(json, status_json_max); break;
+    // Snapshots core0 publishes.
+    case net_reply_type::SCENE: json_len = engine_host_scene_json(json, status_json_max); break;
+    case net_reply_type::LIBRARY: json_len = engine_host_library_json(json, status_json_max); break;
+    default: return false;
+    }
     size_t payload_len = 1 + json_len;
     frame[0] = payload_len & 0xFF;
     frame[1] = payload_len >> 8;
-    frame[2] = static_cast<uint8_t>(describe ? net_reply_type::DESCRIBE : net_reply_type::STATUS);
-    if (c->pending_len > 0 || tcp_write(c->pcb, frame, 2 + payload_len, TCP_WRITE_FLAG_COPY) != ERR_OK)
+    frame[2] = static_cast<uint8_t>(type);
+    return c->pending_len == 0 && tcp_write(c->pcb, frame, 2 + payload_len, TCP_WRITE_FLAG_COPY) == ERR_OK;
+}
+
+// Answers STATUS_REQUEST, DESCRIBE and LIBRARY right here on core1 - they
+// don't touch core0's state machine, so they aren't queued. If the reply
+// can't go now it's dropped (the client asks again).
+static void send_reply(client_slot *c, net_reply_type type)
+{
+    static uint8_t frame[3 + status_json_max];   // static: IRQ context, one core
+    if (!send_json(c, type, frame))
     {
         diag.status_dropped = diag.status_dropped + 1;
     }
@@ -258,12 +290,25 @@ static net_status handle_command(client_slot *c)
     }
     if (type == static_cast<uint8_t>(serial_msg_type::STATUS_REQUEST))
     {
-        send_status(c);   // then the usual ACK, so every command still gets one
+        send_reply(c, net_reply_type::STATUS);   // then the usual ACK, so every command still gets one
         return net_status::QUEUED;
     }
     if (type == static_cast<uint8_t>(serial_msg_type::DESCRIBE))
     {
-        send_status(c, true);
+        send_reply(c, net_reply_type::DESCRIBE);
+        return net_status::QUEUED;
+    }
+    if (type == static_cast<uint8_t>(serial_msg_type::LIBRARY))
+    {
+        send_reply(c, net_reply_type::LIBRARY);
+        return net_status::QUEUED;
+    }
+    if (type == static_cast<uint8_t>(serial_msg_type::SUBSCRIBE))
+    {
+        // Pushed from core1's loop (net_server_poll), starting with both now.
+        c->subscribed = c->msg[1] & (subscribe_scene | subscribe_library);
+        c->push_now = c->subscribed;
+        push_requested = true;
         return net_status::QUEUED;
     }
     if (!command_queue_push(command_source::network, slot_index(c) + 1, c->msg, c->msg_len))
@@ -499,8 +544,77 @@ bool net_server_start()
     return ok;
 }
 
+// Pushes the scene and library to subscribed clients when they change.
+// core1 loop context, so it takes the lwIP lock; a push that can't go now
+// (lwIP out of memory, ACKs backlogged) is retried on a later poll.
+static void push_changes()
+{
+    static uint64_t last_push_us = 0;
+    static uint32_t last_scene_rev = 0;
+    static uint32_t last_library_rev = 0;
+    static uint8_t frame[3 + status_json_max];   // static: keep it off core1's stack
+    const uint64_t now = time_us_64();
+    const uint32_t scene_rev = engine_host_scene_revision();
+    const uint32_t library_rev = engine_host_library_revision();
+    const bool changed = scene_rev != last_scene_rev || library_rev != last_library_rev || push_requested;
+    if (!changed || now - last_push_us < push_interval_us)
+    {
+        return;
+    }
+    push_requested = false;
+    bool retry = false;
+    cyw43_arch_lwip_begin();
+    for (auto &c : clients)
+    {
+        if (c.pcb == nullptr || c.subscribed == 0)
+        {
+            continue;
+        }
+        bool wrote = false;
+        if ((c.subscribed & subscribe_scene) && ((c.push_now & subscribe_scene) || c.scene_rev_sent != scene_rev))
+        {
+            if (send_json(&c, net_reply_type::SCENE, frame))
+            {
+                c.scene_rev_sent = scene_rev;
+                c.push_now &= ~subscribe_scene;
+                wrote = true;
+            }
+            else
+            {
+                retry = true;
+            }
+        }
+        if ((c.subscribed & subscribe_library) &&
+            ((c.push_now & subscribe_library) || c.library_rev_sent != library_rev))
+        {
+            if (send_json(&c, net_reply_type::LIBRARY, frame))
+            {
+                c.library_rev_sent = library_rev;
+                c.push_now &= ~subscribe_library;
+                wrote = true;
+            }
+            else
+            {
+                retry = true;
+            }
+        }
+        if (wrote)
+        {
+            flush(c.pcb);
+        }
+    }
+    cyw43_arch_lwip_end();
+    last_push_us = now;
+    if (!retry)
+    {
+        last_scene_rev = scene_rev;
+        last_library_rev = library_rev;
+    }
+}
+
 void net_server_poll()
 {
+    push_changes();
     while (event_tail != event_head)
     {
         const net_event &e = event_log[event_tail];

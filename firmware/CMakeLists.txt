@@ -69,6 +69,7 @@ target_sources(neo_tree PRIVATE
                 src/neo_tree_engine.cpp
                 src/neo_tree_loop_monitor.cpp
                 src/neo_tree_safety.cpp
+                src/neo_tree_scene_store.cpp
                 )
 
 # The rendering engine (portable library shared with the host simulator).

@@ -1,6 +1,6 @@
 # NeoTree Rendering Engine — Design
 
-**Status:** Design agreed · M1-M4 done · M5 (modes, stacking, lifecycle, app mode picker) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
+**Status:** Design agreed · M1-M5 done · M6 (shows, stored library, pushes to phones, app scene editing) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
 
 **Related:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) §6 defers volumetric
 rendering to this document. [`LED_OUTPUT.md`](./LED_OUTPUT.md) covers the
@@ -363,9 +363,10 @@ revert. Example: `pong` → on `"collided"` chain to `burst` → loop back to
 
 A scene has the same end conditions (duration, a designated slot ending, a
 rule action) and the same policies at the whole-stack level: **loop**,
-**next scene**, **revert to base**, **hold**. A **show** (later) is simply a
-list of scenes whose policies point to each other, plus ordering options
-(sequential, shuffle) and a loop setting.
+**next scene**, **revert to base**, **hold**. A **show** is a list of presets,
+each played for a duration, in order or shuffled, looping or not (built in
+M6 - see §15).
+Presets are referenced by name, so deleting one makes the show skip it.
 
 ### 9.3 Base scene **[DECIDED]**
 
@@ -523,7 +524,7 @@ configuration (stack editing, layer/entity/rule settings, presets, shows).
 | M3 ✅ | Entities: shapes, falloff, integration, global forces, boundaries, surface constraint, z-culling | Gravity and launch sweeps recreated as entity demos, on the tree and in the sim |
 | M4 ✅ | Collision groups, response table, events, rules/actions, templates, emitters, runaway protection | Snow and fireworks demos; ball-collision spawn chain stays bounded |
 | M5 ✅ | Modes, slots (stacking), lifecycle (end conditions, loop/chain/revert/remove/hold), transitions, scene description format, base scene as any scene; describe/select/param/layer protocol; app: mode picker and parameters | Stacked snow-over-rainbow; a chained scene verified over hours of sim time |
-| M6 | Shows, persistence of base scene and presets, state push to all phones; app: stack editing and presets | A holiday show loops unattended |
+| M6 ✅ | Shows, persistence of base scene and presets, state push to all phones; app: stack editing and presets | A holiday show loops unattended |
 | M7 | Direct entity control from the phone, stream channel, paintbrush | Flick a ball from the phone into the tree |
 | M8+ | App: full scene configuration (layers, entities, rules, forces, lifecycle), built as needed | A new effect built entirely from the app |
 
@@ -835,6 +836,82 @@ interrupt on top of whatever core1 was doing, and its builder had a 1 KB
 frame; its buffers are now static. Peaks after the fixes: core0 1,984,
 core1 2,216. `-fstack-usage` on the compile commands in
 `build_pico2w/compile_commands.json` finds the big frames.
+
+### M6 — done 2026-09-24
+
+- **Library** (`engine/include/neotree/library.hpp`): the built-in presets
+  and shows, plus the family's own - up to 8 presets and 4 shows - a custom
+  base scene, and a startup show. The director owns it; "Back to base" and
+  every revert use its base scene.
+- **The stored form** (§9.3.1, format version 1): scenes name modes and
+  parameters by id, not index, so they survive firmware updates - an
+  unknown mode leaves its slot empty, an unknown parameter is ignored, a
+  missing one takes its default (all tested by renaming ids in stored
+  bytes). Every field is range-checked on load; anything malformed leaves
+  the built-ins. A completely full library is 8.8 KB.
+- **Flash** (`firmware/src/neo_tree_scene_store.cpp`): 4 sectors below the
+  WiFi credentials, with a magic number, length and CRC, checked against
+  the end of the program image. Changes are written once they've settled
+  for a second, erasing only the sectors in use: ~36 ms with both cores
+  paused. The status JSON reports it under `library`.
+- **Capturing the live scene** (`Director::capture_scene`): what's in each
+  slot now, with live parameter changes and lifecycles; the scene's chain
+  targets are kept, and a chain target set over the protocol is given a
+  free chain-target spec so the saved scene chains the same way.
+- **Shows** (`Director::play_show`): each entry's preset for its duration
+  (0 = the preset's own, else 5 min), then the next; at the end, round
+  again - reshuffled if it shuffles, never the same entry twice in a row -
+  or back to the base scene. A show plays a copy, so editing or deleting it
+  meanwhile doesn't disturb the run. Editing the scene doesn't stop a show
+  (§9.5); its next entry replaces the scene. Stop leaves the scene as it is;
+  "Back to base" stops it too. The startup show plays at power-up instead
+  of the base scene. Built-in: "Holiday evening" (~22 min a round).
+- **The Canvas keeps its colors** while other scenes play: when a Canvas
+  leaves the scene its pixels are kept (8 KB), and the next Canvas starts
+  from them rather than the boot pattern. Without this a show lost the Home
+  page's colors on its first step.
+- **Pushes to phones:** a client that sends SUBSCRIBE (36) gets the scene
+  (`0x84`) and the library (`0x85`) whenever they change, and once at once.
+  The director and library keep revision counters that move on changes, not
+  as time passes, so pushes happen on changes only. Core1 sends them from
+  its loop at most every 200 ms per change, retrying later if lwIP is busy.
+  Clients that don't subscribe - the Python tools - never see them.
+- **Protocol:** LIBRARY (30), SCENE_SAVE (31), LIBRARY_DELETE (32),
+  SHOW_SET (33), SHOW_PLAY (34), SHOW_BOOT (35), SUBSCRIBE (36).
+- **App:** the Modes tab no longer polls - it follows the pushes, counting
+  ages and a show's time left on between them. New: a Shows card (what's
+  playing and what's next, stop, play, play at power-up, a show editor, copy
+  a built-in), saving what's playing as a scene or as the base scene,
+  deleting saved scenes, and "When it ends…" per slot (after a time or a
+  number of cycles: keep going, start again, change to another mode, back
+  to base, clear). A save is confirmed only once the pushed library shows
+  it (the tree can still refuse one when it applies it).
+- **Fixed on the way:** a REBOOT command counted as a crash (the watchdog
+  does the reboot), so three within a minute would have tripped the
+  crash-loop escape into BOOTSEL. Planned reboots are now marked first. And
+  the status JSON's `slow_frames` counted frames over 2 ms - a threshold
+  from M1, when the engine drew nothing - so it counted nearly every frame;
+  it now counts frames over one frame at the target rate (16.7 ms).
+- 95 engine unit tests (13 new), 25 app unit tests.
+
+**Proofs.** `neotree_sim --scene holiday_evening --duration 7d` - a week of
+the show in 116 s: 458 rounds (604,800 s / 1,320 s a round), 2,292 entries,
+no dropped events, failed spawns or drain timeouts. On the tree: a saved
+scene (with a live parameter change) and a startup show survived reboots;
+the show resumed by itself at power-up and kept stepping.
+
+**Proof - the holiday show loops unattended, on the tree:** "Holiday
+evening" played for 70 minutes, sampled every minute: three full rounds and
+into the fourth, every entry in order and on time, no dropped events or
+actions, no failed spawns, no crashes; stack peaks 1,936 / 2,376 bytes of
+4,096. Frame times by entry: Colors, Sweep tour and Fireworks finale ~3 ms;
+Holiday show 4-10 ms; Snow on rainbow 9.6-11 ms once its snow reaches its
+steady ~145 flakes (the M5 figure of 3.2-4.5 ms was taken 6 s in, at 72).
+
+**Watch:** that's ~60% of the 16.7 ms budget with 233 positioned LEDs.
+Snow's cost grows with LEDs x flakes, so it needs work before the full
+1,000-LED map (see M3's note): fewer, larger flakes in the snow mode, or
+cheaper culling.
 
 ## 16. Memory estimate
 

@@ -120,6 +120,17 @@ public:
     const LedGeometry &geometry() const { return *geometry_; }
     Rng &rng() { return rng_; }
 
+    // The Canvas's pixels (background and paint), kept while no Canvas is
+    // in the scene, so the Home page's colors come back with it - after a
+    // show step or a preset without it - instead of the boot pattern.
+    struct CanvasMemory
+    {
+        bool saved = false;
+        Rgba8 background[LedGeometry::max_leds];
+        Rgba8 paint[LedGeometry::max_leds];
+    };
+    CanvasMemory &canvas_memory() { return canvas_memory_; }
+
 private:
     void tick();
     void log(const char *fmt, ...) const;
@@ -139,6 +150,7 @@ private:
     World world_{};
     Rng rng_{};
     EngineStats stats_{};
+    CanvasMemory canvas_memory_{};
 };
 
 }  // namespace neotree
