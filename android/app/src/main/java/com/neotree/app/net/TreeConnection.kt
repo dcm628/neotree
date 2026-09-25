@@ -36,7 +36,7 @@ data class LogEntry(
  * (firmware/include/neo_tree_net_server.hpp). Frames are
  * [uint16 LE length][payload] both ways: the tree greets with HELLO, then
  * answers every command with an ACK carrying an AckStatus. A STATUS_REQUEST
- * also gets a STATUS frame, just before its ACK.
+ * also gets a STATUS frame, and a DESCRIBE a DESCRIBE frame, just before the ACK.
  */
 class TreeConnection(private val scope: CoroutineScope) {
 
@@ -54,6 +54,10 @@ class TreeConnection(private val scope: CoroutineScope) {
     private val _status = MutableStateFlow<TreeStatus?>(null)
     /** Latest STATUS reply (null until one arrives). */
     val status: StateFlow<TreeStatus?> = _status.asStateFlow()
+
+    private val _catalog = MutableStateFlow<ModeCatalog?>(null)
+    /** The tree's modes and presets, from its latest DESCRIBE reply (null until one arrives). */
+    val catalog: StateFlow<ModeCatalog?> = _catalog.asStateFlow()
 
     private val _log = MutableStateFlow<List<LogEntry>>(emptyList())
     /** Recent commands and connection events, newest first. */
@@ -184,6 +188,10 @@ class TreeConnection(private val scope: CoroutineScope) {
                     runCatching { JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8)) }
                         .onSuccess { _status.value = TreeStatus(it, System.currentTimeMillis()) }
                         .onFailure { log("STATUS reply wasn't valid JSON (${frame.size}B)", ok = false) }
+                } else if (type == TreeProtocol.REPLY_DESCRIBE) {
+                    runCatching { ModeCatalog.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
+                        .onSuccess { _catalog.value = it }
+                        .onFailure { log("DESCRIBE reply wasn't valid JSON (${frame.size}B)", ok = false) }
                 }
             }
         } catch (e: IOException) {

@@ -56,9 +56,21 @@ void engine_host_reload_geometry();
 // led_output_prepare_frame(): one per LED, (r << 24) | (g << 16) | (b << 8).
 void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count);
 
-// Runs a built-in demo (neotree::Demo id) in the demo slot above the Canvas;
-// 0 stops it. Returns false for an unknown id.
+// The old DEMO command: runs one of the former demos (now modes) in slot 1,
+// above the Canvas; 0 empties it. Returns false for an unknown id.
 bool engine_host_set_demo(uint8_t demo);
+
+// SLOT_SET, PARAM_SET, SLOT_END, SLOT_LIFE, INPUT and PRESET (see
+// neo_tree_protocol.hpp), at most engine_mode_command_max_len bytes (a
+// zero-padded message may be passed with that length). The command is queued
+// and applied at the start of the next frame; returns false if the queue is
+// full or the message too long. Invalid commands are logged when applied.
+constexpr size_t engine_mode_command_max_len = 12;
+bool engine_host_mode_command(const uint8_t *msg, size_t len);
+
+// The scene's state as JSON (director describe_state), as last published by
+// core0. Safe from either core. Returns the length written.
+size_t engine_host_scene_json(char *out, size_t cap);
 
 // Lights on/off (TREE_OUTPUT) - the master stage; the scene is untouched.
 void engine_host_set_output(bool enabled);

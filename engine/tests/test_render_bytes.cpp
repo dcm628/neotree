@@ -1,7 +1,6 @@
 #include <vector>
 
 #include "doctest/doctest.h"
-#include "neotree/demos.hpp"
 #include "neotree/engine.hpp"
 
 using namespace neotree;
@@ -26,20 +25,19 @@ void setup()
 
 }  // namespace
 
-TEST_CASE("render_bytes matches render + rounding, for every demo and master setting")
+TEST_CASE("render_bytes matches render + rounding, for every mode and master setting")
 {
-    for (int d = 0; d < static_cast<int>(Demo::count); d++)
+    for (uint8_t m = 0; m < mode_count(); m++)
     {
         for (float brightness : {1.0f, 0.4f})
         {
             for (float gamma : {1.0f, 2.2f})
             {
                 setup();
-                setup_demo(engine, static_cast<Demo>(d), 1);
+                engine.director().set_slot(engine, 1, SlotSpec::of(mode_at(m)->id), Transition::cut);
                 engine.master().brightness = brightness;
                 engine.master().gamma = gamma;
                 engine.advance(1'500'000);
-                update_demo(engine, static_cast<Demo>(d), 1);
                 std::vector<Rgb> f(geometry.count());
                 std::vector<Rgb8> b(geometry.count());
                 engine.render(f);
@@ -58,7 +56,7 @@ TEST_CASE("render_bytes matches render + rounding, for every demo and master set
 TEST_CASE("render_bytes: lights off is all zero")
 {
     setup();
-    setup_demo(engine, Demo::layers, 1);
+    engine.director().set_slot(engine, 1, SlotSpec::of("layers"), Transition::cut);
     engine.master().output_enabled = false;
     std::vector<Rgb8> b(geometry.count(), Rgb8{9, 9, 9});
     engine.render_bytes(b);

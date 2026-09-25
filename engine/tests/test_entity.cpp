@@ -2,7 +2,6 @@
 #include <vector>
 
 #include "doctest/doctest.h"
-#include "neotree/demos.hpp"
 #include "neotree/engine.hpp"
 
 using namespace neotree;
@@ -286,10 +285,10 @@ TEST_CASE("entity: a full pool fails spawns and counts them")
     CHECK(engine.entities().size() == 0);
 }
 
-TEST_CASE("demos: the launch sweep peaks at the top of the tree")
+TEST_CASE("modes: the launch sweep peaks at the top of the tree")
 {
     setup(240);
-    setup_demo(engine, Demo::sweep_launch, 1);
+    engine.director().set_slot(engine, 1, SlotSpec::of("sweep").set("motion", 2.0f), Transition::cut);
     REQUIRE(engine.stats().entities == 1);
     float peak = 0.0f, low = 1e9f;
     Handle h = engine.entities().handle_at(0);
@@ -305,22 +304,36 @@ TEST_CASE("demos: the launch sweep peaks at the top of the tree")
     CHECK(low >= 0.0f);   // respawned at the floor, never below it
 }
 
-TEST_CASE("demos: every demo sets up and runs")
+TEST_CASE("modes: every mode sets up and runs, alone and with every parameter at its extremes")
 {
-    for (int d = 0; d < static_cast<int>(Demo::count); d++)
+    for (uint8_t m = 0; m < mode_count(); m++)
     {
-        setup(120);
-        setup_demo(engine, static_cast<Demo>(d), 1);
-        std::vector<Rgb> out(geometry.count());
-        for (int f = 0; f < 120; f++)
+        const ModeDef *def = mode_at(m);
+        REQUIRE(def != nullptr);
+        CHECK(find_mode(def->id) == m);
+        for (int variant = 0; variant < 3; variant++)
         {
-            engine.advance(16'667);
-            update_demo(engine, static_cast<Demo>(d), 1);
-            engine.render(out);
+            setup(120);
+            SlotSpec spec = SlotSpec::of(def->id);
+            for (uint8_t p = 0; p < def->param_count; p++)
+            {
+                if (variant == 1)
+                {
+                    spec.params[p].f = def->params[p].min;
+                }
+                else if (variant == 2)
+                {
+                    spec.params[p].f = def->params[p].max;
+                }
+            }
+            engine.director().set_slot(engine, 1, spec, Transition::cut);
+            std::vector<Rgb> out(geometry.count());
+            for (int f = 0; f < 120; f++)
+            {
+                engine.advance(16'667);
+                engine.render(out);
+            }
+            CHECK(engine.stats().spawns_failed == 0);
         }
-        CHECK(engine.stats().spawns_failed == 0);
-        Demo back;
-        CHECK(demo_from_name(demo_name(static_cast<Demo>(d)), back));
-        CHECK(static_cast<int>(back) == d);
     }
 }

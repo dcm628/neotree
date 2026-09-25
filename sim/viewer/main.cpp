@@ -15,7 +15,7 @@
 //   Up / Down  speed x2 / /2 (0.1x - 1000x)
 //   PgUp       jump +1 min (Shift: +10 min) - simulated, not rendered
 //   C          color view: engine output / position source / height
-//   S          next demo scene
+//   S          next scene (presets, then single modes)
 //   R          restart from t = 0 with the same seed
 
 #include <algorithm>
@@ -87,11 +87,12 @@ int main(int argc, char **argv)
 {
     std::string positions = NEOTREE_SIM_DEFAULT_POSITIONS;
     std::string screenshot;
-    std::string scene = "layers";
+    std::string scene = "snow_on_rainbow";
     double start_at_s = 0.0;
     ColorView view = ColorView::output;
     neotree::EngineConfig config;
     config.max_ticks_per_advance = 0;
+    config.canvas_seed = neotree::sim::seed_canvas;
     for (int i = 1; i + 1 < argc; i += 2)
     {
         std::string a = argv[i];
@@ -133,15 +134,12 @@ int main(int argc, char **argv)
         return 1;
     }
     engine.init(geometry, config);
-    if (!neotree::sim::setup_demo(engine, scene))
+    if (!neotree::sim::setup_scene(engine, scene))
     {
         std::fprintf(stderr, "unknown scene '%s' (have: %s)\n", scene.c_str(),
-                     neotree::sim::demo_scene_names().c_str());
+                     neotree::sim::scene_names().c_str());
         return 2;
     }
-    const char *scene_cycle[] = {"layers", "wedge", "sweep_linear", "sweep_gravity", "sweep_launch",
-                                 "bounce", "snow",  "orbit",        "canvas",        "empty"};
-    const int scene_count = sizeof(scene_cycle) / sizeof(scene_cycle[0]);
     engine.advance(static_cast<int64_t>(start_at_s * 1e6));
     std::vector<neotree::Rgb> frame(geometry.count());
 
@@ -193,20 +191,20 @@ int main(int argc, char **argv)
         if (IsKeyPressed(KEY_R))
         {
             engine.init(geometry, config);
-            neotree::sim::setup_demo(engine, scene);
+            neotree::sim::setup_scene(engine, scene);
         }
         if (IsKeyPressed(KEY_S))
         {
             int next = 0;
-            for (int k = 0; k < scene_count; k++)
+            for (int k = 0; k < neotree::sim::scene_count(); k++)
             {
-                if (scene == scene_cycle[k])
+                if (scene == neotree::sim::scene_name(k))
                 {
-                    next = (k + 1) % scene_count;
+                    next = (k + 1) % neotree::sim::scene_count();
                 }
             }
-            scene = scene_cycle[next];
-            neotree::sim::setup_demo(engine, scene);
+            scene = neotree::sim::scene_name(next);
+            neotree::sim::setup_scene(engine, scene);
         }
         if (IsKeyPressed(KEY_PAGE_UP))
         {
@@ -228,7 +226,6 @@ int main(int argc, char **argv)
             float real_dt = std::min(GetFrameTime(), 0.1f);
             engine.advance(static_cast<int64_t>(real_dt * speeds[speed_index] * 1e6f));
         }
-        neotree::sim::update_demo(engine, scene);
         engine.render(frame);
 
         // ---- draw ----

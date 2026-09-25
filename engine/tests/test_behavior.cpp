@@ -2,7 +2,6 @@
 #include <vector>
 
 #include "doctest/doctest.h"
-#include "neotree/demos.hpp"
 #include "neotree/engine.hpp"
 
 using namespace neotree;
@@ -371,10 +370,10 @@ TEST_CASE("behavior: boundary triggers filter by which boundary; expired carries
     CHECK(found == 1);
 }
 
-TEST_CASE("demos: the collision chain reaction stays within its quota over a long run")
+TEST_CASE("modes: the collision chain reaction stays within its quota over a long run")
 {
     setup(120);
-    setup_demo(engine, Demo::chain, 1);
+    engine.director().set_slot(engine, 1, SlotSpec::of("chain"), Transition::cut);
     for (int s = 0; s < 600; s++)   // 10 minutes of simulated time
     {
         engine.advance(1'000'000);
@@ -384,10 +383,10 @@ TEST_CASE("demos: the collision chain reaction stays within its quota over a lon
     CHECK(engine.behavior().stats().rule_fires > 0);
 }
 
-TEST_CASE("demos: fireworks burst into sparks")
+TEST_CASE("modes: fireworks burst into sparks")
 {
     setup(120);
-    setup_demo(engine, Demo::fireworks, 1);
+    engine.director().set_slot(engine, 1, SlotSpec::of("fireworks"), Transition::cut);
     engine.advance(5'000'000);
     CHECK(engine.behavior().stats().rule_fires > 0);
     CHECK(engine.behavior().stats().peak_entities > 30);

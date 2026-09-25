@@ -9,6 +9,7 @@
 
 #include "neotree/behavior.hpp"
 #include "neotree/clock.hpp"
+#include "neotree/director.hpp"
 #include "neotree/geometry.hpp"
 #include "neotree/random.hpp"
 #include "neotree/scene.hpp"
@@ -28,6 +29,9 @@ struct EngineConfig
     // this small so a stall can't snowball; the host simulator sets 0
     // (unlimited) to run far faster than real time.
     uint32_t max_ticks_per_advance = 8;
+    // Fills the Canvas mode's background when it's set up (the firmware
+    // seeds it with the boot pattern). Optional.
+    void (*canvas_seed)(std::span<Rgba8> background) = nullptr;
 };
 
 // The last stage before output (docs/RENDERER.md 5.2). Controls output, not
@@ -96,6 +100,13 @@ public:
     void destroy_entities_in_slot(int slot);
     const EntityPool &entities() const { return entities_; }
 
+    // Modes in slots, lifecycles and scenes (neotree/director.hpp).
+    Director &director() { return director_; }
+    const Director &director() const { return director_; }
+    const EngineConfig &config() const { return config_; }
+    // Diagnostic text through the platform's log hook (printf-style).
+    void note(const char *fmt, ...) const;
+
     // Collisions, rules, templates and emitters (neotree/behavior.hpp).
     Behavior &behavior() { return behavior_; }
     const Behavior &behavior() const { return behavior_; }
@@ -121,6 +132,7 @@ private:
     MasterSettings master_{};
     EntityPool entities_{};
     Behavior behavior_{};
+    Director director_{};
     EntityScratch scratch_{};
     Rgb frame_[LedGeometry::max_leds] = {};   // render_bytes' composite
     Forces forces_{};

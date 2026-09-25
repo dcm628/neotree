@@ -21,18 +21,28 @@ PROTOCOL_VERSION = 1
 REPLY_ACK = 0x80
 REPLY_HELLO = 0x81
 REPLY_STATUS = 0x82
+REPLY_DESCRIBE = 0x83
 
 STATUS_REQUEST_MSG_TYPE = 18
 REBOOT_MSG_TYPE = 19
 # Reboots the Pico into BOOTSEL (USB flashing mode) - for when USB serial is
 # unavailable but WiFi works; the Pi's pi_flash.py can then flash it.
 BOOTSEL_MSG_TYPE = 21
-# Runs a built-in engine demo over the Canvas: [22][id], 0 = none. Ids are
-# neotree::Demo (engine/include/neotree/demos.hpp).
+# The old demo ids (now modes, run in slot 1 over the Canvas): [22][id], 0 = none.
 DEMO_MSG_TYPE = 22
 DEMOS = ['none', 'layers', 'wedge', 'sweep_linear', 'sweep_gravity', 'sweep_launch', 'bounce', 'snow', 'orbit',
          'fireworks', 'chain', 'mixer']
 WIFI_RECONNECT_MSG_TYPE = 20
+# Modes (engine/include/neotree/modes.hpp, director.hpp) - see the tree's
+# DESCRIBE reply for mode / parameter / preset indices.
+DESCRIBE_MSG_TYPE = 23
+SLOT_SET_MSG_TYPE = 24
+PARAM_SET_MSG_TYPE = 25
+SLOT_END_MSG_TYPE = 26
+SLOT_LIFE_MSG_TYPE = 27
+INPUT_MSG_TYPE = 28
+PRESET_MSG_TYPE = 29
+POLICIES = ["loop", "chain", "revert", "remove", "hold"]
 
 STATUS_NAMES = {
     0: "QUEUED",
@@ -87,6 +97,9 @@ class NeotreeNet:
             if frame and frame[0] == REPLY_STATUS:
                 self.last_status = json.loads(frame[1:].decode("utf-8", errors="replace"))
                 continue
+            if frame and frame[0] == REPLY_DESCRIBE:
+                self.last_describe = json.loads(frame[1:].decode("utf-8", errors="replace"))
+                continue
             if len(frame) != 3 or frame[0] != REPLY_ACK:
                 raise NeotreeNetError(f"expected ACK, got {frame!r}")
             return frame[1], STATUS_NAMES.get(frame[2], f"status {frame[2]}")
@@ -99,6 +112,38 @@ class NeotreeNet:
         if self.last_status is None:
             raise NeotreeNetError("no STATUS reply (tree out of memory? try again)")
         return self.last_status
+
+    def describe(self):
+        """The tree's built-in modes (with their parameters) and presets."""
+        self.last_describe = None
+        self.write(bytes([DESCRIBE_MSG_TYPE]))
+        if self.last_describe is None:
+            raise NeotreeNetError("no DESCRIBE reply (tree out of memory? try again)")
+        return self.last_describe
+
+    def set_slot(self, slot, mode_index, fade=True):
+        """Puts a mode (by DESCRIBE index; None = empty) in a slot."""
+        self.write(bytes([SLOT_SET_MSG_TYPE, slot, 0xFF if mode_index is None else mode_index, 1 if fade else 0]))
+
+    def set_param(self, slot, param_index, value=0.0, rgb=(0, 0, 0)):
+        """Sets a running mode's parameter: a number / choice index / toggle, or a color."""
+        self.write(bytes([PARAM_SET_MSG_TYPE, slot, param_index]) + struct.pack("<f", float(value)) + bytes(rgb))
+
+    def end_slot(self, slot, op=0):
+        """0 = end (its policy applies), 1 = revert (slot 0xFF: the whole scene), 2 = remove, 3 = restart."""
+        self.write(bytes([SLOT_END_MSG_TYPE, slot, op]))
+
+    def set_lifecycle(self, slot, duration_s=0, cycles=0, policy="hold", repeats=0, next_mode=None,
+                      fade=True, transition_s=1.5):
+        self.write(bytes([SLOT_LIFE_MSG_TYPE, slot]) + struct.pack("<HH", int(duration_s), int(cycles)) +
+                   bytes([POLICIES.index(policy), repeats, 0xFF if next_mode is None else next_mode,
+                          1 if fade else 0, int(round(transition_s * 10))]))
+
+    def preset(self, index):
+        self.write(bytes([PRESET_MSG_TYPE, index]))
+
+    def input(self, slot, input_id, value=0.0):
+        self.write(bytes([INPUT_MSG_TYPE, slot, input_id]) + struct.pack("<f", float(value)))
 
     def write(self, payload, queue_full_retries=20, queue_full_backoff_s=0.005):
         """pyserial-compatible: send one command message.

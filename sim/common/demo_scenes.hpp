@@ -1,7 +1,7 @@
 #pragma once
-// Demo scenes for the host tools: the engine's built-in demos
-// (neotree/demos.hpp, shared with the firmware's DEMO command) plus the
-// host-only "canvas" and "empty".
+// Scenes for the host tools, by name: a preset (neotree/director.hpp - by
+// its name in lowercase with underscores, e.g. "holiday_show"), a single
+// mode id (e.g. "snow", run in slot 0), or "empty".
 
 #include <string>
 
@@ -9,14 +9,19 @@
 
 namespace neotree::sim {
 
-// Names accepted by setup_demo(), for help text.
-std::string demo_scene_names();
+// Names accepted by setup_scene(), for help text.
+std::string scene_names();
 
-// Replaces the engine's scene with the named demo. False if unknown.
-bool setup_demo(Engine &engine, const std::string &name);
+// Every accepted name, presets first (for cycling in the viewer).
+int scene_count();
+std::string scene_name(int index);
 
-// Per-frame changes the demo makes from outside the engine (called with the
-// engine's current simulation time).
-void update_demo(Engine &engine, const std::string &name);
+// For EngineConfig::canvas_seed: the host has no boot pattern, so the
+// Canvas background gets a green/blue/purple/red pattern by LED index, like
+// init_my_tree's ranges.
+void seed_canvas(std::span<Rgba8> background);
+
+// Starts the named scene (cut, no fades). False if unknown.
+bool setup_scene(Engine &engine, const std::string &name);
 
 }  // namespace neotree::sim

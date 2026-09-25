@@ -6,7 +6,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.neotree.app.net.AckStatus
+import com.neotree.app.net.ModeCatalog
+import com.neotree.app.net.ParamValue
 import com.neotree.app.net.Rgb
+import com.neotree.app.net.SceneState
 import com.neotree.app.net.TreeConnection
 import com.neotree.app.net.TreeDiscovery
 import com.neotree.app.net.TreeProtocol
@@ -19,10 +22,16 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** What the Paint picker applies to. */
@@ -108,6 +117,8 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             connection.state.collect { s ->
                 if (s is TreeConnection.State.Connected && s.lightsOn != null) _lightsOn.value = s.lightsOn
+                // Every connect: the modes may have changed with a firmware update.
+                if (s is TreeConnection.State.Connected) launch { connection.send(TreeProtocol.describe()) }
             }
         }
         viewModelScope.launch {
@@ -311,7 +322,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun updatePolling() {
-        if (debugVisible && foreground) {
+        if ((debugVisible || modesVisible) && foreground) {
             if (pollJob?.isActive != true) {
                 pollJob = viewModelScope.launch {
                     while (true) {
@@ -351,6 +362,110 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
                 if (connection.send(m) == AckStatus.QUEUED) ok++ else break
             }
             _status.value = "String test: $ok of ${messages.size} messages sent"
+        }
+    }
+
+    // ---- modes page ----
+
+    /** The tree's modes and presets (null until its DESCRIBE reply arrives). */
+    val catalog: StateFlow<ModeCatalog?> get() = connection.catalog
+
+    /** The running scene, from the latest STATUS (polled while the modes page shows). */
+    val scene: StateFlow<SceneState?> = connection.status
+        .map { SceneState.parse(it?.json?.optJSONObject("scene")) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * Parameter values this phone just set, keyed by (slot, mode index, param),
+     * shown instead of the tree's until the next STATUS can catch up - so a
+     * slider doesn't jump back while it's being dragged.
+     */
+    data class ParamKey(val slot: Int, val mode: Int, val param: Int)
+    private data class ParamEdit(val value: ParamValue, val atMs: Long)
+    private val _paramEdits = MutableStateFlow<Map<ParamKey, ParamEdit>>(emptyMap())
+    private var modesVisible = false
+
+    fun setModesVisible(visible: Boolean) {
+        modesVisible = visible
+        updatePolling()
+        if (visible && connection.catalog.value == null) {
+            viewModelScope.launch { connection.send(TreeProtocol.describe()) }
+        }
+    }
+
+    /** The value to show for a parameter: this phone's recent edit, else the tree's. */
+    fun paramValue(key: ParamKey, fromTree: ParamValue?, default: ParamValue): ParamValue {
+        val edit = _paramEdits.value[key]
+        if (edit != null && System.currentTimeMillis() - edit.atMs < PARAM_EDIT_HOLD_MS) return edit.value
+        return fromTree ?: default
+    }
+
+    /** Recomposes the modes page when edits change. */
+    val paramEdits: StateFlow<Map<ParamKey, *>> get() = _paramEdits
+
+    fun applyPreset(index: Int) {
+        val name = connection.catalog.value?.presets?.getOrNull(index) ?: "Preset $index"
+        sendThenRefresh(name, TreeProtocol.preset(index))
+    }
+
+    /** Starts a mode in a slot (fading between them), or empties it (mode -1). */
+    fun setSlotMode(slot: Int, mode: Int) {
+        val name = connection.catalog.value?.modes?.getOrNull(mode)?.name ?: "Empty"
+        sendThenRefresh("Slot ${slot + 1}: $name", TreeProtocol.slotSet(slot, mode, fade = true))
+    }
+
+    /** Ends a slot's mode the way its lifecycle says (a lone mode reverts to the base scene). */
+    fun endSlot(slot: Int) = sendThenRefresh("Slot ${slot + 1} ended", TreeProtocol.slotEnd(slot, TreeProtocol.SlotEnd.END))
+
+    fun revertScene() = sendThenRefresh("Back to the base scene", TreeProtocol.revertScene())
+
+    /**
+     * Sets a parameter live. Slider drags make far more changes than the tree
+     * needs, so only the newest pending value per parameter is sent.
+     */
+    fun setParam(key: ParamKey, value: ParamValue) {
+        _paramEdits.update { it + (key to ParamEdit(value, System.currentTimeMillis())) }
+        viewModelScope.launch {
+            pendingParamsLock.withLock { pendingParams[key] = value }
+            paramWake.trySend(Unit)
+        }
+    }
+
+    private val pendingParams = LinkedHashMap<ParamKey, ParamValue>()
+    private val pendingParamsLock = Mutex()
+    private val paramWake = Channel<Unit>(Channel.CONFLATED)
+
+    init {
+        viewModelScope.launch {
+            while (true) {
+                paramWake.receive()
+                while (true) {
+                    val next = pendingParamsLock.withLock {
+                        val first = pendingParams.entries.firstOrNull() ?: return@withLock null
+                        pendingParams.remove(first.key)
+                        first.key to first.value
+                    } ?: break
+                    val (key, v) = next
+                    connection.send(TreeProtocol.paramSet(key.slot, key.param, v.number, v.color))
+                }
+            }
+        }
+    }
+
+    private fun sendThenRefresh(label: String, message: ByteArray) {
+        viewModelScope.launch {
+            val status = connection.send(message)
+            _status.value = when (status) {
+                AckStatus.QUEUED -> "$label ✓"
+                null -> "Not connected to the tree"
+                else -> "$label: tree rejected the command"
+            }
+            // Show the change without waiting for the next poll (the tree
+            // applies it at its next frame).
+            if (status == AckStatus.QUEUED) {
+                delay(150)
+                connection.send(TreeProtocol.statusRequest())
+            }
         }
     }
 
@@ -408,6 +523,7 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val DISCOVERY_TIMEOUT_MS = 4000L
         const val STATUS_POLL_MS = 1000L
+        const val PARAM_EDIT_HOLD_MS = 2500L
         // Radius is a uint16 on the wire; putShort keeps the bit pattern, so
         // 0xFFFF arrives as 65535 = "any radius".
         const val UNLIMITED_RADIUS_MM = 0xFFFF

@@ -1,4 +1,5 @@
 #include "neo_tree_net_server.hpp"
+#include "neotree/modes.hpp"
 
 #include <stdio.h>
 #include <cstring>
@@ -223,14 +224,16 @@ static err_t drop_overflowed_client(client_slot *c)
 // all-or-nothing tcp_write so a partial frame can never corrupt the stream;
 // if it can't go now it's dropped (the client polls again), and skipped
 // while ACKs are backlogged so it can't starve them.
-static void send_status(client_slot *c)
+static void send_status(client_slot *c, bool describe = false)
 {
     static uint8_t frame[3 + status_json_max];   // static: IRQ context, one core
-    size_t json_len = status_build_json(reinterpret_cast<char *>(frame + 3), status_json_max);
+    // DESCRIBE is static data (the built-in modes), safe to read from core1.
+    size_t json_len = describe ? neotree::describe_modes(reinterpret_cast<char *>(frame + 3), status_json_max)
+                               : status_build_json(reinterpret_cast<char *>(frame + 3), status_json_max);
     size_t payload_len = 1 + json_len;
     frame[0] = payload_len & 0xFF;
     frame[1] = payload_len >> 8;
-    frame[2] = static_cast<uint8_t>(net_reply_type::STATUS);
+    frame[2] = static_cast<uint8_t>(describe ? net_reply_type::DESCRIBE : net_reply_type::STATUS);
     if (c->pending_len > 0 || tcp_write(c->pcb, frame, 2 + payload_len, TCP_WRITE_FLAG_COPY) != ERR_OK)
     {
         diag.status_dropped = diag.status_dropped + 1;
@@ -256,6 +259,11 @@ static net_status handle_command(client_slot *c)
     if (type == static_cast<uint8_t>(serial_msg_type::STATUS_REQUEST))
     {
         send_status(c);   // then the usual ACK, so every command still gets one
+        return net_status::QUEUED;
+    }
+    if (type == static_cast<uint8_t>(serial_msg_type::DESCRIBE))
+    {
+        send_status(c, true);
         return net_status::QUEUED;
     }
     if (!command_queue_push(command_source::network, slot_index(c) + 1, c->msg, c->msg_len))

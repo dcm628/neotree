@@ -568,6 +568,12 @@ void Behavior::run_action(Engine &engine, uint8_t slot, const Action &act, const
             layer->opacity = act.value;
         }
         break;
+    case ActionType::cycle:
+        engine.director().count_cycle(slot);
+        break;
+    case ActionType::end_mode:
+        engine.director().end_slot(engine, slot, act.index, EndReason::outcome);
+        break;
     case ActionType::signal:
     {
         Event sig;

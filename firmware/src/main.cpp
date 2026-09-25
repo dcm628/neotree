@@ -26,6 +26,7 @@
 #include "neo_tree_engine.hpp"
 #include "neo_tree_loop_monitor.hpp"
 #include "neo_tree_safety.hpp"
+#include "neotree/modes.hpp"
 
 mutex core0_data_update;
 
@@ -192,7 +193,19 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
     case serial_msg_type::BOOTSEL:
         return len == 1;
     case serial_msg_type::DEMO:
+    case serial_msg_type::PRESET:
         return len == 2;
+    case serial_msg_type::DESCRIBE:
+        return len == 1;
+    case serial_msg_type::SLOT_SET:
+    case serial_msg_type::SLOT_END:
+        return len == (msg[0] == static_cast<uint8_t>(serial_msg_type::SLOT_SET) ? 4u : 3u);
+    case serial_msg_type::PARAM_SET:
+        return len == 10;
+    case serial_msg_type::SLOT_LIFE:
+        return len == 11;
+    case serial_msg_type::INPUT:
+        return len == 7;
     default:
         // Includes RUN_SWEEP_SEQUENCE, which process_msg() never implemented.
         return false;
@@ -437,6 +450,29 @@ void process_msg()
         event_logf("reboot requested - restarting in 250ms");
         safety_stop_feeding();   // or the main loop would keep deferring it
         watchdog_reboot(0, 0, 250);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    case serial_msg_type::DESCRIBE:
+    {
+        // Over the network the server answers this on core1.
+        static char modes_json[status_json_max];   // static: keep it off core0's stack
+        neotree::describe_modes(modes_json, sizeof(modes_json));
+        printf("describe: %s\n", modes_json);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    }
+    case serial_msg_type::SLOT_SET:
+    case serial_msg_type::PARAM_SET:
+    case serial_msg_type::SLOT_END:
+    case serial_msg_type::SLOT_LIFE:
+    case serial_msg_type::INPUT:
+    case serial_msg_type::PRESET:
+        if (!engine_host_mode_command(serial_buf_copy, engine_mode_command_max_len))
+        {
+            event_logf("mode command %u rejected", (unsigned)serial_buf_copy[0]);
+        }
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;

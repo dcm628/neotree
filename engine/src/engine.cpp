@@ -19,6 +19,7 @@ void Engine::init(const LedGeometry &geometry, const EngineConfig &config, LogFn
     master_ = {};
     entities_.clear();
     behavior_.clear();
+    director_.reset();
     forces_ = {};
     world_ = {};
     world_.floor_z = geometry.bounds().min.z;
@@ -57,6 +58,7 @@ void Engine::tick()
     // Rules first (last tick's events, timers, counts), then emitters,
     // motion, collisions. Lifecycles join in M5.
     const float dt = clock_.tick_dt_s();
+    director_.tick(*this, dt);
     behavior_.handle_events(*this, dt);
     behavior_.run_emitters(*this, dt);
     for (uint16_t k = 0; k < entities_.capacity; k++)
@@ -203,6 +205,20 @@ void Engine::render_bytes(std::span<Rgb8> out)
     {
         out[i] = {curve(frame_[i].r), curve(frame_[i].g), curve(frame_[i].b)};
     }
+}
+
+void Engine::note(const char *fmt, ...) const
+{
+    if (log_ == nullptr)
+    {
+        return;
+    }
+    char text[128];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+    log_(text);
 }
 
 void Engine::log(const char *fmt, ...) const

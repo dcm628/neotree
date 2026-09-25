@@ -1,66 +1,84 @@
 #include "demo_scenes.hpp"
 
-#include "neotree/demos.hpp"
+#include <cctype>
 
 namespace neotree::sim {
 
 namespace {
 
-// The engine's built-in demos go in slot 1, above where the Canvas sits on
-// the tree (slot 0).
-constexpr uint8_t demo_slot = 1;
-
-// canvas: what the tree shows at boot - an opaque background pixel layer
-// (here a green/blue/purple/red pattern by LED index, like init_my_tree's
-// ranges) and an empty paint layer above it. Host-only: the firmware builds
-// its own from the real boot pattern.
-void setup_canvas(Engine &engine)
+// "Holiday show" -> "holiday_show"
+std::string slug(const char *name)
 {
-    Scene &scene = engine.scene();
-    scene.add_layer(0, LayerType::pixel);
-    scene.add_layer(0, LayerType::pixel);
-    auto bg = scene.pixels(0, 0);
-    const Rgba8 pattern[] = {{0, 140, 0, 255}, {0, 0, 180, 255}, {160, 0, 120, 255}, {180, 0, 0, 255}};
-    for (size_t i = 0; i < bg.size(); i++)
+    std::string s;
+    for (const char *p = name; *p != '\0'; p++)
     {
-        bg[i] = pattern[(i / 25) % 4];
+        s += *p == ' ' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
     }
+    return s;
 }
 
 }  // namespace
 
-std::string demo_scene_names() { return std::string("empty, canvas, ") + demo_names(); }
-
-bool setup_demo(Engine &engine, const std::string &name)
+void seed_canvas(std::span<Rgba8> background)
 {
-    engine.scene().clear();
-    engine.destroy_entities_in_slot(-1);
-    engine.forces() = Forces{};
+    const Rgba8 pattern[] = {{0, 140, 0, 255}, {0, 0, 180, 255}, {160, 0, 120, 255}, {180, 0, 0, 255}};
+    for (size_t i = 0; i < background.size(); i++)
+    {
+        background[i] = pattern[(i / 25) % 4];
+    }
+}
+
+int scene_count() { return 1 + preset_count() + mode_count(); }
+
+std::string scene_name(int index)
+{
+    if (index <= 0)
+    {
+        return "empty";
+    }
+    if (index <= preset_count())
+    {
+        return slug(preset_at(static_cast<uint8_t>(index - 1)).name);
+    }
+    const ModeDef *def = mode_at(static_cast<uint8_t>(index - 1 - preset_count()));
+    return def != nullptr ? def->id : "empty";
+}
+
+std::string scene_names()
+{
+    std::string s;
+    for (int i = 0; i < scene_count(); i++)
+    {
+        s += (i ? ", " : "") + scene_name(i);
+    }
+    return s;
+}
+
+bool setup_scene(Engine &engine, const std::string &name)
+{
     if (name == "empty")
     {
+        engine.director().apply_scene(engine, SceneSpec{}, Transition::cut);
         return true;
     }
-    if (name == "canvas")
+    for (uint8_t i = 0; i < preset_count(); i++)
     {
-        setup_canvas(engine);
-        return true;
+        if (slug(preset_at(i).name) == name)
+        {
+            engine.director().set_base_scene(preset_at(0));   // "Colors", for reverts
+            engine.director().apply_scene(engine, preset_at(i), Transition::cut);
+            return true;
+        }
     }
-    Demo demo;
-    if (!demo_from_name(name.c_str(), demo))
+    uint8_t mode = find_mode(name.c_str());
+    if (mode == no_mode)
     {
         return false;
     }
-    setup_demo(engine, demo, demo_slot);
+    SceneSpec one;
+    one.specs[0] = SlotSpec::of(name.c_str());
+    engine.director().apply_scene(engine, one, Transition::cut);
     return true;
-}
-
-void update_demo(Engine &engine, const std::string &name)
-{
-    Demo demo;
-    if (demo_from_name(name.c_str(), demo))
-    {
-        update_demo(engine, demo, demo_slot);
-    }
 }
 
 }  // namespace neotree::sim

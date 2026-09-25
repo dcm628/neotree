@@ -136,7 +136,8 @@ static size_t build_locked(char *out, size_t cap)
           (unsigned)led.overflows_total[0], (unsigned)led.overflows_total[1], (unsigned)led.overflows_total[2],
           (unsigned)led.overflows_total[3]);
 
-    engine_host_stats_t eng = engine_host_stats();
+    static engine_host_stats_t eng;   // static (as below): this runs in lwIP's IRQ on core1
+    eng = engine_host_stats();
     j.raw(",\"engine\":{\"ticks\":%llu,\"ticks_dropped\":%llu,\"frames\":%llu,\"advance_us\":%u,"
           "\"max_advance_us\":%u,\"render_us\":%u,\"max_render_us\":%u,\"max_advance_at_ms\":%u,\"max_render_at_ms\":%u,"
           "\"slow_frames\":%u,\"led_evals\":%u,\"geometry_us\":%u,\"leds\":%u,\"positioned\":%u,"
@@ -183,6 +184,10 @@ static size_t build_locked(char *out, size_t cap)
           (unsigned long)sr.fault_pc, (unsigned long)sr.fault_lr, (unsigned)safety_stack_used(0),
           (unsigned)safety_stack_used(1), (unsigned)safety_stack_size(0), (unsigned)safety_stack_size(1));
 
+    static char scene[1600];   // static: keep it off the stack
+    engine_host_scene_json(scene, sizeof(scene));
+    j.raw(",\"scene\":%s", scene[0] ? scene : "{}");
+
     j.raw(",\"queue\":{\"level\":%u,\"dropped\":%u},\"core1_loops\":%u", (unsigned)command_queue_level(),
           (unsigned)command_queue_dropped(), (unsigned)core1_loop_counter);
 
@@ -197,8 +202,9 @@ static size_t build_locked(char *out, size_t cap)
           (unsigned)lwip_stats.mem.used, (unsigned)lwip_stats.mem.max, (unsigned)lwip_stats.mem.avail,
           (unsigned)lwip_stats.mem.err);
 
-    wifi_snapshot_t w = wifi_snapshot();
-    char bssid[18], mac[18], trace[400];
+    static wifi_snapshot_t w;
+    static char bssid[18], mac[18], trace[400];
+    w = wifi_snapshot();
     mac_str(bssid, w.bssid);
     mac_str(mac, w.mac);
     wifi_format_trace(trace, sizeof(trace));

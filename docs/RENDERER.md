@@ -1,6 +1,6 @@
 # NeoTree Rendering Engine — Design
 
-**Status:** Design agreed · M1-M3 done · M4 (collisions, rules, emitters) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
+**Status:** Design agreed · M1-M4 done · M5 (modes, stacking, lifecycle, app mode picker) done 2026-09-24 · **Owner:** Dan · **Last updated:** 2026-09-24
 
 **Related:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) §6 defers volumetric
 rendering to this document. [`LED_OUTPUT.md`](./LED_OUTPUT.md) covers the
@@ -522,7 +522,7 @@ configuration (stack editing, layer/entity/rule settings, presets, shows).
 | M2 ✅ | Compositor: solid, pixel, field layers; masks; blends; master stage. Canvas mode; base scene = Canvas; existing messages translated to layer edits | Tree looks and behaves exactly as today; frame timing on the Debug page |
 | M3 ✅ | Entities: shapes, falloff, integration, global forces, boundaries, surface constraint, z-culling | Gravity and launch sweeps recreated as entity demos, on the tree and in the sim |
 | M4 ✅ | Collision groups, response table, events, rules/actions, templates, emitters, runaway protection | Snow and fireworks demos; ball-collision spawn chain stays bounded |
-| M5 | Modes, slots (stacking), lifecycle (end conditions, loop/chain/revert/remove/hold), transitions, scene description format, base scene as any scene; describe/select/param/layer protocol; app: mode picker and parameters | Stacked snow-over-rainbow; a chained scene verified over hours of sim time |
+| M5 ✅ | Modes, slots (stacking), lifecycle (end conditions, loop/chain/revert/remove/hold), transitions, scene description format, base scene as any scene; describe/select/param/layer protocol; app: mode picker and parameters | Stacked snow-over-rainbow; a chained scene verified over hours of sim time |
 | M6 | Shows, persistence of base scene and presets, state push to all phones; app: stack editing and presets | A holiday show loops unattended |
 | M7 | Direct entity control from the phone, stream channel, paintbrush | Flick a ball from the phone into the tree |
 | M8+ | App: full scene configuration (layers, entities, rules, forces, lifecycle), built as needed | A new effect built entirely from the app |
@@ -776,6 +776,65 @@ Also in M4:
   that happened to be unused - possibly behind the unexplained crash in M2.
   Both now have 4 KB (`PICO_STACK_SIZE`), and the status JSON reports each
   core's high-water mark (`safety.stack_used`), painted at boot.
+
+### M5 — done 2026-09-24
+
+- **Modes** (`engine/include/neotree/modes.hpp`): each fills one slot from
+  typed parameters (number with range and step, color, choice, toggle) with a
+  setup function, and optionally a per-tick hook and a live parameter hook
+  (otherwise a parameter change rebuilds the mode in place, keeping its age
+  and cycle count). 13 built in: canvas (the Home page's colors), solid,
+  gradient, rainbow, layers, lighthouse, sweep, bounce, snow, orbit,
+  fireworks, chain, mixer. The M3/M4 demos became modes; `demos.cpp` is
+  gone.
+- **Director** (`engine/include/neotree/director.hpp`) runs §8-§9 as
+  designed: a scene is 8 slot specs (0-3 start in the slots, 4-7 are chain
+  targets) with an optional scene duration and policy. Per mode: end on
+  duration, cycles or a rule's `end_mode` outcome, optionally drain (emitters
+  stop; it waits for entities with a lifetime to finish, with a timeout),
+  then loop (with repeats), chain, revert, remove or hold. Cut or fade
+  transitions, by slot opacity. `revert_scene` goes back to the base scene
+  and leaves an unchanged slot alone, so the Canvas keeps its paint.
+- **Presets:** Colors (the base scene), Snow on rainbow, Holiday show
+  (fireworks 30 s ⇄ snow 45 s over a gradient), Sweep tour (the three sweeps
+  by cycle count), Fireworks finale (12 bursts, then back to base).
+- **Protocol** (`neo_tree_protocol.hpp`): DESCRIBE (23, replies `0x83` +
+  compact JSON of every mode, parameter and preset - 3.2 KB, inside the 4 KB
+  reply frame), SLOT_SET (24), PARAM_SET (25), SLOT_END (26: end / revert /
+  remove / restart; slot 0xFF reverts the scene), SLOT_LIFE (27), INPUT (28)
+  and PRESET (29). The status JSON gains `scene`: every slot's mode, state,
+  age, cycles, parameter values and lifecycle. The old DEMO command runs a
+  mode in slot 1. Home page color commands still edit the Canvas; while
+  another mode holds slot 0 they are refused and counted (`rejected_edits`),
+  not special-cased (§8.3).
+- **App:** a Modes tab built entirely from DESCRIBE - scene chips, "Back to
+  base", and per slot a mode picker, controls for each parameter (sliders,
+  choice chips, switches, color pickers; drags send only the newest value),
+  and End / Clear. It polls the scene once a second while showing.
+  `mapping/neotree_net.py` has the same commands for scripts.
+- 82 engine unit tests (12 new for the director and presets).
+
+**Proof - chained scenes over hours:** `neotree_sim --scene holiday_show
+--duration 8h` (rendering all 1.7 million frames) ran in 54 s: fireworks and
+snow alternated 313 times each, with no dropped events, failed spawns or
+drain timeouts. A 2 h Sweep tour chained 1,058 sweeps;
+Fireworks finale reverted to the Canvas after its 12th burst.
+
+On the tree: stacked Snow on rainbow (72 entities) renders in 3.2-4.5 ms per
+frame; a fireworks slot with an 8 s lifecycle chained to mixer on time;
+reverting brought back the Canvas with its colors.
+
+**Stack depth.** Starting a mode runs deep (director → mode setup → rules),
+and core0 reached 3,056 of its 4,096 bytes. Two causes: `Director::tick` had
+a 1,144-byte frame from local copies of scene and slot specs (GCC reserves
+them on every call), and mode commands were applied inside the command
+handler's own large frame. Now the tick passes the specs by reference (72
+bytes) and mode commands are queued and applied at the start of the next
+frame. Core1 once peaked at 3,792: the status JSON is built in lwIP's
+interrupt on top of whatever core1 was doing, and its builder had a 1 KB
+frame; its buffers are now static. Peaks after the fixes: core0 1,984,
+core1 2,216. `-fstack-usage` on the compile commands in
+`build_pico2w/compile_commands.json` finds the big frames.
 
 ## 16. Memory estimate
 

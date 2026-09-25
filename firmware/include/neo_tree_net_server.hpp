@@ -29,6 +29,7 @@ enum class net_reply_type : uint8_t
     ACK = 0x80,
     HELLO = 0x81,
     STATUS = 0x82,   // [0x82][JSON] - reply to STATUS_REQUEST, sent before its ACK
+    DESCRIBE = 0x83, // [0x83][JSON] - reply to DESCRIBE: modes and presets
 };
 
 enum class net_status : uint8_t

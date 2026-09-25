@@ -113,6 +113,8 @@ enum class ActionType : uint8_t
     layer_color,    // layer[index] of this slot: color from color_from
     layer_opacity,  // layer[index].opacity = value
     signal,         // raises signal id = index, seen by rules in every slot
+    cycle,          // counts one cycle of this slot's mode (lifecycle end conditions)
+    end_mode,       // ends this slot's mode now, with outcome = index (lifecycle overrides)
 };
 
 // Which entities an action applies to.

@@ -31,7 +31,7 @@ void usage()
                  "                   [--render-every N] [--positions FILE] [--quiet]\n"
                  "  T accepts s/m/h/d suffixes (default 60s)\n"
                  "  scenes: %s (default empty)\n",
-                 neotree::sim::demo_scene_names().c_str());
+                 neotree::sim::scene_names().c_str());
 }
 
 std::string format_time(double s)
@@ -125,11 +125,12 @@ int main(int argc, char **argv)
     config.tick_hz = tick_hz;
     config.seed = seed;
     config.max_ticks_per_advance = 0;   // never drop time: run every tick
+    config.canvas_seed = neotree::sim::seed_canvas;
     engine.init(geometry, config, quiet ? nullptr : log_to_stderr);
-    if (!neotree::sim::setup_demo(engine, scene))
+    if (!neotree::sim::setup_scene(engine, scene))
     {
         std::fprintf(stderr, "unknown scene '%s' (have: %s)\n", scene.c_str(),
-                     neotree::sim::demo_scene_names().c_str());
+                     neotree::sim::scene_names().c_str());
         return 2;
     }
 
@@ -149,7 +150,6 @@ int main(int argc, char **argv)
         last_frame_time_us = t_us;
         if (render_every != 0 && f % render_every == 0)
         {
-            neotree::sim::update_demo(engine, scene);
             engine.render(frame);
             rendered++;
             led_evals += engine.stats().last_frame_led_evals;
@@ -173,6 +173,20 @@ int main(int argc, char **argv)
                 "%u spawns over quota, %u contacts dropped\n",
                 (unsigned)bs.peak_entities, (unsigned)bs.rule_fires, (unsigned)bs.events, (unsigned)bs.events_dropped,
                 (unsigned)bs.actions_dropped, (unsigned)bs.spawns_over_quota, (unsigned)bs.contacts_dropped);
+    const neotree::DirectorStats &ds = engine.director().stats();
+    std::printf("lifecycle     ends by duration %u, cycles %u, outcome %u, request %u; drain timeouts %u; "
+                "scene loops %u\n",
+                (unsigned)ds.ends[0], (unsigned)ds.ends[1], (unsigned)ds.ends[2], (unsigned)ds.ends[3],
+                (unsigned)ds.drain_timeouts, (unsigned)ds.scene_loops);
+    std::printf("mode starts  ");
+    for (uint8_t m = 0; m < neotree::mode_count(); m++)
+    {
+        if (ds.starts[m] != 0)
+        {
+            std::printf(" %s x%u", neotree::mode_at(m)->id, (unsigned)ds.starts[m]);
+        }
+    }
+    std::printf("\n");
     std::printf("scene         %s:%.0f LED-layer evaluations per frame, %.1f us per frame on this PC\n", scene.c_str(),
                 rendered ? static_cast<double>(led_evals) / static_cast<double>(rendered) : 0.0,
                 rendered ? wall_s * 1e6 / static_cast<double>(rendered) : 0.0);

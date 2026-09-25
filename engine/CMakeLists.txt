@@ -8,10 +8,11 @@
 
 add_library(neotree_engine STATIC
     src/behavior.cpp
-    src/demos.cpp
+    src/director.cpp
     src/engine.cpp
     src/entity.cpp
     src/geometry.cpp
+    src/modes.cpp
     src/mask.cpp
     src/scene.cpp
 )

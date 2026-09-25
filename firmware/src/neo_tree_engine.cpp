@@ -1,5 +1,6 @@
 #include "neo_tree_engine.hpp"
 
+#include <cstring>
 #include <span>
 
 #include "pico/stdlib.h"
@@ -7,7 +8,8 @@
 #include "dcm_physics_math.hpp"
 #include "neo_tree_config.hpp"
 #include "neo_tree_event_log.hpp"
-#include "neotree/demos.hpp"
+#include "neo_tree_protocol.hpp"
+#include "hardware/sync.h"
 #include "neotree/engine.hpp"
 
 namespace {
@@ -23,9 +25,15 @@ constexpr int16_t unmapped_z = -32768;
 constexpr uint8_t canvas_slot = 0;
 constexpr uint8_t canvas_background = 0;
 constexpr uint8_t canvas_paint = 1;
-// Built-in demos draw over the Canvas from here.
+// The old DEMO command's modes go here, over the Canvas.
 constexpr uint8_t demo_slot = 1;
-neotree::Demo demo = neotree::Demo::none;
+
+// The scene's state as JSON, published by core0 for the status report
+// (built on core1): a snapshot under a lock, not a live read of the engine.
+constexpr size_t scene_json_max = 1600;
+char scene_json[scene_json_max] = "{}";
+spin_lock_t *scene_lock = nullptr;
+uint64_t scene_published_us = 0;
 
 // Static: the geometry is ~31 KB and the engine (pixel buffers, entities,
 // its own float frame) ~95 KB - far too big for core0's stack.
@@ -40,6 +48,19 @@ cylindrical_coordinates legacy_positions[neotree::LedGeometry::max_leds];
 
 uint64_t last_frame_us = 0;
 volatile engine_host_stats_t stats = {};
+
+// Mode commands (and DEMO) are queued and applied at the start of the next
+// frame instead of inside process_msg: setting a mode up runs deep (director
+// -> mode setup -> rules), and process_msg's own frame is large, so applying
+// them there took core0 to ~3 KB of its 4 KB stack.
+struct pending_command
+{
+    uint8_t bytes[engine_mode_command_max_len];
+    uint8_t len;
+};
+constexpr uint8_t max_pending_commands = 8;
+pending_command pending[max_pending_commands];
+uint8_t pending_count = 0;
 
 void log_event(const char *text) { event_logf("%s", text); }
 
@@ -68,20 +89,10 @@ void build_geometry()
     stats.positioned = geometry.positioned_count();
 }
 
-void build_canvas()
+// EngineConfig::canvas_seed: the Canvas background starts as the boot
+// pattern from init_my_tree(), as the old base colors did.
+void seed_canvas(std::span<Rgba8> bg)
 {
-    neotree::Scene &scene = engine.scene();
-    scene.clear_slot(canvas_slot);
-    int background = scene.add_layer(canvas_slot, neotree::LayerType::pixel);
-    int paint = scene.add_layer(canvas_slot, neotree::LayerType::pixel);
-    if (background != canvas_background || paint != canvas_paint)
-    {
-        event_logf("engine: canvas setup failed (%d, %d)", background, paint);
-        return;
-    }
-    // Background starts as the boot pattern, fully opaque; paint starts
-    // empty (transparent), as the old secondary colors started off.
-    std::span<Rgba8> bg = scene.pixels(canvas_slot, canvas_background);
     for (size_t i = 0; i < RGB_LED_3D::string_vec.size() && i < bg.size(); i++)
     {
         dcm_rgb_data c = RGB_LED_3D::string_vec[i]->get_base_RGB();
@@ -89,11 +100,32 @@ void build_canvas()
     }
 }
 
+void publish_scene()
+{
+    static char next[scene_json_max];   // static: keep it off core0's stack
+    engine.director().describe_state(next, sizeof(next));
+    uint32_t irq = spin_lock_blocking(scene_lock);
+    memcpy(scene_json, next, sizeof(scene_json));
+    spin_unlock(scene_lock, irq);
+    scene_published_us = time_us_64();
+}
+
+float read_f32(const uint8_t *p)
+{
+    float f;
+    memcpy(&f, p, sizeof(f));
+    return f;
+}
+
 // The Canvas layer a legacy command edits, or an empty span (command
 // rejected) if the live scene has no such layer.
 std::span<Rgba8> canvas_layer(uint8_t layer)
 {
-    std::span<Rgba8> px = engine.scene().pixels(canvas_slot, layer);
+    // Only while the Canvas mode is what's in its slot - otherwise the
+    // legacy commands have no target and are rejected.
+    const auto &info = engine.director().slot(canvas_slot);
+    const bool canvas = info.state != neotree::SlotState::empty && info.spec.mode == neotree::find_mode("canvas");
+    std::span<Rgba8> px = canvas ? engine.scene().pixels(canvas_slot, layer) : std::span<Rgba8>{};
     if (px.empty())
     {
         stats.rejected_edits = stats.rejected_edits + 1;
@@ -121,8 +153,14 @@ void engine_host_init()
     config.tick_hz = 120;
     config.seed = 1;
     config.max_ticks_per_advance = 8;
+    config.canvas_seed = seed_canvas;
     engine.init(geometry, config, log_event);
-    build_canvas();
+    // The base scene - what the tree boots into and reverts to - is the
+    // "Colors" preset: the Canvas alone.
+    engine.director().set_base_scene(neotree::preset_at(0));
+    engine.director().apply_scene(engine, neotree::preset_at(0), neotree::Transition::cut);
+    scene_lock = spin_lock_init(spin_lock_claim_unused(true));
+    publish_scene();
     last_frame_us = time_us_64();
 }
 
@@ -131,17 +169,162 @@ void engine_host_reload_geometry()
     build_geometry();
 }
 
-bool engine_host_set_demo(uint8_t id)
+static bool apply_demo(uint8_t id)
 {
-    if (id >= static_cast<uint8_t>(neotree::Demo::count))
+    // The old DEMO ids, now modes in the demo slot (0 = empty it).
+    static const char *const ids[] = {"",       "layers", "lighthouse", "sweep",     "sweep", "sweep",
+                                      "bounce", "snow",   "orbit",      "fireworks", "chain", "mixer"};
+    if (id >= sizeof(ids) / sizeof(ids[0]))
     {
         return false;
     }
-    demo = static_cast<neotree::Demo>(id);
-    neotree::setup_demo(engine, demo, demo_slot);
+    neotree::SlotSpec spec = id == 0 ? neotree::SlotSpec{} : neotree::SlotSpec::of(ids[id]);
+    if (id >= 3 && id <= 5)
+    {
+        spec.set("motion", static_cast<float>(id - 3));
+    }
+    engine.director().set_slot(engine, demo_slot, spec, neotree::Transition::cut);
     stats.demo = id;
-    event_logf("demo: %s", neotree::demo_name(demo));
+    publish_scene();
     return true;
+}
+
+static bool apply_mode_command(const uint8_t *msg, size_t len)
+{
+    using namespace neotree;
+    if (msg[0] == static_cast<uint8_t>(serial_msg_type::DEMO))
+    {
+        return apply_demo(msg[1]);
+    }
+    Director &d = engine.director();
+    const uint8_t slot = len > 1 ? msg[1] : 0xFF;
+    const bool slot_ok = slot < max_slots;
+    bool ok = true;
+    switch (static_cast<serial_msg_type>(msg[0]))
+    {
+    case serial_msg_type::SLOT_SET:
+    {
+        if (!slot_ok || (msg[2] != no_mode && mode_at(msg[2]) == nullptr))
+        {
+            return false;
+        }
+        SlotSpec spec;
+        if (const ModeDef *def = mode_at(msg[2]))
+        {
+            spec.mode = msg[2];
+            default_params(*def, spec.params);
+        }
+        d.set_slot(engine, slot, spec, msg[3] ? Transition::fade : Transition::cut);
+        break;
+    }
+    case serial_msg_type::PARAM_SET:
+    {
+        ParamValue v;
+        v.f = read_f32(msg + 3);
+        v.c = to_rgb(msg[7], msg[8], msg[9]);
+        ok = slot_ok && d.set_param(engine, slot, msg[2], v);
+        break;
+    }
+    case serial_msg_type::SLOT_END:
+        if (slot == 0xFF && msg[2] == 1)
+        {
+            d.revert_scene(engine);
+            break;
+        }
+        if (!slot_ok)
+        {
+            return false;
+        }
+        switch (msg[2])
+        {
+        case 0: d.end_slot(engine, slot, 0, EndReason::request); break;
+        case 1: d.revert_slot(engine, slot); break;
+        case 2: d.set_slot(engine, slot, SlotSpec{}, Transition::fade); break;
+        case 3: d.restart_slot(engine, slot); break;
+        default: return false;
+        }
+        break;
+    case serial_msg_type::SLOT_LIFE:
+    {
+        if (!slot_ok || msg[6] > static_cast<uint8_t>(EndPolicy::hold))
+        {
+            return false;
+        }
+        Lifecycle life;
+        life.duration_s = static_cast<float>(msg[2] | (msg[3] << 8));
+        life.cycles = static_cast<uint16_t>(msg[4] | (msg[5] << 8));
+        life.policy = static_cast<EndPolicy>(msg[6]);
+        life.repeats = msg[7];
+        life.transition = msg[9] ? Transition::fade : Transition::cut;
+        life.transition_s = msg[10] * 0.1f;
+        SlotSpec target;
+        const SlotSpec *chain = nullptr;
+        if (const ModeDef *def = mode_at(msg[8]))
+        {
+            target.mode = msg[8];
+            default_params(*def, target.params);
+            chain = &target;
+        }
+        d.set_lifecycle(slot, life, chain);
+        break;
+    }
+    case serial_msg_type::INPUT:
+        if (!slot_ok)
+        {
+            return false;
+        }
+        engine.input(slot, msg[2], read_f32(msg + 3));
+        break;
+    case serial_msg_type::PRESET:
+        if (msg[1] >= preset_count())
+        {
+            return false;
+        }
+        d.apply_scene(engine, preset_at(msg[1]));
+        break;
+    default:
+        return false;
+    }
+    publish_scene();
+    return ok;
+}
+
+static bool queue_command(const uint8_t *msg, size_t len)
+{
+    if (len > sizeof(pending[0].bytes) || pending_count >= max_pending_commands)
+    {
+        return false;
+    }
+    memcpy(pending[pending_count].bytes, msg, len);
+    pending[pending_count].len = static_cast<uint8_t>(len);
+    pending_count++;
+    return true;
+}
+
+bool engine_host_set_demo(uint8_t id)
+{
+    const uint8_t msg[2] = {static_cast<uint8_t>(serial_msg_type::DEMO), id};
+    return queue_command(msg, sizeof(msg));
+}
+
+bool engine_host_mode_command(const uint8_t *msg, size_t len)
+{
+    return queue_command(msg, len);
+}
+
+size_t engine_host_scene_json(char *out, size_t cap)
+{
+    if (scene_lock == nullptr || cap == 0)
+    {
+        return 0;
+    }
+    uint32_t irq = spin_lock_blocking(scene_lock);
+    size_t n = strnlen(scene_json, scene_json_max);
+    n = n < cap - 1 ? n : cap - 1;
+    memcpy(out, scene_json, n);
+    out[n] = '\0';
+    spin_unlock(scene_lock, irq);
+    return n;
 }
 
 void engine_host_set_output(bool enabled)
@@ -151,11 +334,19 @@ void engine_host_set_output(bool enabled)
 
 void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
 {
+    for (uint8_t i = 0; i < pending_count; i++)
+    {
+        if (!apply_mode_command(pending[i].bytes, pending[i].len))
+        {
+            event_logf("mode command %u rejected", (unsigned)pending[i].bytes[0]);
+        }
+    }
+    pending_count = 0;
+
     uint64_t t0 = time_us_64();
     engine.advance((int64_t)(now_us - last_frame_us));
     last_frame_us = now_us;
     uint64_t t1 = time_us_64();
-    neotree::update_demo(engine, demo, demo_slot);
     engine.render_bytes(frame);
     size_t n = count < geometry.count() ? count : geometry.count();
     pack_words(words, n);
@@ -181,6 +372,11 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     stats.last_advance_us = (uint32_t)(t1 - t0);
     stats.last_render_us = (uint32_t)(t2 - t1);
     uint32_t now_ms = (uint32_t)(t2 / 1000);
+    // Lifecycles move on their own: republish the scene state a few times a second.
+    if (t2 - scene_published_us > 250'000)
+    {
+        publish_scene();
+    }
     if (stats.last_advance_us > stats.max_advance_us)
     {
         stats.max_advance_us = stats.last_advance_us;

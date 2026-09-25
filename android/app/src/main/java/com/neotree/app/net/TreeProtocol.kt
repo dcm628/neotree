@@ -21,6 +21,8 @@ object TreeProtocol {
     const val REPLY_HELLO = 0x81
     /** [0x82][JSON] - reply to STATUS_REQUEST, sent just before its ACK. */
     const val REPLY_STATUS = 0x82
+    /** [0x83][JSON] - reply to DESCRIBE (ModeCatalog), sent just before its ACK. */
+    const val REPLY_DESCRIBE = 0x83
 
     private const val NOOP = 0
     private const val COLOR_GROUP_RGB_UPDATE = 2
@@ -28,6 +30,11 @@ object TreeProtocol {
     private const val REBOOT = 19
     private const val WIFI_RECONNECT = 20
     private const val DEMO = 22
+    private const val DESCRIBE = 23
+    private const val SLOT_SET = 24
+    private const val PARAM_SET = 25
+    private const val SLOT_END = 26
+    private const val PRESET = 29
 
     /** Round-trip check - the tree just ACKs it. */
     fun noop(): ByteArray = byteArrayOf(NOOP.toByte())
@@ -39,14 +46,41 @@ object TreeProtocol {
     fun wifiReconnect(): ByteArray = byteArrayOf(WIFI_RECONNECT.toByte())
 
     /**
-     * The engine's built-in demos, by id (firmware engine/include/neotree/demos.hpp).
-     * They run over the Canvas until modes arrive; id 0 stops them.
+     * The old DEMO command: runs one of the modes in slot 1, over the Canvas
+     * (firmware neo_tree_engine.cpp); id 0 empties the slot.
      */
     val DEMOS = listOf(
         "Off", "Layers", "Lighthouse", "Sweep", "Drop", "Launch", "Bounce", "Snow", "Orbit",
         "Fireworks", "Chain", "Mixer",
     )
     fun demo(id: Int): ByteArray = byteArrayOf(DEMO.toByte(), id.toByte())
+
+    // ---- modes (firmware engine/include/neotree/director.hpp) ----
+
+    /** Asks for the modes and presets (REPLY_DESCRIBE). */
+    fun describe(): ByteArray = byteArrayOf(DESCRIBE.toByte())
+
+    /** Starts a mode (ModeInfo.index) in a slot, or empties it (mode -1); fade eases the change. */
+    fun slotSet(slot: Int, mode: Int, fade: Boolean): ByteArray =
+        byteArrayOf(SLOT_SET.toByte(), slot.toByte(), (if (mode < 0) 0xFF else mode).toByte(), (if (fade) 1 else 0).toByte())
+
+    /** Sets a parameter of the mode running in a slot: numbers use value, colors use color. */
+    fun paramSet(slot: Int, param: Int, value: Float, color: Rgb): ByteArray = message(10) {
+        put(PARAM_SET.toByte()); put(slot.toByte()); put(param.toByte())
+        putFloat(value)
+        putRgb(color)
+    }
+
+    /** SLOT_END operations. */
+    enum class SlotEnd(val code: Int) { END(0), REVERT(1), REMOVE(2), RESTART(3) }
+
+    fun slotEnd(slot: Int, op: SlotEnd): ByteArray = byteArrayOf(SLOT_END.toByte(), slot.toByte(), op.code.toByte())
+
+    /** Back to the base scene (the Canvas with your colors, as the tree boots). */
+    fun revertScene(): ByteArray = byteArrayOf(SLOT_END.toByte(), 0xFF.toByte(), SlotEnd.REVERT.code.toByte())
+
+    /** Applies a preset scene (ModeCatalog.presets index). */
+    fun preset(index: Int): ByteArray = byteArrayOf(PRESET.toByte(), index.toByte())
 
     /** LEDs per string, in order - strings 1-4 are LEDs 0-299, 300-599, 600-799, 800-999. */
     val STRING_LENGTHS = intArrayOf(300, 300, 200, 200)
@@ -89,6 +123,13 @@ object TreeProtocol {
         20 -> "WIFI_RECONNECT"
         21 -> "BOOTSEL"
         22 -> "DEMO"
+        23 -> "DESCRIBE"
+        24 -> "SLOT_SET"
+        25 -> "PARAM_SET"
+        26 -> "SLOT_END"
+        27 -> "SLOT_LIFE"
+        28 -> "INPUT"
+        29 -> "PRESET"
         else -> "TYPE_$type"
     }
 
