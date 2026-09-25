@@ -56,12 +56,26 @@ void Engine::run_ticks(uint32_t n)
 
 void Engine::tick()
 {
-    // Rules first (last tick's events, timers, counts), then emitters,
-    // motion, collisions. Lifecycles join in M5.
+    // The director first (mode ticks, lifecycles), then rules (last tick's
+    // events, timers, counts), emitters, motion, collisions.
     const float dt = clock_.tick_dt_s();
+    uint32_t (*const clock)() = config_.profile_clock;
+    uint32_t t = clock != nullptr ? clock() : 0;
+    // Adds the time since the last mark to part (when profiling).
+    auto mark = [&](uint64_t &part) {
+        if (clock != nullptr)
+        {
+            const uint32_t now = clock();
+            part += now - t;
+            t = now;
+        }
+    };
     director_.tick(*this, dt);
+    mark(profile_.director);
     behavior_.handle_events(*this, dt);
+    mark(profile_.events);
     behavior_.run_emitters(*this, dt);
+    mark(profile_.emitters);
     for (uint16_t k = 0; k < entities_.capacity; k++)
     {
         if (!entities_.alive(k))
@@ -69,7 +83,12 @@ void Engine::tick()
             continue;
         }
         Entity &e = entities_.item(k);
+        const uint32_t s0 = clock != nullptr ? clock() : 0;
         const StepResult r = step_entity(e, forces_, world_, *geometry_, dt);
+        if (clock != nullptr)
+        {
+            profile_.step += clock() - s0;
+        }
         const Handle h = entities_.handle_at(k);
         if (r.hits != 0 && behavior_.listens(e.slot, EventType::boundary))
         {
@@ -101,11 +120,15 @@ void Engine::tick()
             entities_.destroy(h);
         }
     }
+    mark(profile_.entity_loop);
     behavior_.collide(*this);
+    mark(profile_.collide);
     behavior_.recount(entities_);
+    mark(profile_.recount);
     stats_.entities = entities_.size();
     clock_.advance_tick();
     stats_.ticks++;
+    profile_.ticks++;
 }
 
 void Engine::render(std::span<Rgb> out)
@@ -189,7 +212,15 @@ void Engine::render_bytes(std::span<Rgb8> out)
         return;
     }
     std::span<Rgb> frame(frame_, n);
-    stats_.last_frame_led_evals = composite(scene_, *geometry_, clock_.time_us(), entities_, scratch_, frame);
+    uint32_t (*const clock)() = config_.profile_clock;
+    const uint32_t t0 = clock != nullptr ? clock() : 0;
+    CompositeProfile cp;
+    cp.clock = clock;
+    stats_.last_frame_led_evals = composite(scene_, *geometry_, clock_.time_us(), entities_, scratch_, frame, &cp);
+    const uint32_t t1 = clock != nullptr ? clock() : 0;
+    profile_.composite += t1 - t0;
+    profile_.entity_draw += cp.entity_draw;
+    profile_.frames++;
 
     const float k = master_.brightness;
     if (master_.gamma == 1.0f)
@@ -198,6 +229,7 @@ void Engine::render_bytes(std::span<Rgb8> out)
         {
             out[i] = {unit_to_byte(frame_[i].r * k), unit_to_byte(frame_[i].g * k), unit_to_byte(frame_[i].b * k)};
         }
+        profile_.master += (clock != nullptr ? clock() : 0) - t1;
         return;
     }
     const float gamma = master_.gamma;

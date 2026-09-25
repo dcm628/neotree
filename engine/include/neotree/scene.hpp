@@ -107,11 +107,18 @@ private:
     bool buffer_used_[max_pixel_buffers] = {};
 };
 
+// Optional timing of composite's parts (EngineConfig::profile_clock).
+struct CompositeProfile
+{
+    uint32_t (*clock)() = nullptr;
+    uint64_t entity_draw = 0;   // drawing entities into their scratch buffers
+};
+
 // Composites the scene into out (one entry per LED, starting from black).
 // time_us drives animated fields; entity layers draw from entities, using
 // scratch. Returns the number of LED-layer and LED-entity evaluations (the
 // platform-independent cost measure).
 uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time_us, const EntityPool &entities,
-                   EntityScratch &scratch, std::span<Rgb> out);
+                   EntityScratch &scratch, std::span<Rgb> out, CompositeProfile *profile = nullptr);
 
 }  // namespace neotree

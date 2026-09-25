@@ -154,6 +154,54 @@ NEOTREE_INLINE void run_layer(const Layer &layer, float base_alpha, const LedGeo
     evals += n_evals;
 }
 
+// The same, over a list of LEDs (e.g. only the positioned ones).
+template <Blend Mode, typename Sample>
+NEOTREE_INLINE void run_layer_at(const Layer &layer, float base_alpha, const LedGeometry &geometry, std::span<Rgb> out,
+                                 std::span<const uint16_t> leds, uint32_t &evals, Sample sample)
+{
+    const bool masked = layer.mask.shape != MaskShape::none;
+    uint32_t n_evals = 0;
+    for (uint16_t i : leds)
+    {
+        if (i >= out.size())
+        {
+            continue;
+        }
+        float a = base_alpha;
+        Rgb src;
+        if (!sample(i, src, a))
+        {
+            continue;
+        }
+        if (masked)
+        {
+            a *= mask_coverage(layer.mask, geometry, i);
+            if (a <= 0.0f)
+            {
+                continue;
+            }
+        }
+        n_evals++;
+        blend_into(out[i], src, a, Mode);
+    }
+    evals += n_evals;
+}
+
+template <typename Sample>
+NEOTREE_INLINE void run_layer_any_blend_at(const Layer &layer, float base_alpha, const LedGeometry &geometry,
+                                           std::span<Rgb> out, std::span<const uint16_t> leds, uint32_t &evals,
+                                           Sample sample)
+{
+    switch (layer.blend)
+    {
+    case Blend::normal: run_layer_at<Blend::normal>(layer, base_alpha, geometry, out, leds, evals, sample); break;
+    case Blend::add: run_layer_at<Blend::add>(layer, base_alpha, geometry, out, leds, evals, sample); break;
+    case Blend::max: run_layer_at<Blend::max>(layer, base_alpha, geometry, out, leds, evals, sample); break;
+    case Blend::multiply: run_layer_at<Blend::multiply>(layer, base_alpha, geometry, out, leds, evals, sample); break;
+    case Blend::replace: run_layer_at<Blend::replace>(layer, base_alpha, geometry, out, leds, evals, sample); break;
+    }
+}
+
 template <typename Sample>
 NEOTREE_INLINE void run_layer_any_blend(const Layer &layer, float base_alpha, const LedGeometry &geometry, std::span<Rgb> out,
                          uint32_t &evals, Sample sample)
@@ -170,7 +218,8 @@ NEOTREE_INLINE void run_layer_any_blend(const Layer &layer, float base_alpha, co
 
 NEOTREE_HOT void composite_layer(const Scene &scene, uint8_t slot, uint8_t layer_index, float slot_opacity,
                                  const LedGeometry &geometry, int64_t time_us, const EntityPool &entities,
-                                 EntityScratch &scratch, std::span<Rgb> out, uint32_t &evals)
+                                 EntityScratch &scratch, std::span<Rgb> out, uint32_t &evals,
+                                 CompositeProfile *profile)
 {
     const Layer &layer = *scene.layer(slot, layer_index);
     const float base_alpha = layer.opacity * slot_opacity;
@@ -211,39 +260,39 @@ NEOTREE_HOT void composite_layer(const Scene &scene, uint8_t slot, uint8_t layer
     {
         const FieldParams f = layer.field;
         const LedGeometry *g = &geometry;
+        // Fields only color positioned LEDs, so only those are visited.
         if (f.kind == FieldKind::height_gradient)
         {
-            run_layer_any_blend(layer, base_alpha, geometry, out, evals, [f, g](size_t i, Rgb &src, float &) {
-                uint16_t led = static_cast<uint16_t>(i);
-                if (!g->has_position(led))
-                {
-                    return false;
-                }
-                src = lerp(f.color_a, f.color_b, g->height01(led));
-                return true;
-            });
+            run_layer_any_blend_at(layer, base_alpha, geometry, out, geometry.z_order(), evals,
+                                   [f, g](size_t i, Rgb &src, float &) {
+                                       src = lerp(f.color_a, f.color_b, g->height01(static_cast<uint16_t>(i)));
+                                       return true;
+                                   });
         }
         else
         {
             const float spin = cycle_phase(static_cast<double>(f.spin_rps), time_us);
-            run_layer_any_blend(layer, base_alpha, geometry, out, evals, [f, g, spin](size_t i, Rgb &src, float &) {
-                uint16_t led = static_cast<uint16_t>(i);
-                if (!g->has_position(led))
-                {
-                    return false;
-                }
-                float turn = g->angle(led) / two_pi - spin;
-                src = hsv(360.0f * f.hue_cycles * turn, f.saturation, f.value);
-                return true;
-            });
+            run_layer_any_blend_at(layer, base_alpha, geometry, out, geometry.z_order(), evals,
+                                   [f, g, spin](size_t i, Rgb &src, float &) {
+                                       float turn = g->angle(static_cast<uint16_t>(i)) / two_pi - spin;
+                                       src = hsv(360.0f * f.hue_cycles * turn, f.saturation, f.value);
+                                       return true;
+                                   });
         }
         break;
     }
     case LayerType::entity:
     {
+        const uint32_t t0 = profile != nullptr ? profile->clock() : 0;
         evals += render_entities(entities, slot, layer_index, layer.combine, geometry, scratch);
+        if (profile != nullptr)
+        {
+            profile->entity_draw += profile->clock() - t0;
+        }
         const EntityScratch *s = &scratch;
-        run_layer_any_blend(layer, base_alpha, geometry, out, evals, [s](size_t i, Rgb &src, float &a) {
+        // Only positioned LEDs can be lit by an entity: 233 of 1000 today.
+        run_layer_any_blend_at(layer, base_alpha, geometry, out, geometry.z_order(), evals,
+                               [s](size_t i, Rgb &src, float &a) {
             const float cover = s->alpha[i];
             if (cover <= 0.0f)
             {
@@ -277,8 +326,12 @@ bool covers_everything(const Slot &slot, const Layer &layer)
 }  // namespace
 
 uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time_us, const EntityPool &entities,
-                   EntityScratch &scratch, std::span<Rgb> out)
+                   EntityScratch &scratch, std::span<Rgb> out, CompositeProfile *profile)
 {
+    if (profile != nullptr && profile->clock == nullptr)
+    {
+        profile = nullptr;
+    }
     uint32_t evals = 0;
     std::span<Rgb> leds = out.first(out.size() < geometry.count() ? out.size() : geometry.count());
 
@@ -320,7 +373,8 @@ uint32_t composite(const Scene &scene, const LedGeometry &geometry, int64_t time
             const Layer &layer = slot->layers[l];
             if (layer.enabled && layer.type != LayerType::empty)
             {
-                composite_layer(scene, s, l, slot->opacity, geometry, time_us, entities, scratch, leds, evals);
+                composite_layer(scene, s, l, slot->opacity, geometry, time_us, entities, scratch, leds, evals,
+                                profile);
             }
         }
     }

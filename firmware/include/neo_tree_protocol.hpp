@@ -83,10 +83,14 @@ enum class serial_msg_type : uint8_t
     // Network only: [flags: bit 0 scene, bit 1 library] - this connection is
     // sent SCENE / LIBRARY frames whenever they change (and once now).
     SUBSCRIBE,      // 36
+    // Diagnostic: [type] - times the engine's work with core1 running and
+    // with it paused (and a few math functions); results in the event log.
+    // Pauses WiFi for a few tens of milliseconds.
+    BENCH,          // 37
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::SUBSCRIBE) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::BENCH) + 1;
 
 // SCENE_SAVE / SHOW_SET name field size (neotree::name_size).
 const size_t protocol_name_len = 20;

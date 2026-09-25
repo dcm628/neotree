@@ -1,8 +1,10 @@
 #include "neo_tree_engine.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <span>
 
+#include "pico/multicore.h"
 #include "pico/stdlib.h"
 
 #include "dcm_physics_math.hpp"
@@ -10,6 +12,7 @@
 #include "neo_tree_event_log.hpp"
 #include "neo_tree_protocol.hpp"
 #include "neo_tree_scene_store.hpp"
+#include "hardware/structs/m33.h"
 #include "hardware/sync.h"
 #include "neotree/engine.hpp"
 
@@ -80,6 +83,16 @@ pending_command pending[max_pending_commands];
 uint8_t pending_count = 0;
 
 void log_event(const char *text) { event_logf("%s", text); }
+
+// EngineConfig::profile_clock: core0's CPU cycle counter (150 per us).
+uint32_t cycle_clock() { return m33_hw->dwt_cyccnt; }
+
+void enable_cycle_counter()
+{
+    m33_hw->demcr |= M33_DEMCR_TRCENA_BITS;
+    m33_hw->dwt_cyccnt = 0;
+    m33_hw->dwt_ctrl |= M33_DWT_CTRL_CYCCNTENA_BITS;
+}
 
 void build_geometry()
 {
@@ -215,6 +228,8 @@ void engine_host_init()
     config.seed = 1;
     config.max_ticks_per_advance = 8;
     config.canvas_seed = seed_canvas;
+    enable_cycle_counter();
+    config.profile_clock = cycle_clock;   // a few register reads per tick: always on
     engine.init(geometry, config, log_event);
     // The stored library (user presets and shows, the base scene, the
     // startup show); the built-ins if there's none. Then the startup show,
@@ -256,6 +271,90 @@ static bool apply_demo(uint8_t id)
     stats.demo = id;
     publish_scene();
     return true;
+}
+
+// BENCH: the same work timed with core1 running and paused, to see how much
+// sharing the flash cache and memory with core1 (WiFi) costs core0.
+static volatile float bench_sink;
+
+static uint32_t bench_render(int n)
+{
+    uint64_t t0 = time_us_64();
+    for (int i = 0; i < n; i++)
+    {
+        engine.render_bytes(frame);
+    }
+    return (uint32_t)((time_us_64() - t0) / n);
+}
+
+static uint32_t bench_ticks(int n)
+{
+    uint64_t t0 = time_us_64();
+    engine.run_ticks(n);
+    return (uint32_t)((time_us_64() - t0) / n);
+}
+
+// ns per call of each math function (1000 calls; inputs vary so nothing folds).
+static void bench_math(uint32_t out_ns[4])
+{
+    float acc = 0.0f;
+    uint64_t t0 = time_us_64();
+    for (int i = 0; i < 1000; i++) acc += expf(-0.3f * (float)i * 1e-3f);
+    uint64_t t1 = time_us_64();
+    for (int i = 0; i < 1000; i++) acc += fmodf((float)i * 0.37f, 6.2831853f);
+    uint64_t t2 = time_us_64();
+    for (int i = 0; i < 1000; i++) acc += sqrtf((float)i + 0.5f);
+    uint64_t t3 = time_us_64();
+    for (int i = 0; i < 1000; i++) acc += atan2f((float)i - 500.0f, 250.0f);
+    uint64_t t4 = time_us_64();
+    bench_sink = acc;
+    out_ns[0] = (uint32_t)(t1 - t0);   // us per 1000 = ns per call
+    out_ns[1] = (uint32_t)(t2 - t1);
+    out_ns[2] = (uint32_t)(t3 - t2);
+    out_ns[3] = (uint32_t)(t4 - t3);
+}
+
+// The engine's own profile over 20 ticks and 10 renders, in cycles per tick /
+// per frame (core1 running as usual).
+static void bench_profile()
+{
+    engine.reset_profile();
+    engine.run_ticks(20);
+    for (int i = 0; i < 10; i++)
+    {
+        engine.render_bytes(frame);
+    }
+    const neotree::EngineProfile &p = engine.profile();
+    auto per = [](uint64_t v, uint32_t n) { return (unsigned)(n != 0 ? v / n : 0); };
+    event_logf("prof/tick: dir %u ev %u emit %u loop %u", per(p.director, p.ticks), per(p.events, p.ticks),
+               per(p.emitters, p.ticks), per(p.entity_loop, p.ticks));
+    event_logf("prof/tick: step %u coll %u recount %u", per(p.step, p.ticks), per(p.collide, p.ticks),
+               per(p.recount, p.ticks));
+    event_logf("prof/frame: comp %u draw %u master %u", per(p.composite, p.frames), per(p.entity_draw, p.frames),
+               per(p.master, p.frames));
+}
+
+static void run_bench()
+{
+    uint32_t math_on[4], math_off[4];
+    bench_profile();
+    const uint32_t render_on = bench_render(10);
+    const uint32_t ticks_on = bench_ticks(10);
+    bench_math(math_on);
+    multicore_lockout_start_blocking();
+    const uint32_t render_off = bench_render(10);
+    const uint32_t ticks_off = bench_ticks(10);
+    bench_math(math_off);
+    multicore_lockout_end_blocking();
+    // One short line each: event log entries hold 72 characters.
+    event_logf("bench: %u ent %u evals", (unsigned)engine.stats().entities,
+               (unsigned)engine.stats().last_frame_led_evals);
+    event_logf("bench: render %u us, core1 paused %u", (unsigned)render_on, (unsigned)render_off);
+    event_logf("bench: tick %u us, core1 paused %u", (unsigned)ticks_on, (unsigned)ticks_off);
+    event_logf("bench ns: expf %u/%u fmodf %u/%u", (unsigned)math_on[0], (unsigned)math_off[0],
+               (unsigned)math_on[1], (unsigned)math_off[1]);
+    event_logf("bench ns: sqrtf %u/%u atan2f %u/%u", (unsigned)math_on[2], (unsigned)math_off[2],
+               (unsigned)math_on[3], (unsigned)math_off[3]);
 }
 
 // SCENE_SAVE, LIBRARY_DELETE, SHOW_SET, SHOW_PLAY, SHOW_BOOT.
@@ -432,6 +531,9 @@ static bool apply_mode_command(const uint8_t *msg, size_t len)
     case serial_msg_type::SHOW_PLAY:
     case serial_msg_type::SHOW_BOOT:
         ok = apply_library_command(msg);
+        break;
+    case serial_msg_type::BENCH:
+        run_bench();
         break;
     default:
         return false;

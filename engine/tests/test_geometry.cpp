@@ -1,4 +1,5 @@
 #include <cmath>
+#include <vector>
 
 #include "doctest/doctest.h"
 #include "neotree/geometry.hpp"
@@ -21,6 +22,56 @@ void build(std::initializer_list<LedPoint> points)
 }
 
 }  // namespace
+
+TEST_CASE("geometry: near() yields every LED within reach, each exactly once, and few others")
+{
+    // A cone of LEDs like the tree: 900 on a spiral, radius shrinking with height.
+    geometry.reset(900);
+    for (uint16_t i = 0; i < 900; i++)
+    {
+        const float z = 2.2f * i;
+        geometry.set(i, led_point_from_cylindrical(z, 600.0f - 0.25f * z + 30.0f * std::sin(0.37f * i), 137.5f * i));
+    }
+    geometry.finalize();
+
+    uint32_t seed = 12345;
+    auto rnd = [&]() {
+        seed = seed * 1664525u + 1013904223u;
+        return static_cast<float>(seed >> 8) / 16777216.0f;
+    };
+    std::vector<int> seen(900);
+    uint32_t yielded = 0;
+    uint32_t inside = 0;
+    for (int trial = 0; trial < 3000; trial++)
+    {
+        // Points around, inside and above the tree; reaches from tiny to the whole tree.
+        const float r = 700.0f * rnd();
+        const float a = two_pi * rnd();
+        const Vec3 c{r * std::cos(a), r * std::sin(a), -200.0f + 2400.0f * rnd()};
+        const float reach = trial % 10 == 0 ? 1500.0f * rnd() : 20.0f + 250.0f * rnd();
+        std::fill(seen.begin(), seen.end(), 0);
+        geometry.near(c, reach, [&](std::span<const uint16_t> leds) {
+            for (uint16_t i : leds)
+            {
+                seen[i]++;
+                yielded++;
+            }
+        });
+        for (uint16_t i = 0; i < 900; i++)
+        {
+            const Vec3 p = geometry.position(i);
+            const float d2 = (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y) + (p.z - c.z) * (p.z - c.z);
+            REQUIRE(seen[i] <= 1);
+            if (d2 <= reach * reach)
+            {
+                inside++;
+                REQUIRE(seen[i] == 1);
+            }
+        }
+    }
+    MESSAGE("near(): yielded " << yielded << " LEDs for " << inside << " within reach");
+    CHECK(yielded < 4 * inside);   // culls: far fewer than the ~height-band superset
+}
 
 TEST_CASE("geometry: cylindrical input converts to cartesian and back")
 {

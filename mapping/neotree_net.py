@@ -55,6 +55,8 @@ SHOW_SET_MSG_TYPE = 33
 SHOW_PLAY_MSG_TYPE = 34
 SHOW_BOOT_MSG_TYPE = 35
 SUBSCRIBE_MSG_TYPE = 36
+# Diagnostic: times the engine with core1 running / paused; results in the status events.
+BENCH_MSG_TYPE = 37
 NAME_LEN = 20
 
 STATUS_NAMES = {

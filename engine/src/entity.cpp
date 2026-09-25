@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "neotree/color.hpp"
 #include "neotree/hot.hpp"
 
 namespace neotree {
@@ -129,6 +130,18 @@ float life_fade(const Entity &e)
     return std::clamp(k, 0.0f, 1.0f);
 }
 
+// exp(-x) for the per-tick drag factor. x = drag * dt is tiny (0.3 / 120),
+// where a short series is exact to float precision and skips the library
+// call (~430 ns on the Pico - per entity, per tick).
+float decay(float x)
+{
+    if (x < 0.1f)
+    {
+        return 1.0f - x * (1.0f - x * (0.5f - x * (1.0f / 6.0f - x * (1.0f / 24.0f))));
+    }
+    return std::exp(-x);
+}
+
 void respawn(Entity &e)
 {
     e.pos = e.spawn_pos;
@@ -201,7 +214,23 @@ StepResult step_entity(Entity &e, const Forces &forces, const World &world, cons
         result.expired = true;
         return result;
     }
-    e.angle = std::fmod(e.angle + e.spin * dt + two_pi, two_pi);
+    if (e.spin != 0.0f)
+    {
+        // Back into [0, 2pi): fmod(a, 2pi) with a = angle + turn + 2pi. A
+        // tick turns a fraction of a turn, so a is almost always in
+        // [0, 4pi), where fmod is one exact subtraction (Sterbenz) - the
+        // same bits, without fmodf's ~570 ns on the Pico.
+        float a = e.angle + e.spin * dt + two_pi;
+        if (a >= two_pi && a < 2.0f * two_pi)
+        {
+            a -= two_pi;
+        }
+        else if (a < 0.0f || a >= two_pi)
+        {
+            a = std::fmod(a, two_pi);
+        }
+        e.angle = a;
+    }
 
     if (!e.kinematic)
     {
@@ -222,7 +251,7 @@ StepResult step_entity(Entity &e, const Forces &forces, const World &world, cons
         e.vel = add(e.vel, scale(a, dt));
         if (e.drag > 0.0f)
         {
-            e.vel = scale(e.vel, std::exp(-e.drag * dt));
+            e.vel = scale(e.vel, decay(e.drag * dt));
         }
     }
     e.pos = add(e.pos, scale(e.vel, dt));
@@ -310,13 +339,13 @@ NEOTREE_INLINE void accumulate(EntityScratch &s, uint16_t i, Rgb c, float cov)
     if constexpr (Combine == EntityCombine::add)
     {
         s.color[i] = {s.color[i].r + c.r * cov, s.color[i].g + c.g * cov, s.color[i].b + c.b * cov};
-        s.alpha[i] = std::min(1.0f, s.alpha[i] + cov);
+        s.alpha[i] = min_f(1.0f, s.alpha[i] + cov);
     }
     else
     {
-        s.color[i] = {std::max(s.color[i].r, c.r * cov), std::max(s.color[i].g, c.g * cov),
-                      std::max(s.color[i].b, c.b * cov)};
-        s.alpha[i] = std::max(s.alpha[i], cov);
+        s.color[i] = {max_f(s.color[i].r, c.r * cov), max_f(s.color[i].g, c.g * cov),
+                      max_f(s.color[i].b, c.b * cov)};
+        s.alpha[i] = max_f(s.alpha[i], cov);
     }
 }
 
@@ -331,11 +360,11 @@ NEOTREE_INLINE float falloff_at(float d, float inv_w)
     }
     else if constexpr (F == Falloff::linear)
     {
-        return std::clamp(0.5f - d * inv_w, 0.0f, 1.0f);
+        return clamp01(0.5f - d * inv_w);
     }
     else if constexpr (F == Falloff::smooth)
     {
-        float s = std::clamp(0.5f - d * inv_w, 0.0f, 1.0f);
+        float s = clamp01(0.5f - d * inv_w);
         return s * s * (3.0f - 2.0f * s);
     }
     else   // glow
@@ -349,71 +378,139 @@ NEOTREE_INLINE float falloff_at(float d, float inv_w)
     }
 }
 
-// The per-LED loop for one entity, specialized by shape and falloff so it
-// only fetches what it needs and decides nothing per LED. The entity's
-// settings are copied to locals first: read through the reference, the
-// compiler has to reload them after every store to the (float) scratch
-// buffer, since it can't rule out the two overlapping.
+// Draws one entity, specialized by shape and falloff so it decides nothing
+// per LED. Set up once per entity (the constructor); run() is the per-LED
+// loop, called once for a height range or once per run of LEDs that
+// LedGeometry::near yields - so the setup (a divide among it) isn't repeated
+// per run.
 template <EntityCombine Combine, Shape S, Falloff F>
-NEOTREE_INLINE uint32_t draw_shape(const Entity &e, Vec3 axis, Rgb c, std::span<const uint16_t> leds,
-                                   const LedGeometry &geometry, EntityScratch &scratch)
+struct ShapeDraw
 {
-    const Vec3 pos = e.pos;
-    const float size = e.size;
-    const float thickness = e.thickness;
-    const float half_length = e.length;
-    const float angle = e.angle;
-    const float inv_w = 1.0f / std::max(e.edge_mm, 1e-3f);
-    for (uint16_t i : leds)
+    const LedGeometry &geometry;
+    EntityScratch &scratch;
+    Rgb c;
+    Vec3 axis;
+    Vec3 pos;
+    float size;
+    float thickness;
+    float half_length;
+    float angle;
+    float inv_w;
+    // A sphere, shell or capsule reaches only part of what culling yields:
+    // LEDs beyond its reach are rejected on squared distance, before the
+    // square root and the falloff.
+    float outer2;
+
+    ShapeDraw(const Entity &e, Vec3 axis_, Rgb c_, const LedGeometry &g, EntityScratch &s)
+        : geometry(g), scratch(s), c(c_), axis(axis_), pos(e.pos), size(e.size), thickness(e.thickness),
+          half_length(e.length), angle(e.angle), inv_w(1.0f / std::max(e.edge_mm, 1e-3f))
     {
-        float d;
-        if constexpr (S == Shape::wedge)
-        {
-            float a = std::fabs(geometry.angle(i) - angle);
-            a = std::min(a, two_pi - a);   // both angles are in [0, 2pi)
-            d = (a - size) * geometry.radius(i);
-        }
-        else
-        {
-            const Vec3 rel{geometry.x(i) - pos.x, geometry.y(i) - pos.y, geometry.z(i) - pos.z};
-            if constexpr (S == Shape::sphere)
-            {
-                d = std::sqrt(dot(rel, rel)) - size;
-            }
-            else if constexpr (S == Shape::slab)
-            {
-                d = std::fabs(dot(rel, axis)) - size;
-            }
-            else if constexpr (S == Shape::shell)
-            {
-                d = std::fabs(std::sqrt(dot(rel, rel)) - size) - thickness;
-            }
-            else   // capsule
-            {
-                float t = std::clamp(dot(rel, axis), -half_length, half_length);
-                Vec3 off = sub(rel, scale(axis, t));
-                d = std::sqrt(dot(off, off)) - size;
-            }
-        }
-        float cov = falloff_at<F>(d, inv_w);
-        if (cov > 0.0f)
-        {
-            accumulate<Combine>(scratch, i, c, cov);
-        }
+        const float outer = size + (S == Shape::shell ? thickness : 0.0f) + falloff_reach(e);
+        outer2 = outer * outer;
     }
-    return static_cast<uint32_t>(leds.size());
+
+    NEOTREE_INLINE uint32_t run(std::span<const uint16_t> leds) const
+    {
+        // Locals, not members: read through this, the compiler would reload
+        // them after every store to the (float) scratch buffer, since it
+        // can't rule out the two overlapping.
+        const Vec3 p = pos;
+        const Vec3 ax = axis;
+        const Rgb col = c;
+        const float sz = size;
+        const float thick = thickness;
+        const float half = half_length;
+        const float ang = angle;
+        const float iw = inv_w;
+        const float o2 = outer2;
+        const LedGeometry &g = geometry;
+        EntityScratch &out = scratch;
+        for (uint16_t i : leds)
+        {
+            float d;
+            if constexpr (S == Shape::wedge)
+            {
+                float a = std::fabs(g.angle(i) - ang);
+                a = min_f(a, two_pi - a);   // both angles are in [0, 2pi)
+                d = (a - sz) * g.radius(i);
+            }
+            else
+            {
+                const Vec3 rel{g.x(i) - p.x, g.y(i) - p.y, g.z(i) - p.z};
+                if constexpr (S == Shape::sphere)
+                {
+                    const float r2 = dot(rel, rel);
+                    if (r2 > o2)
+                    {
+                        continue;
+                    }
+                    d = std::sqrt(r2) - sz;
+                }
+                else if constexpr (S == Shape::slab)
+                {
+                    d = std::fabs(dot(rel, ax)) - sz;
+                }
+                else if constexpr (S == Shape::shell)
+                {
+                    const float r2 = dot(rel, rel);
+                    if (r2 > o2)
+                    {
+                        continue;
+                    }
+                    d = std::fabs(std::sqrt(r2) - sz) - thick;
+                }
+                else   // capsule
+                {
+                    float t = clamp_f(dot(rel, ax), -half, half);
+                    Vec3 off = sub(rel, scale(ax, t));
+                    const float r2 = dot(off, off);
+                    if (r2 > o2)
+                    {
+                        continue;
+                    }
+                    d = std::sqrt(r2) - sz;
+                }
+            }
+            float cov = falloff_at<F>(d, iw);
+            if (cov > 0.0f)
+            {
+                accumulate<Combine>(out, i, col, cov);
+            }
+        }
+        return static_cast<uint32_t>(leds.size());
+    }
+};
+
+// One entity with its shape and falloff known: round shapes (spheres,
+// shells) test only the LEDs near them (LedGeometry::near); the rest, the
+// LEDs in their height range, or all of them if unbounded in height.
+template <EntityCombine Combine, Shape S, Falloff F>
+NEOTREE_INLINE uint32_t draw_with(const Entity &e, Vec3 axis, Rgb c, float reach, const LedGeometry &geometry,
+                                  EntityScratch &scratch)
+{
+    const ShapeDraw<Combine, S, F> draw(e, axis, c, geometry, scratch);
+    if constexpr (S == Shape::sphere || S == Shape::shell)
+    {
+        uint32_t n = 0;
+        geometry.near(e.pos, reach, [&](std::span<const uint16_t> leds) { n += draw.run(leds); });
+        return n;
+    }
+    else
+    {
+        return draw.run(reach < 0.0f ? geometry.z_order() : geometry.in_z_range(e.pos.z - reach, e.pos.z + reach));
+    }
 }
 
 template <EntityCombine Combine, Shape S>
-NEOTREE_INLINE uint32_t draw_falloff(const Entity &e, Vec3 axis, Rgb c, std::span<const uint16_t> leds,
-                                     const LedGeometry &geometry, EntityScratch &scratch)
+NEOTREE_INLINE uint32_t draw_falloff(const Entity &e, Vec3 axis, Rgb c, float reach, const LedGeometry &geometry,
+                                     EntityScratch &scratch)
 {
     switch (e.falloff)
     {
-    case Falloff::hard: return draw_shape<Combine, S, Falloff::hard>(e, axis, c, leds, geometry, scratch);
-    case Falloff::linear: return draw_shape<Combine, S, Falloff::linear>(e, axis, c, leds, geometry, scratch);
-    case Falloff::smooth: return draw_shape<Combine, S, Falloff::smooth>(e, axis, c, leds, geometry, scratch);
-    case Falloff::glow: return draw_shape<Combine, S, Falloff::glow>(e, axis, c, leds, geometry, scratch);
+    case Falloff::hard: return draw_with<Combine, S, Falloff::hard>(e, axis, c, reach, geometry, scratch);
+    case Falloff::linear: return draw_with<Combine, S, Falloff::linear>(e, axis, c, reach, geometry, scratch);
+    case Falloff::smooth: return draw_with<Combine, S, Falloff::smooth>(e, axis, c, reach, geometry, scratch);
+    case Falloff::glow: return draw_with<Combine, S, Falloff::glow>(e, axis, c, reach, geometry, scratch);
     }
     return 0;
 }
@@ -427,17 +524,18 @@ NEOTREE_INLINE uint32_t draw_entity(const Entity &e, const LedGeometry &geometry
         return 0;
     }
     const Rgb c{e.color.r * k, e.color.g * k, e.color.b * k};
-    const Vec3 axis = effective_axis(e);
+    // Only slabs and capsules have an axis; normalizing it costs a square
+    // root and a divide per entity per frame.
+    const bool has_axis = e.shape == Shape::slab || e.shape == Shape::capsule;
+    const Vec3 axis = has_axis ? effective_axis(e) : Vec3{0.0f, 0.0f, 1.0f};
     const float reach = z_reach(e, axis);
-    std::span<const uint16_t> leds =
-        reach < 0.0f ? geometry.z_order() : geometry.in_z_range(e.pos.z - reach, e.pos.z + reach);
     switch (e.shape)
     {
-    case Shape::sphere: return draw_falloff<Combine, Shape::sphere>(e, axis, c, leds, geometry, scratch);
-    case Shape::slab: return draw_falloff<Combine, Shape::slab>(e, axis, c, leds, geometry, scratch);
-    case Shape::shell: return draw_falloff<Combine, Shape::shell>(e, axis, c, leds, geometry, scratch);
-    case Shape::capsule: return draw_falloff<Combine, Shape::capsule>(e, axis, c, leds, geometry, scratch);
-    case Shape::wedge: return draw_falloff<Combine, Shape::wedge>(e, axis, c, leds, geometry, scratch);
+    case Shape::sphere: return draw_falloff<Combine, Shape::sphere>(e, axis, c, reach, geometry, scratch);
+    case Shape::slab: return draw_falloff<Combine, Shape::slab>(e, axis, c, reach, geometry, scratch);
+    case Shape::shell: return draw_falloff<Combine, Shape::shell>(e, axis, c, reach, geometry, scratch);
+    case Shape::capsule: return draw_falloff<Combine, Shape::capsule>(e, axis, c, reach, geometry, scratch);
+    case Shape::wedge: return draw_falloff<Combine, Shape::wedge>(e, axis, c, reach, geometry, scratch);
     }
     return 0;
 }
@@ -447,8 +545,9 @@ NEOTREE_INLINE uint32_t draw_entity(const Entity &e, const LedGeometry &geometry
 NEOTREE_HOT uint32_t render_entities(const EntityPool &pool, uint8_t slot, uint8_t layer, EntityCombine combine,
                                      const LedGeometry &geometry, EntityScratch &scratch)
 {
-    const uint16_t n = geometry.count();
-    for (uint16_t i = 0; i < n; i++)
+    // Entities only ever light positioned LEDs, and only those are read back
+    // (composite), so only those need clearing.
+    for (uint16_t i : geometry.z_order())
     {
         scratch.color[i] = Rgb{};
         scratch.alpha[i] = 0.0f;

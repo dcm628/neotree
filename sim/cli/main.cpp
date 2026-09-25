@@ -4,10 +4,13 @@
 // engine's own stats.
 //
 //   neotree_sim [--scene NAME] [--duration 8h] [--fps 60] [--tick-hz 120]
-//               [--seed 1] [--render-every N] [--positions FILE] [--quiet]
+//               [--seed 1] [--render-every N] [--positions FILE] [--quiet] [--hash]
 //
 // --render-every N renders one frame in N (0 = never): runs that only care
 // about lifecycles and rules can skip most of the rendering cost.
+// --hash renders the bytes the tree would send and prints a checksum of every
+// rendered frame: an optimization that shouldn't change the output must
+// leave it the same.
 
 #include <chrono>
 #include <cstdio>
@@ -28,7 +31,7 @@ void usage()
 {
     std::fprintf(stderr,
                  "usage: neotree_sim [--scene NAME] [--duration T] [--fps N] [--tick-hz N] [--seed N]\n"
-                 "                   [--render-every N] [--positions FILE] [--quiet]\n"
+                 "                   [--render-every N] [--positions FILE] [--quiet] [--hash]\n"
                  "  T accepts s/m/h/d suffixes (default 60s)\n"
                  "  scenes: %s (default empty)\n",
                  neotree::sim::scene_names().c_str());
@@ -57,6 +60,7 @@ int main(int argc, char **argv)
     unsigned seed = 1;
     unsigned render_every = 1;
     bool quiet = false;
+    bool hash = false;
     std::string positions = NEOTREE_SIM_DEFAULT_POSITIONS;
     std::string scene = "empty";
 
@@ -103,6 +107,10 @@ int main(int argc, char **argv)
         {
             quiet = true;
         }
+        else if (a == "--hash")
+        {
+            hash = true;
+        }
         else
         {
             usage();
@@ -135,6 +143,8 @@ int main(int argc, char **argv)
     }
 
     std::vector<neotree::Rgb> frame(geometry.count());
+    std::vector<neotree::Rgb8> bytes(geometry.count());
+    uint64_t frames_hash = 1469598103934665603ull;   // FNV-1a
     const int64_t duration_us = static_cast<int64_t>(duration_s * 1e6);
     const uint64_t total_frames = static_cast<uint64_t>(duration_us) * fps / 1'000'000;
 
@@ -150,7 +160,21 @@ int main(int argc, char **argv)
         last_frame_time_us = t_us;
         if (render_every != 0 && f % render_every == 0)
         {
-            engine.render(frame);
+            if (hash)
+            {
+                engine.render_bytes(bytes);
+                for (const neotree::Rgb8 &px : bytes)
+                {
+                    for (uint8_t b : {px.r, px.g, px.b})
+                    {
+                        frames_hash = (frames_hash ^ b) * 1099511628211ull;
+                    }
+                }
+            }
+            else
+            {
+                engine.render(frame);
+            }
             rendered++;
             led_evals += engine.stats().last_frame_led_evals;
         }
@@ -194,6 +218,10 @@ int main(int argc, char **argv)
     std::printf("scene         %s:%.0f LED-layer evaluations per frame, %.1f us per frame on this PC\n", scene.c_str(),
                 rendered ? static_cast<double>(led_evals) / static_cast<double>(rendered) : 0.0,
                 rendered ? wall_s * 1e6 / static_cast<double>(rendered) : 0.0);
+    if (hash)
+    {
+        std::printf("frames hash   %016llx\n", (unsigned long long)frames_hash);
+    }
     std::printf("LEDs          %u (%u positioned, %u mapped)\n", (unsigned)geometry.count(),
                 (unsigned)geometry.positioned_count(), (unsigned)geometry.mapped_count());
     return 0;

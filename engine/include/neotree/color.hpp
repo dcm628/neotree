@@ -36,9 +36,21 @@ inline Rgb to_rgb(uint8_t r, uint8_t g, uint8_t b)
 }
 
 // 0..1 -> 0..255, rounded. Exact inverse of to_rgb for every byte value.
+// Branch-free min / max / clamp for the per-LED loops. On the Pico (Cortex-
+// M33) std::fmin / std::fmax are single VMINNM / VMAXNM instructions, where
+// std::min / std::max / std::clamp compile to compare-and-branch - an FPU
+// flag transfer and often a taken branch each, several times the cost. Same
+// results for finite values.
+inline float min_f(float a, float b) { return std::fmin(a, b); }
+inline float max_f(float a, float b) { return std::fmax(a, b); }
+inline float clamp_f(float v, float lo, float hi) { return std::fmin(std::fmax(v, lo), hi); }
+inline float clamp01(float v) { return clamp_f(v, 0.0f, 1.0f); }
+
 inline uint8_t unit_to_byte(float v)
 {
-    return static_cast<uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
+    // Through uint32_t: the byte then goes straight to a register instead of
+    // via the stack.
+    return static_cast<uint8_t>(static_cast<uint32_t>(clamp01(v) * 255.0f + 0.5f));
 }
 
 // hue in degrees (any value, wraps), saturation and value 0..1.
@@ -46,8 +58,15 @@ inline Rgb hsv(float hue_deg, float s, float v)
 {
     float h = hue_deg - 360.0f * std::floor(hue_deg / 360.0f);
     auto channel = [&](float n) {
-        float k = std::fmod(n + h / 60.0f, 6.0f);
-        return v - v * s * std::clamp(std::min(k, 4.0f - k), 0.0f, 1.0f);
+        // fmod(k, 6) for k in [0, 12): at most one subtraction, exact for k
+        // >= 6 (Sterbenz), so the same bits without fmodf (~85 cycles on the
+        // Pico, three per LED for a rainbow).
+        float k = n + h / 60.0f;
+        if (k >= 6.0f)
+        {
+            k -= 6.0f;
+        }
+        return v - v * s * clamp01(min_f(k, 4.0f - k));
     };
     return {channel(5.0f), channel(3.0f), channel(1.0f)};
 }
@@ -78,7 +97,7 @@ inline void blend_into(Rgb &dst, Rgb src, float a, Blend mode)
         dst = {dst.r + src.r * a, dst.g + src.g * a, dst.b + src.b * a};
         break;
     case Blend::max:
-        dst = lerp(dst, Rgb{std::max(dst.r, src.r), std::max(dst.g, src.g), std::max(dst.b, src.b)}, a);
+        dst = lerp(dst, Rgb{max_f(dst.r, src.r), max_f(dst.g, src.g), max_f(dst.b, src.b)}, a);
         break;
     case Blend::multiply:
         dst = lerp(dst, Rgb{dst.r * src.r, dst.g * src.g, dst.b * src.b}, a);

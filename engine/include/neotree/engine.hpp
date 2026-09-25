@@ -32,6 +32,32 @@ struct EngineConfig
     // Fills the Canvas mode's background when it's set up (the firmware
     // seeds it with the boot pattern). Optional.
     void (*canvas_seed)(std::span<Rgba8> background) = nullptr;
+    // Optional: a fast counter (the Pico's CPU cycle counter) for the
+    // engine's profile of where its time goes (EngineProfile). Unset,
+    // profiling costs nothing.
+    uint32_t (*profile_clock)() = nullptr;
+};
+
+// Counts of EngineConfig::profile_clock spent in each part of the engine's
+// work, summed since reset_profile(). Parts of a tick: the director (mode
+// ticks, lifecycles), rule events, emitters, the entity loop (of which step:
+// the motion itself), collisions and group counts. Parts of a render:
+// composite (of which entity_draw: entities into their scratch buffers), then
+// master (brightness and conversion to bytes).
+struct EngineProfile
+{
+    uint32_t ticks = 0;
+    uint32_t frames = 0;
+    uint64_t director = 0;
+    uint64_t events = 0;
+    uint64_t emitters = 0;
+    uint64_t entity_loop = 0;
+    uint64_t step = 0;
+    uint64_t collide = 0;
+    uint64_t recount = 0;
+    uint64_t composite = 0;
+    uint64_t entity_draw = 0;
+    uint64_t master = 0;
 };
 
 // The last stage before output (docs/RENDERER.md 5.2). Controls output, not
@@ -117,6 +143,8 @@ public:
     int64_t time_us() const { return clock_.time_us(); }
     const SimClock &clock() const { return clock_; }
     const EngineStats &stats() const { return stats_; }
+    const EngineProfile &profile() const { return profile_; }
+    void reset_profile() { profile_ = {}; }
     const LedGeometry &geometry() const { return *geometry_; }
     Rng &rng() { return rng_; }
 
@@ -151,6 +179,7 @@ private:
     Rng rng_{};
     EngineStats stats_{};
     CanvasMemory canvas_memory_{};
+    EngineProfile profile_{};
 };
 
 }  // namespace neotree

@@ -3,6 +3,8 @@
 // cartesian mm, cylindrical (radius, angle), normalized height, and an index
 // sorted by height so a shape only has to test the LEDs in its z-extent.
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <span>
 
@@ -75,7 +77,20 @@ public:
     static constexpr int envelope_bins = 16;
     float envelope_radius(float z) const;
 
+    // Culling for round shapes (spheres, shells): the positioned LEDs in
+    // cull_bands height bands, each band sorted by angle. near(c, reach, fn)
+    // calls fn(std::span<const uint16_t>) with the runs of LEDs that can be
+    // within reach of c: only the bands it spans, and in each only the angles
+    // it covers. A superset - the caller still tests distance - found with
+    // two binary searches per band, instead of every LED in its height range.
+    static constexpr int cull_bands = 20;
+    template <typename Fn>
+    void near(Vec3 c, float reach, Fn &&fn) const;
+
 private:
+    int band_of(float z) const;
+    void build_bands();
+
     uint16_t count_ = 0;
     uint16_t positioned_ = 0;
     uint16_t mapped_ = 0;
@@ -92,6 +107,88 @@ private:
     uint16_t z_order_[max_leds] = {};
     float z_sorted_[max_leds] = {};   // z_[z_order_[k]], for the range search
     float envelope_[envelope_bins] = {};
+
+    float band_scale_ = 0.0f;                    // bands per mm of height
+    uint16_t band_start_[cull_bands + 1] = {};   // band b is band_leds_[band_start_[b] .. band_start_[b + 1])
+    uint16_t band_leds_[max_leds] = {};          // positioned LEDs by band, then angle
+    float band_angle_[max_leds] = {};            // angle_[band_leds_[k]], for the angle search
 };
+
+inline int LedGeometry::band_of(float z) const
+{
+    const float f = (z - bounds_.min.z) * band_scale_;
+    if (!(f > 0.0f))
+    {
+        return 0;
+    }
+    return f >= static_cast<float>(cull_bands) ? cull_bands - 1 : static_cast<int>(f);
+}
+
+template <typename Fn>
+void LedGeometry::near(Vec3 c, float reach, Fn &&fn) const
+{
+    if (positioned_ == 0)
+    {
+        return;
+    }
+    const int b0 = band_of(c.z - reach);
+    const int b1 = band_of(c.z + reach);
+    // Seen from the tree's axis, a ball of radius reach at distance rc spans
+    // +-asin(reach / rc) around its own angle - every angle if it reaches the
+    // axis. asin(x) <= x / sqrt(1 - x^2) (= tan(asin x)) is a cheaper upper
+    // bound; with a small margin it stays a superset despite rounding. Past
+    // a quarter turn, just take every angle.
+    const float rc = std::sqrt(c.x * c.x + c.y * c.y);
+    const float x = reach / std::fmax(rc, 1e-3f);
+    bool all = x >= 0.7f;
+    float lo = 0.0f;
+    float hi = 0.0f;
+    if (!all)
+    {
+        const float half = x / std::sqrt(1.0f - x * x) * 1.001f + 1e-3f;
+        float theta = std::atan2(c.y, c.x);
+        theta = theta < 0.0f ? theta + two_pi : theta;
+        lo = theta - half;
+        hi = theta + half;
+    }
+    for (int b = b0; b <= b1; b++)
+    {
+        const uint16_t s = band_start_[b];
+        const uint16_t e = band_start_[b + 1];
+        if (s == e)
+        {
+            continue;
+        }
+        if (all)
+        {
+            fn(std::span<const uint16_t>(band_leds_ + s, static_cast<size_t>(e - s)));
+            continue;
+        }
+        // The LEDs of this band with a0 <= angle <= a1.
+        auto run = [&](float a0, float a1) {
+            const float *first = std::lower_bound(band_angle_ + s, band_angle_ + e, a0);
+            const float *last = std::upper_bound(first, band_angle_ + e, a1);
+            if (first != last)
+            {
+                fn(std::span<const uint16_t>(band_leds_ + (first - band_angle_), static_cast<size_t>(last - first)));
+            }
+        };
+        // Split where the window wraps past 0 / 2pi (half < pi: no overlap).
+        if (lo < 0.0f)
+        {
+            run(lo + two_pi, two_pi);
+            run(0.0f, hi);
+        }
+        else if (hi > two_pi)
+        {
+            run(lo, two_pi);
+            run(0.0f, hi - two_pi);
+        }
+        else
+        {
+            run(lo, hi);
+        }
+    }
+}
 
 }  // namespace neotree

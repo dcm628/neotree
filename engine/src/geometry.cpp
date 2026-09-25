@@ -147,6 +147,45 @@ void LedGeometry::finalize()
         float next = raw[std::min(b + 1, envelope_bins - 1)];
         envelope_[b] = 0.25f * prev + 0.5f * raw[b] + 0.25f * next;
     }
+
+    build_bands();
+}
+
+void LedGeometry::build_bands()
+{
+    const float height = bounds_.max.z - bounds_.min.z;
+    band_scale_ = height > 0.0f ? static_cast<float>(cull_bands) / height : 0.0f;
+    uint16_t counts[cull_bands] = {};
+    for (uint16_t k = 0; k < positioned_; k++)
+    {
+        counts[band_of(z_[z_order_[k]])]++;
+    }
+    band_start_[0] = 0;
+    for (int b = 0; b < cull_bands; b++)
+    {
+        band_start_[b + 1] = static_cast<uint16_t>(band_start_[b] + counts[b]);
+    }
+    uint16_t fill[cull_bands];
+    for (int b = 0; b < cull_bands; b++)
+    {
+        fill[b] = band_start_[b];
+    }
+    for (uint16_t k = 0; k < positioned_; k++)
+    {
+        const uint16_t i = z_order_[k];
+        band_leds_[fill[band_of(z_[i])]++] = i;
+    }
+    // Ties broken by index so the order is identical on every platform.
+    for (int b = 0; b < cull_bands; b++)
+    {
+        std::sort(band_leds_ + band_start_[b], band_leds_ + band_start_[b + 1], [this](uint16_t a, uint16_t c) {
+            return angle_[a] < angle_[c] || (angle_[a] == angle_[c] && a < c);
+        });
+    }
+    for (uint16_t k = 0; k < positioned_; k++)
+    {
+        band_angle_[k] = angle_[band_leds_[k]];
+    }
 }
 
 float LedGeometry::envelope_radius(float z) const

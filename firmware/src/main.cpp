@@ -208,6 +208,8 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
     case serial_msg_type::SHOW_BOOT:
     case serial_msg_type::SUBSCRIBE:
         return len == 2;
+    case serial_msg_type::BENCH:
+        return len == 1;
     case serial_msg_type::SLOT_SET:
     case serial_msg_type::SLOT_END:
         return len == (msg[0] == static_cast<uint8_t>(serial_msg_type::SLOT_SET) ? 4u : 3u);
@@ -500,6 +502,7 @@ void process_msg()
     case serial_msg_type::SHOW_SET:
     case serial_msg_type::SHOW_PLAY:
     case serial_msg_type::SHOW_BOOT:
+    case serial_msg_type::BENCH:
         // Messages are zero-padded in the buffer, so the queue's maximum
         // length covers every one of them.
         if (!engine_host_mode_command(serial_buf_copy, engine_mode_command_max_len))
@@ -616,6 +619,13 @@ void main_core1()
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_on);
         }
         serial_read_buffer();
+        // Pace this loop. Spinning flat out, it kept pulling code through
+        // the flash cache both cores share and halved core0's speed: every
+        // engine frame took twice as long (BENCH, docs/RENDERER.md "Snow
+        // performance"). WiFi and lwIP run from interrupts, not this loop, so
+        // the only cost is up to 0.5 ms more latency on serial and pushes.
+        // A tight timer loop stays in the cache, so the wait itself is quiet.
+        busy_wait_us_32(500);
     }
 }
 

@@ -908,10 +908,68 @@ actions, no failed spawns, no crashes; stack peaks 1,936 / 2,376 bytes of
 Holiday show 4-10 ms; Snow on rainbow 9.6-11 ms once its snow reaches its
 steady ~145 flakes (the M5 figure of 3.2-4.5 ms was taken 6 s in, at 72).
 
-**Watch:** that's ~60% of the 16.7 ms budget with 233 positioned LEDs.
-Snow's cost grows with LEDs x flakes, so it needs work before the full
-1,000-LED map (see M3's note): fewer, larger flakes in the snow mode, or
-cheaper culling.
+**Watch:** that's ~60% of the 16.7 ms budget with 233 positioned LEDs -
+investigated and fixed next ("Snow performance"): now 3.0 ms.
+
+### Snow performance — 2026-09-25
+
+Snow on rainbow took 9.6-11 ms a frame at its steady ~145 flakes - several
+times what its arithmetic should cost at 150 MHz. Measured on the tree
+with two new tools: a BENCH command (type 37: the same work timed with core1
+running and paused, plus a few math functions) and the engine's own profile
+(`EngineConfig::profile_clock`, the Cortex-M33 cycle counter: cycles per
+tick and per frame by part - director, events, emitters, entity step,
+collisions; composite, entity drawing, master).
+
+**The main cause wasn't snow: core1 halved core0's speed.** Everything on
+core0 - rendering, ticks, even a bare `sqrtf` loop - ran 2x slower while
+core1 ran. Core1's main loop spun flat out polling WiFi, the network server
+and USB serial, pulling code through the 16 KB flash cache both cores share
+and evicting core0's. WiFi and lwIP run from interrupts, not that loop, so it
+now waits 500 us per pass in a tight timer loop that stays in the cache:
+core0 got back to within ~10% of its speed with core1 paused, for at most
+0.5 ms more command latency. This sped up every scene.
+
+Then, with the profile:
+
+| | cycles | fix |
+|---|---|---|
+| final pass (brightness, to bytes) | 84 per LED, every scene | `std::clamp` / `std::max` compile to compare-and-branch on the M33 (an FPU flag transfer and often a taken branch each); `std::fmin` / `fmax` are single VMINNM / VMAXNM. Branch-free `clamp01` / `min_f` / `max_f` in all per-LED loops: 44 per LED |
+| rainbow field | ~320 per LED | three `fmodf` calls (~85 cycles each) per LED in `hsv`; one exact conditional subtraction instead |
+| field and entity layers | all 1,000 LEDs | only positioned LEDs can be lit: loop over those (233 today) |
+| entity step | +expf +fmodf per entity per tick | a short series for the drag factor; the spin angle wrapped by an exact subtraction, and not at all when it doesn't spin |
+| entity draw | every LED in a height band | squared-distance reject before the square root; round shapes use new band-and-angle culling (`LedGeometry::near`) |
+
+Every change keeps the output **byte-identical**: `neotree_sim --hash`
+checksums every rendered frame, and 14 scenes (all entity demos, presets,
+fields, pixel layers) matched the old engine over 1-2 minutes each. The angle
+wrap and the hsv subtraction were written to give fmod's exact bits
+(Sterbenz). A test checks `near` yields every LED within reach exactly once
+over 3,000 random queries.
+
+Live frame times on the tree:
+
+| Scene | before | after |
+|---|---|---|
+| Snow on rainbow (~148 flakes) | 9.6-11 ms | 3.0 ms |
+| Holiday show | 4-10 ms | 1.7 ms |
+| Colors | ~2 ms | 1.05 ms |
+| Sweep tour | ~3 ms | 0.84 ms |
+
+What's left in snow (per frame): drawing ~1.2 ms - ~1,000 cycles per flake,
+almost all fixed per-flake work (fades, culling set-up with atan2f, the
+binary searches), since each flake only tests ~5 LEDs now; stepping ~0.7 ms
+(~350 cycles per flake per tick); the rest compositing. With all 1,000 LEDs
+positioned (the simulator), culling cuts the LEDs snow tests from 11,604 to
+3,884 a frame; snow should then take ~4.5 ms (27% of the budget), against
+the 12-14 ms projected before.
+
+**Found on the way:** code placement in flash matters. Running the drawing
+loops from RAM (`NEOTREE_HOT_IN_RAM`) didn't speed them up, but it moved the
+rest of the code in flash and made the entity step 65% slower - conflict
+misses in the 2-way flash cache, depending on which functions share cache
+sets. Same effect as the build-dependent core0 stalls (above). Left off;
+if frame times jump after an unrelated change, suspect layout first.
 
 ## 16. Memory estimate
 
