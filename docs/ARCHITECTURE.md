@@ -240,8 +240,9 @@ So today the output is, per LED, up to four 2D image-space centroids.
 4. **Export** — serialize the finished map into the format the firmware ingests
    (§7.2) and get it onto the Pico (§7.3).
 
-The detailed algorithm choices for calibration and reconstruction are a separate
-design doc; this draft only fixes that these four stages exist and where the
+Calibration's plan, status and notes are in [CALIBRATION.md](CALIBRATION.md)
+(waiting on a replacement board, 2026-09-25). The detailed algorithm choices
+for reconstruction are a separate design doc; this draft only fixes that these four stages exist and where the
 subsystem boundary is. **[OPEN]** calibration method, reconstruction approach,
 and how uneven coverage / occluded LEDs are handled.
 
