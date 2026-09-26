@@ -26,7 +26,10 @@ center.
 The top camera sits at (0, 0, PYLON_CAMERA_SPACING_MM) in this frame, with
 the same orientation as the bottom camera (parallel-cameras assumption).
 """
+import glob
+import json
 import math
+import os
 from dataclasses import dataclass
 
 import cv2
@@ -122,6 +125,10 @@ class CameraModel:
     principal_y: float = None
     rotation: np.ndarray = None  # (3,3) - orientation relative to the parallel-cameras assumption, identity if None
     k1: float = 0.0  # simple radial undistortion coefficient, see ray_direction/project
+    # Calibrated intrinsics (calibrate_intrinsics.py): OpenCV camera matrix and
+    # distortion coefficients. When set they replace focal_px / principal / k1.
+    K: np.ndarray = None
+    dist: np.ndarray = None
 
     def __post_init__(self):
         if self.principal_x is None:
@@ -150,9 +157,14 @@ class CameraModel:
         ~600mm z-span) - confirms the swap; see git history for the
         before/after if this ever needs re-deriving.
         """
-        right = (v - self.principal_y) / self.focal_px
-        up = (u - self.principal_x) / self.focal_px
-        right, up = _undistort(right, up, self.k1)
+        if self.K is not None:
+            # OpenCV's model: normalized x along raw u (= up), y along raw v (= right).
+            n = cv2.undistortPoints(np.array([[[u, v]]], dtype=np.float64), self.K, self.dist).reshape(2)
+            up, right = float(n[0]), float(n[1])
+        else:
+            right = (v - self.principal_y) / self.focal_px
+            up = (u - self.principal_x) / self.focal_px
+            right, up = _undistort(right, up, self.k1)
         d = np.array([right, 1.0, up], dtype=float)
         d = self.rotation @ d
         return d / np.linalg.norm(d)
@@ -163,6 +175,11 @@ class CameraModel:
         p = self.rotation.T @ p  # rotation is orthogonal - transpose is the inverse
         if p[1] <= 0:
             return None  # behind the camera
+        if self.K is not None:
+            # Back to OpenCV's camera frame: x = up, y = right, z = forward.
+            cv_point = np.array([[p[2], p[0], p[1]]], dtype=np.float64)
+            uv, _ = cv2.projectPoints(cv_point, np.zeros(3), np.zeros(3), self.K, self.dist)
+            return float(uv[0, 0, 0]), float(uv[0, 0, 1])
         right = p[0] / p[1]
         up = p[2] / p[1]
         right, up = _distort(right, up, self.k1)
@@ -208,6 +225,74 @@ def make_pylon_cameras(width_px, height_px, spacing_mm=PYLON_CAMERA_SPACING_MM,
     if top_rotation_rvec is not None:
         top_rotation, _ = cv2.Rodrigues(np.asarray(top_rotation_rvec, dtype=float))
     top = CameraModel(width_px, height_px, f, origin=(0.0, 0.0, spacing_mm), rotation=top_rotation, k1=k1)
+    return bottom, top
+
+
+# ---- calibrated cameras (ChArUco: calibrate_intrinsics.py, calibrate_stereo.py) ----
+
+DEFAULT_CALIBRATION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration")
+
+# OpenCV camera frame (x = raw image right = world up for these portrait-
+# mounted cameras, y = raw image down = world right, z = forward) to this
+# module's camera-local convention (right, forward, up).
+CV_TO_LOCAL = np.array([[0.0, 1.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                        [1.0, 0.0, 0.0]])
+
+
+def load_intrinsics(serial, calib_dir=DEFAULT_CALIBRATION_DIR):
+    path = os.path.join(calib_dir, f"intrinsics_{serial}.json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+
+def find_stereo(bottom_serial, top_serial, calib_dir=DEFAULT_CALIBRATION_DIR):
+    for path in sorted(glob.glob(os.path.join(calib_dir, "stereo_*.json"))):
+        with open(path) as f:
+            d = json.load(f)
+        if d.get("bottom_serial") == bottom_serial and d.get("top_serial") == top_serial:
+            return d
+    return None
+
+
+def has_calibration(bottom_serial, top_serial, calib_dir=DEFAULT_CALIBRATION_DIR):
+    return (load_intrinsics(bottom_serial, calib_dir) is not None and
+            load_intrinsics(top_serial, calib_dir) is not None and
+            find_stereo(bottom_serial, top_serial, calib_dir) is not None)
+
+
+def make_calibrated_pylon_cameras(bottom_serial, top_serial, width_px, height_px,
+                                  calib_dir=DEFAULT_CALIBRATION_DIR):
+    """
+    The (bottom, top) CameraModel pair for one pylon from its ChArUco
+    calibration: each camera's own intrinsics and distortion, and the top
+    camera's measured position and orientation relative to the bottom one
+    (instead of 592mm straight up, parallel, plus a per-sweep tilt fit).
+    The pylon frame is still the bottom camera's. Raises ValueError if the
+    calibration is missing or for another resolution.
+    """
+    ib = load_intrinsics(bottom_serial, calib_dir)
+    it = load_intrinsics(top_serial, calib_dir)
+    stereo = find_stereo(bottom_serial, top_serial, calib_dir)
+    if ib is None or it is None or stereo is None:
+        raise ValueError(f"no complete calibration for bottom {bottom_serial} / top {top_serial} in {calib_dir}")
+    for d in (ib, it, stereo):
+        if (d["image_width"], d["image_height"]) != (width_px, height_px):
+            raise ValueError(f"calibration is for {d['image_width']}x{d['image_height']}, "
+                             f"the capture is {width_px}x{height_px}")
+    Kb, Db = np.array(ib["camera_matrix"]), np.array(ib["dist_coeffs"])
+    Kt, Dt = np.array(it["camera_matrix"]), np.array(it["dist_coeffs"])
+    R = np.array(stereo["rotation_matrix"])          # X_top = R X_bottom + T (OpenCV frames)
+    T = np.array(stereo["translation_mm"])
+    M = CV_TO_LOCAL
+    top_origin = M @ (-R.T @ T)
+    top_rotation = M @ R.T @ M.T
+    bottom = CameraModel(width_px, height_px, float((Kb[0, 0] + Kb[1, 1]) / 2), origin=(0.0, 0.0, 0.0),
+                         K=Kb, dist=Db)
+    top = CameraModel(width_px, height_px, float((Kt[0, 0] + Kt[1, 1]) / 2), origin=top_origin,
+                      rotation=top_rotation, K=Kt, dist=Dt)
     return bottom, top
 
 
@@ -382,6 +467,21 @@ def _self_test():
     assert cov_y > cov_x and cov_y > cov_z, "expected depth (Y) to be the least-constrained axis"
     ratio = sigma_y / expected_sigma_y
     assert 0.5 < ratio < 2.0, f"depth uncertainty off from the standard stereo estimate by {ratio:.2f}x"
+
+    # Calibrated cameras: distortion, an off-centre principal point and a
+    # tilted, offset top camera - still an exact round trip.
+    K = np.array([[930.0, 0.0, 655.0], [0.0, 925.0, 350.0], [0.0, 0.0, 1.0]])
+    dist = np.array([0.08, -0.2, 0.001, -0.002, 0.1])
+    rot, _ = cv2.Rodrigues(np.array([0.01, -0.03, 0.02]))
+    cal_bottom = CameraModel(1280, 720, 927.5, origin=(0.0, 0.0, 0.0), K=K, dist=dist)
+    cal_top = CameraModel(1280, 720, 927.5, origin=(12.0, -8.0, 590.0), rotation=rot, K=K, dist=dist)
+    for pt in test_points:
+        pt = np.array(pt)
+        result = triangulate_pylon_observation(cal_bottom, cal_top, cal_bottom.project(pt), cal_top.project(pt))
+        err = np.linalg.norm(result.point - pt)
+        max_err = max(max_err, err)
+        assert err < 1e-3, f"calibrated round trip failed: err={err}"
+    print(f"calibrated round trip ok")
 
     print(f"\nAll self-tests passed. max round-trip error = {max_err:.2e} mm")
 

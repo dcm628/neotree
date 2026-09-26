@@ -1,27 +1,29 @@
 """
-Fits the TRUE relative pose (rotation + translation) between a pylon's
-top and bottom cameras from simultaneous ChArUco captures of both - see
-capture_calibration_images.py's --camera-id/--camera-id-2 stereo mode
-to collect those first, and calibrate_intrinsics.py to fit each
-camera's own intrinsics first (this reuses them, fixed, rather than
-re-fitting them jointly with the stereo geometry).
+Fits each pylon's true stereo geometry - where its top camera is and which
+way it points, relative to the bottom camera - from the poses of a capture
+session (capture_calibration_images.py) that both of its cameras saw, using
+each camera's intrinsics (calibrate_intrinsics.py, run first), held fixed.
 
-Replaces the current ad hoc "assume spacing_mm vertical offset, fit a
-small rotation per sweep from noisy LED data" approach
-(pylon_geometry.py / fit_camera_tilt.py) with a real measurement of the
-rig's actual geometry - which shouldn't change between pylon
-repositions (only the rig's placement relative to the tree does, which
-per-sweep tilt-fit and cross-sweep Kabsch alignment already handle
-separately).
+Replaces the assumed geometry (cameras parallel, 592mm apart, plus a small
+rotation fitted per sweep from noisy LED data) with a measurement. It holds
+only while neither camera of the pylon is re-aimed or moved on its rail:
+if one is, capture and fit again. (Moving the whole pylon is fine - that's
+what cross-sweep alignment handles.)
 
-Usage (venv active, run from mapping/):
-    python3 calibrate_stereo.py --images-dir calib_images/pylonA_stereo \\
-        --camera-id 0 --camera-id-2 2 \\
-        --intrinsics-1 camera_intrinsics_0.json --intrinsics-2 camera_intrinsics_2.json \\
-        --out stereo_extrinsics_pylonA.json
+Then an independent accuracy check, in millimetres: the board's corners are
+triangulated from the two cameras and the distances between them compared
+with the board's true geometry, pose by pose - the same triangulation the
+LEDs get, against a known answer.
+
+Convention: a point X in the bottom camera's frame (OpenCV: x right, y
+down, z forward in its raw image) is R @ X + T in the top camera's frame.
+
+Usage (venv active, from mapping/):
+    python3 calibrate_stereo.py --session calib_images/session1            # every pylon
+    python3 calibrate_stereo.py --session calib_images/session1 --pylon A
 """
 import argparse
-import glob
+import itertools
 import json
 import os
 
@@ -31,105 +33,123 @@ import numpy as np
 import calibration_board as calib
 
 
-def load_intrinsics(path):
+def load_intrinsics(calib_dir, serial, resolution):
+    path = os.path.join(calib_dir, f"intrinsics_{serial}.json")
     with open(path) as f:
-        data = json.load(f)
-    K = np.array(data["camera_matrix"], dtype=np.float64)
-    dist = np.array(data["dist_coeffs"], dtype=np.float64)
-    return K, dist, (data["image_width"], data["image_height"])
+        d = json.load(f)
+    if [d["image_width"], d["image_height"]] != list(resolution):
+        raise SystemExit(f"{path} is for {d['image_width']}x{d['image_height']}, the session is {resolution}")
+    return np.array(d["camera_matrix"]), np.array(d["dist_coeffs"])
+
+
+def detections(session, name, detector):
+    img = cv2.imread(os.path.join(session, name))
+    if img is None:
+        return {}
+    corners, ids, _mc, _mi = detector.detectBoard(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+    if ids is None:
+        return {}
+    return {int(i): c.reshape(2) for i, c in zip(ids.flatten(), corners)}
+
+
+def triangulate(K1, D1, K2, D2, R, T, pts1, pts2):
+    """3D points (mm, bottom camera frame) from matching pixels in both cameras."""
+    n1 = cv2.undistortPoints(pts1.reshape(-1, 1, 2), K1, D1).reshape(-1, 2)
+    n2 = cv2.undistortPoints(pts2.reshape(-1, 1, 2), K2, D2).reshape(-1, 2)
+    P1 = np.hstack([np.eye(3), np.zeros((3, 1))])
+    P2 = np.hstack([R, T.reshape(3, 1)])
+    X = cv2.triangulatePoints(P1, P2, n1.T, n2.T)
+    return (X[:3] / X[3]).T * 1000.0
+
+
+def calibrate_pylon(session, manifest, pylon, calib_dir, min_common):
+    resolution = manifest["resolution"]
+    top, bottom = pylon["top"], pylon["bottom"]
+    K1, D1 = load_intrinsics(calib_dir, bottom, resolution)
+    K2, D2 = load_intrinsics(calib_dir, top, resolution)
+    board = calib.make_board()
+    detector = calib.make_detector()
+    board_3d = board.getChessboardCorners() * 1000.0   # mm, by corner id
+
+    obj, img1, img2, used = [], [], [], []
+    for p in manifest["poses"]:
+        if bottom not in p["saved"] or top not in p["saved"]:
+            continue
+        d1 = detections(session, f"pose{p['pose']:03d}_{bottom}.jpg", detector)
+        d2 = detections(session, f"pose{p['pose']:03d}_{top}.jpg", detector)
+        common = sorted(set(d1) & set(d2))
+        if len(common) < min_common:
+            continue
+        obj.append(np.array([board_3d[i] / 1000.0 for i in common], dtype=np.float32))
+        img1.append(np.array([d1[i] for i in common], dtype=np.float32))
+        img2.append(np.array([d2[i] for i in common], dtype=np.float32))
+        used.append((p["pose"], common))
+
+    print(f"\npylon {pylon['name']} (top {top}, bottom {bottom}): {len(used)} poses seen by both cameras")
+    if len(used) < 8:
+        print("  too few for a reliable fit (aim for 15+ poses both cameras see) - skipped")
+        return None
+
+    rms, _K1, _D1, _K2, _D2, R, T, _E, _F = cv2.stereoCalibrate(
+        obj, img1, img2, K1, D1, K2, D2, tuple(resolution), flags=cv2.CALIB_FIX_INTRINSIC)
+    top_center = (-R.T @ T).flatten() * 1000.0
+    angle = np.degrees(np.linalg.norm(cv2.Rodrigues(R)[0]))
+    print(f"  RMS reprojection error {rms:.3f}px")
+    print(f"  top camera centre, in the bottom camera's frame: {np.round(top_center, 1).tolist()} mm "
+          f"(baseline {np.linalg.norm(top_center):.1f} mm; the model assumed 592)")
+    print(f"  top camera turned {angle:.2f} deg relative to the bottom one")
+
+    # The accuracy check: distances between triangulated corners vs the board's.
+    print("  accuracy check - board corners triangulated, distances vs the real board:")
+    all_err = []
+    rows = []
+    for (pose, common), p1, p2 in zip(used, img1, img2):
+        X = triangulate(K1, D1, K2, D2, R, T.flatten(), p1, p2)
+        errs = []
+        for a, b in itertools.combinations(range(len(common)), 2):
+            true = np.linalg.norm(board_3d[common[a]] - board_3d[common[b]])
+            if true >= 100.0:   # pairs at least 100mm apart: scale errors show
+                errs.append(np.linalg.norm(X[a] - X[b]) - true)
+        errs = np.array(errs)
+        depth = float(np.mean(X[:, 2]))
+        rows.append((depth, float(np.sqrt(np.mean(errs ** 2))), float(np.mean(errs))))
+        all_err.extend(errs.tolist())
+    rows.sort()
+    for depth, rmse, bias in rows:
+        print(f"    pose at {depth / 1000:.2f} m: RMS {rmse:.2f} mm, mean {bias:+.2f} mm")
+    all_err = np.array(all_err)
+    print(f"  overall: RMS {np.sqrt(np.mean(all_err ** 2)):.2f} mm over {len(all_err)} corner pairs "
+          f"(100-{np.linalg.norm(board_3d.max(0) - board_3d.min(0)):.0f} mm apart)")
+
+    out = os.path.join(calib_dir, f"stereo_{pylon['name']}.json")
+    with open(out, "w") as f:
+        json.dump({
+            "pylon": pylon["name"], "top_serial": top, "bottom_serial": bottom,
+            "image_width": resolution[0], "image_height": resolution[1],
+            "rotation_matrix": R.tolist(), "translation_mm": (T.flatten() * 1000.0).tolist(),
+            "top_center_in_bottom_frame_mm": top_center.tolist(),
+            "baseline_mm": float(np.linalg.norm(top_center)),
+            "rms_reprojection_error_px": rms, "num_poses": len(used),
+            "check_rms_mm": float(np.sqrt(np.mean(all_err ** 2))),
+            "session": os.path.basename(os.path.normpath(session)),
+        }, f, indent=2)
+    print(f"  saved {out}")
+    return rms
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--images-dir', required=True)
-    parser.add_argument('--camera-id', type=int, required=True, help="first (e.g. top) camera id")
-    parser.add_argument('--camera-id-2', type=int, required=True, help="second (e.g. bottom) camera id")
-    parser.add_argument('--intrinsics-1', required=True)
-    parser.add_argument('--intrinsics-2', required=True)
-    parser.add_argument('--min-common-corners', type=int, default=15,
-                         help="a pose only counts if both cameras share at least this many "
-                              "detected corner IDs - fewer than this under-constrains that pose's "
-                              "contribution to the stereo geometry")
-    parser.add_argument('--out', default=None)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--session', required=True)
+    parser.add_argument('--pylon', default=None, help="just this pylon (default: every pylon in the session)")
+    parser.add_argument('--calib-dir', default="calibration")
+    parser.add_argument('--min-common-corners', type=int, default=15)
     args = parser.parse_args()
 
-    K1, D1, size1 = load_intrinsics(args.intrinsics_1)
-    K2, D2, size2 = load_intrinsics(args.intrinsics_2)
-    if size1 != size2:
-        print(f"Warning: camera resolutions differ ({size1} vs {size2}) - stereoCalibrate assumes "
-              f"a shared image size; using {size1}")
-
-    board = calib.make_board()
-    detector = calib.make_detector()
-    board_corners_3d = board.getChessboardCorners()  # Nx3, indexed by charuco corner id
-
-    pose_ids = sorted({
-        os.path.basename(p).split('_')[0][len('pose'):]
-        for p in glob.glob(os.path.join(args.images_dir, f"pose*_cam{args.camera_id}.jpg"))
-    })
-    print(f"Found {len(pose_ids)} candidate pose(s)")
-
-    obj_points_list = []
-    img_points_1_list = []
-    img_points_2_list = []
-    used = 0
-    for pose_id in pose_ids:
-        path1 = os.path.join(args.images_dir, f"pose{pose_id}_cam{args.camera_id}.jpg")
-        path2 = os.path.join(args.images_dir, f"pose{pose_id}_cam{args.camera_id_2}.jpg")
-        if not (os.path.exists(path1) and os.path.exists(path2)):
-            continue
-        img1 = cv2.imread(path1)
-        img2 = cv2.imread(path2)
-        gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-
-        corners1, ids1, _mc1, _mi1 = detector.detectBoard(gray1)
-        corners2, ids2, _mc2, _mi2 = detector.detectBoard(gray2)
-        if ids1 is None or ids2 is None:
-            print(f"  pose{pose_id}: board not detected in one or both cameras, skipping")
-            continue
-
-        map1 = {int(i): c for i, c in zip(ids1.flatten(), corners1)}
-        map2 = {int(i): c for i, c in zip(ids2.flatten(), corners2)}
-        common_ids = sorted(set(map1) & set(map2))
-        if len(common_ids) < args.min_common_corners:
-            print(f"  pose{pose_id}: only {len(common_ids)} common corners, skipping")
-            continue
-
-        obj_points_list.append(np.array([board_corners_3d[i] for i in common_ids], dtype=np.float32))
-        img_points_1_list.append(np.array([map1[i] for i in common_ids], dtype=np.float32))
-        img_points_2_list.append(np.array([map2[i] for i in common_ids], dtype=np.float32))
-        used += 1
-        print(f"  pose{pose_id}: {len(common_ids)} common corners - used")
-
-    if used < 8:
-        print(f"\nOnly {used} usable pose pairs - too few for a reliable stereo fit (aim for 15-20+).")
-        return
-
-    print(f"\nStereo-calibrating from {used} usable pose pairs...")
-    rms_error, K1_out, D1_out, K2_out, D2_out, R, T, _E, _F = cv2.stereoCalibrate(
-        obj_points_list, img_points_1_list, img_points_2_list,
-        K1, D1, K2, D2, size1, flags=cv2.CALIB_FIX_INTRINSIC)
-
-    baseline_mm = float(np.linalg.norm(T) * 1000.0)
-    print(f"RMS reprojection error: {rms_error:.3f}px")
-    print(f"Fitted baseline (camera separation): {baseline_mm:.1f}mm")
-    print(f"Rotation matrix (camera 2 relative to camera 1):\n{R}")
-    print(f"Translation (camera 2 relative to camera 1, mm): {(T.flatten() * 1000.0)}")
-
-    out_path = args.out or f"stereo_extrinsics_{args.camera_id}_{args.camera_id_2}.json"
-    with open(out_path, 'w') as f:
-        json.dump({
-            "camera_id_1": args.camera_id,
-            "camera_id_2": args.camera_id_2,
-            "rotation_matrix": R.tolist(),
-            "translation_mm": (T.flatten() * 1000.0).tolist(),
-            "baseline_mm": baseline_mm,
-            "rms_reprojection_error_px": rms_error,
-            "num_poses_used": used,
-        }, f, indent=2)
-    print(f"\nSaved to {out_path}")
+    with open(os.path.join(args.session, "manifest.json")) as f:
+        manifest = json.load(f)
+    for pylon in manifest["pylons"]:
+        if args.pylon is None or pylon["name"] == args.pylon:
+            calibrate_pylon(args.session, manifest, pylon, args.calib_dir, args.min_common_corners)
 
 
 if __name__ == "__main__":
