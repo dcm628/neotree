@@ -14,6 +14,9 @@ import com.neotree.app.net.FxSectionSchema
 import com.neotree.app.net.ModeCatalog
 import com.neotree.app.net.ParamValue
 import com.neotree.app.net.PosixTimeZone
+import com.neotree.app.net.EventInfo
+import com.neotree.app.net.TimerInfo
+import com.neotree.app.net.TreeSchedule
 import com.neotree.app.net.Rgb
 import com.neotree.app.net.SceneState
 import com.neotree.app.net.TreeLibrary
@@ -594,6 +597,29 @@ class TreeViewModel(app: Application) : AndroidViewModel(app) {
             _status.value = if (ok) "$label ✓" else "$label: the tree didn't save it"
         }
     }
+
+    // ---- the schedule ----
+
+    val schedule: StateFlow<TreeSchedule?> get() = connection.schedule
+
+    init {
+        // The lights as the tree reports them - the timer switches them too.
+        viewModelScope.launch {
+            connection.scene.collect { pushed -> pushed?.scene?.lights?.let { _lightsOn.value = it } }
+        }
+    }
+
+    /** Asks for the schedule (it's pushed with the library afterwards). */
+    fun loadSchedule() {
+        viewModelScope.launch { if (connection.schedule.value == null) connection.send(TreeProtocol.schedule()) }
+    }
+
+    fun setTimer(index: Int, t: TimerInfo) = sendThenRefresh("Timer saved", TreeProtocol.scheduleTimer(index, t))
+    fun deleteTimer(index: Int) = sendThenRefresh("Timer deleted", TreeProtocol.deleteTimer(index))
+    fun setEvent(index: Int, e: EventInfo) = sendThenRefresh("Saved \"${e.name}\"", TreeProtocol.scheduleEvent(index, e))
+    fun deleteEvent(index: Int) = sendThenRefresh("Event deleted", TreeProtocol.deleteEvent(index))
+    fun tryEvent(index: Int) = sendThenRefresh("Trying it now", TreeProtocol.runEvent(index))
+    fun stopEvent() = sendThenRefresh("Event stopped", TreeProtocol.runEvent(-1))
 
     // ---- custom effects (the effect editor) ----
 

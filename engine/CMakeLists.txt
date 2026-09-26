@@ -19,6 +19,7 @@ add_library(neotree_engine STATIC
     src/modes.cpp
     src/mask.cpp
     src/scene.cpp
+    src/schedule.cpp
 )
 
 target_include_directories(neotree_engine PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)

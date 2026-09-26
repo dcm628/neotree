@@ -75,6 +75,10 @@ class TreeConnection(private val scope: CoroutineScope) {
     /** The tree's library, from its latest LIBRARY reply or push. */
     val library: StateFlow<TreeLibrary?> = _library.asStateFlow()
 
+    private val _schedule = MutableStateFlow<TreeSchedule?>(null)
+    /** The schedule, sent after every LIBRARY frame (so pushed with it). */
+    val schedule: StateFlow<TreeSchedule?> = _schedule.asStateFlow()
+
     private val _fxSchema = MutableStateFlow<Map<EffectSection, FxSectionSchema>>(emptyMap())
     /** The custom-effect schema, by section, as FX_SCHEMA replies arrive. */
     val fxSchema: StateFlow<Map<EffectSection, FxSectionSchema>> = _fxSchema.asStateFlow()
@@ -237,6 +241,10 @@ class TreeConnection(private val scope: CoroutineScope) {
                     runCatching { TreeLibrary.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
                         .onSuccess { _library.value = it }
                         .onFailure { log("LIBRARY reply wasn't valid JSON (${frame.size}B)", ok = false) }
+                } else if (type == TreeProtocol.REPLY_SCHEDULE) {
+                    runCatching { TreeSchedule.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
+                        .onSuccess { _schedule.value = it }
+                        .onFailure { log("SCHEDULE reply wasn't valid JSON (${frame.size}B)", ok = false) }
                 } else if (type == TreeProtocol.REPLY_FX_SCHEMA) {
                     runCatching { FxSectionSchema.parse(JSONObject(String(frame, 1, frame.size - 1, Charsets.UTF_8))) }
                         .onSuccess { s -> if (s != null) _fxSchema.update { it + (s.section to s) } }

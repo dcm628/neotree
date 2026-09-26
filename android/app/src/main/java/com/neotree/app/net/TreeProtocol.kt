@@ -33,6 +33,8 @@ object TreeProtocol {
     const val REPLY_FX_SCHEMA = 0x86
     /** [0x87][JSON]: a section of the draft effect (reply to FX_GET, a frame after its ACK). */
     const val REPLY_FX = 0x87
+    /** [0x88][JSON]: the schedule (reply to SCHEDULE, and after every LIBRARY frame). */
+    const val REPLY_SCHEDULE = 0x88
 
     private const val NOOP = 0
     private const val COLOR_GROUP_RGB_UPDATE = 2
@@ -64,6 +66,12 @@ object TreeProtocol {
     private const val FX_SAVE = 46
     private const val TIME_SET = 47
     private const val TIME_ZONE = 48
+    private const val SCHEDULE_TIMER = 49
+    private const val SCHEDULE_EVENT = 50
+    private const val SCHEDULE_DELETE = 51
+    private const val SCHEDULE_RUN = 52
+    private const val SCHEDULE = 53
+    private const val TARGET_LEN = 24
     const val BRUSH_LEN = 14
 
     /** Names on the wire: 20 bytes, NUL-padded (at most 19 used). */
@@ -154,6 +162,37 @@ object TreeProtocol {
         val raw = rule.toByteArray(Charsets.US_ASCII).take(63).toByteArray()
         return byteArrayOf(TIME_ZONE.toByte(), raw.size.toByte()) + raw
     }
+
+    // ---- the schedule (engine/include/neotree/schedule.hpp) ----
+
+    fun schedule(): ByteArray = byteArrayOf(SCHEDULE.toByte())
+
+    /** Sets timer [index] (the count adds one). */
+    fun scheduleTimer(index: Int, t: TimerInfo): ByteArray = message(12) {
+        put(SCHEDULE_TIMER.toByte()); put(index.toByte()); put((if (t.enabled) 1 else 0).toByte()); put(t.days.toByte())
+        putInt(t.onSec)
+        putInt(t.offSec)
+    }
+
+    /** Sets event [index] (the count adds one). */
+    fun scheduleEvent(index: Int, e: EventInfo): ByteArray = message(62) {
+        put(SCHEDULE_EVENT.toByte()); put(index.toByte()); put((if (e.enabled) 1 else 0).toByte())
+        put(e.repeat.ordinal.toByte()); put(e.days.toByte())
+        putShort(e.year.toShort()); put(e.month.toByte()); put(e.day.toByte())
+        putInt(e.timeSec)
+        put(e.action.ordinal.toByte())
+        putInt(e.durationSec.toInt())
+        put(nameBytes(e.name))
+        val target = e.target.toByteArray(Charsets.UTF_8).take(TARGET_LEN - 1).toByteArray()
+        put(target)
+        put(ByteArray(TARGET_LEN - target.size))
+    }
+
+    fun deleteTimer(index: Int): ByteArray = byteArrayOf(SCHEDULE_DELETE.toByte(), 0, index.toByte())
+    fun deleteEvent(index: Int): ByteArray = byteArrayOf(SCHEDULE_DELETE.toByte(), 1, index.toByte())
+
+    /** Starts event [index] now; -1 ends the running one. */
+    fun runEvent(index: Int): ByteArray = byteArrayOf(SCHEDULE_RUN.toByte(), (if (index < 0) 0xFF else index).toByte())
 
     // ---- custom effects (engine/include/neotree/effect.hpp) ----
     // One draft effect is edited at a time, running in a slot; edits show there at once.
@@ -360,6 +399,11 @@ object TreeProtocol {
         46 -> "FX_SAVE"
         47 -> "TIME_SET"
         48 -> "TIME_ZONE"
+        49 -> "SCHEDULE_TIMER"
+        50 -> "SCHEDULE_EVENT"
+        51 -> "SCHEDULE_DELETE"
+        52 -> "SCHEDULE_RUN"
+        53 -> "SCHEDULE"
         else -> "TYPE_$type"
     }
 

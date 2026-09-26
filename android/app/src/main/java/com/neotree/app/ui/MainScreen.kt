@@ -57,7 +57,7 @@ private val SMALL_BUTTON_PADDING = PaddingValues(horizontal = 6.dp, vertical = 0
 
 /** The home page: lights, color pickers, region, single LED. */
 @Composable
-fun HomeScreen(vm: TreeViewModel, contentPadding: PaddingValues, onOpenDebug: () -> Unit) {
+fun HomeScreen(vm: TreeViewModel, contentPadding: PaddingValues, onOpenDebug: () -> Unit, onOpenSchedule: () -> Unit) {
     Column(
         modifier = Modifier
             .padding(contentPadding)
@@ -66,6 +66,7 @@ fun HomeScreen(vm: TreeViewModel, contentPadding: PaddingValues, onOpenDebug: ()
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Header(vm, onOpenDebug)
+        TimerCard(vm, onOpenSchedule)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BackgroundCard(vm, Modifier.weight(1f))
             PaintCard(vm, Modifier.weight(1f))

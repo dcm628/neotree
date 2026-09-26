@@ -51,6 +51,8 @@ void clock_poll_core1();
 bool clock_unix_us(int64_t *out);
 // Local time now. False until the clock is set. Any core.
 bool clock_local(neotree::CivilTime *out);
+// The time zone in use (a copy). Any core.
+void clock_zone(neotree::TimeZone *out);
 
 // The app's time (Unix ms): taken unless SNTP synced in the last 2 hours.
 // Returns whether it was taken. Any core.

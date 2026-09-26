@@ -144,6 +144,10 @@ void Director::reset()
     effect_starter(draft_);
     draft_revision_++;
     bind_effects(&draft_, &library_);
+    lights_on_ = true;
+    timer_level_ = -2;
+    schedule_started_ = false;
+    event_running_ = -1;
 }
 
 void Director::set_opacity(Engine &engine, uint8_t slot, float k)
@@ -313,6 +317,166 @@ void Director::set_up_again(Engine &engine, uint8_t slot)
     rt.info.loops_done = loops_done;
     rt.info.state = state;
     engine.scene().slot(slot)->opacity = opacity_k;
+}
+
+// ---- the schedule ----
+
+namespace {
+
+int64_t floor_div64(int64_t a, int64_t b) { return a / b - ((a % b != 0) && ((a < 0) != (b < 0))); }
+
+// Events fire as their moment passes; a clock that jumps further than this
+// (set for the first time, corrected by a lot) skips what it jumped over.
+constexpr int64_t event_grace_ms = 5000;
+
+}  // namespace
+
+void Director::apply_lights(Engine &engine, bool on)
+{
+    engine.master().output_enabled = on;
+    if (lights_on_ != on)
+    {
+        lights_on_ = on;
+        revision_++;
+    }
+}
+
+void Director::set_lights(Engine &engine, bool on)
+{
+    apply_lights(engine, on);
+    engine.note("lights %s", on ? "on" : "off");
+}
+
+void Director::run_schedule(Engine &engine, int64_t unix_ms, const TimeZone &zone)
+{
+    const int64_t unix_s = floor_div64(unix_ms, 1000);
+    const int32_t offset_s = in_dst(unix_s, zone) ? zone.dst_offset_s : zone.std_offset_s;
+    const int64_t local_ms = unix_ms + static_cast<int64_t>(offset_s) * 1000;
+    const Schedule &s = library_.schedule();
+
+    // The on/off timer: acts when what it says changes (or the schedule
+    // does, or on the first call); by hand in between wins until then.
+    const int level = timer_level(s, floor_div64(local_ms, 1000));
+    const bool edited = library_.schedule_revision() != schedule_seen_;
+    if (level != timer_level_ || edited || !schedule_started_)
+    {
+        const bool changed = level != timer_level_;
+        timer_level_ = level;
+        schedule_seen_ = library_.schedule_revision();
+        if (changed)
+        {
+            revision_++;
+        }
+        if (level >= 0 && event_running_ < 0 && (changed || edited || !schedule_started_))
+        {
+            if ((level == 1) != lights_on_)
+            {
+                engine.note("timer: lights %s", level == 1 ? "on" : "off");
+            }
+            apply_lights(engine, level == 1);
+        }
+    }
+
+    // Events whose moment passed since the last call.
+    const int64_t step = unix_ms - prev_unix_ms_;
+    if (schedule_started_ && step > 0 && step <= event_grace_ms && local_ms > prev_local_ms_)
+    {
+        const int64_t first_day = floor_div64(prev_local_ms_, 86400000);
+        const int64_t last_day = floor_div64(local_ms, 86400000);
+        for (int64_t day = first_day; day <= last_day && day <= first_day + 1; day++)
+        {
+            for (uint8_t i = 0; i < s.event_count; i++)
+            {
+                const ScheduledEvent &e = s.events[i];
+                const int64_t at = day * 86400000 + static_cast<int64_t>(e.time_s) * 1000;
+                if (e.enabled && event_on_day(e, day) && at > prev_local_ms_ && at <= local_ms)
+                {
+                    start_event(engine, i);
+                }
+            }
+        }
+    }
+    schedule_started_ = true;
+    prev_unix_ms_ = unix_ms;
+    prev_local_ms_ = local_ms;
+}
+
+bool Director::start_event(Engine &engine, uint8_t index)
+{
+    const Schedule &s = library_.schedule();
+    if (index >= s.event_count)
+    {
+        return false;
+    }
+    const ScheduledEvent &e = s.events[index];
+    // What it plays, checked before anything changes.
+    uint8_t target = no_index;
+    switch (e.action)
+    {
+    case EventAction::preset: target = library_.find_preset(e.target); break;
+    case EventAction::show: target = library_.find_show(e.target); break;
+    case EventAction::mode: target = find_mode(e.target) == no_mode ? no_index : find_mode(e.target); break;
+    }
+    if (target == no_index)
+    {
+        engine.note("event %s: no %s \"%s\"", e.name, e.action == EventAction::mode ? "mode" : "scene or show",
+                    e.target);
+        return false;
+    }
+    // What to go back to (the first event's, if one replaces another).
+    if (event_running_ < 0)
+    {
+        capture_scene(event_before_, current_.name);
+        std::snprintf(event_before_show_, sizeof(event_before_show_), "%s", show_.active ? show_.show.name : "");
+        event_before_lights_ = lights_on_;
+    }
+    switch (e.action)
+    {
+    case EventAction::preset:
+        stop_show();
+        apply_scene(engine, library_.preset(target));
+        break;
+    case EventAction::show:
+        play_show(engine, target);
+        break;
+    case EventAction::mode:
+    {
+        stop_show();
+        SlotSpec spec{};
+        spec.mode = target;
+        set_slot(engine, 1, spec, Transition::fade);
+        break;
+    }
+    }
+    apply_lights(engine, true);
+    engine.note("event: %s", e.name);
+    event_running_ = e.duration_s > 0 ? index : -1;   // 0: it stays; nothing to go back to
+    event_left_s_ = static_cast<float>(e.duration_s);
+    revision_++;
+    return true;
+}
+
+void Director::end_event(Engine &engine)
+{
+    if (event_running_ < 0)
+    {
+        return;
+    }
+    event_running_ = -1;
+    revision_++;
+    stop_show();
+    const uint8_t show = event_before_show_[0] != '\0' ? library_.find_show(event_before_show_) : no_index;
+    if (show != no_index)
+    {
+        play_show(engine, show);
+    }
+    else
+    {
+        apply_scene(engine, event_before_);
+    }
+    // The lights: as the timer says now, else as they were.
+    apply_lights(engine, timer_level_ >= 0 ? timer_level_ == 1 : event_before_lights_);
+    engine.note("event over: back to before");
 }
 
 // ---- custom effects ----
@@ -609,6 +773,15 @@ void Director::finish_ending(Engine &engine, uint8_t slot)
 
 void Director::tick(Engine &engine, float dt)
 {
+    // A scheduled event's length (its own count: it runs even without a clock).
+    if (event_running_ >= 0)
+    {
+        event_left_s_ -= dt;
+        if (event_left_s_ <= 0.0f)
+        {
+            end_event(engine);
+        }
+    }
     if (show_.active)
     {
         show_.age_s += dt;
@@ -795,7 +968,20 @@ size_t Director::describe_state(char *out, size_t cap) const
     // The draft effect: its name, revision and the slot running it (-1).
     j.raw(",\"fx\":{\"n\":");
     j.str(draft_.name);
-    j.raw(",\"rev\":%lu,\"slot\":%d}}", static_cast<unsigned long>(draft_revision_), draft_slot());
+    j.raw(",\"rev\":%lu,\"slot\":%d}", static_cast<unsigned long>(draft_revision_), draft_slot());
+    // The lights, the timer and a running event.
+    j.raw(",\"lights\":%s,\"timer\":%d,\"event\":", lights_on_ ? "true" : "false", timer_level_);
+    if (event_running_ >= 0 && event_running_ < library_.schedule().event_count)
+    {
+        j.raw("{\"n\":");
+        j.str(library_.schedule().events[event_running_].name);
+        j.raw(",\"i\":%d,\"left\":%ld}", event_running_, static_cast<long>(event_left_s_));
+    }
+    else
+    {
+        j.raw("null");
+    }
+    j.raw("}");
     return j.len;
 }
 

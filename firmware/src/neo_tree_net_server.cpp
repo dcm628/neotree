@@ -278,6 +278,7 @@ static bool send_json(client_slot *c, net_reply_type type, uint8_t *frame, uint8
     // Snapshots core0 publishes.
     case net_reply_type::SCENE: json_len = engine_host_scene_json(json, status_json_max); break;
     case net_reply_type::LIBRARY: json_len = engine_host_library_json(json, status_json_max); break;
+    case net_reply_type::SCHEDULE: json_len = engine_host_schedule_json(json, net_reply_json_max); break;
     // The effect schema: static data. arg = the section.
     case net_reply_type::FX_SCHEMA:
         json_len = neotree::effect_schema_json(static_cast<neotree::EffectSection>(arg), json, net_reply_json_max);
@@ -334,6 +335,12 @@ static net_status handle_command(client_slot *c)
     if (type == static_cast<uint8_t>(serial_msg_type::LIBRARY))
     {
         send_reply(c, net_reply_type::LIBRARY);
+        send_reply(c, net_reply_type::SCHEDULE);
+        return net_status::QUEUED;
+    }
+    if (type == static_cast<uint8_t>(serial_msg_type::SCHEDULE))
+    {
+        send_reply(c, net_reply_type::SCHEDULE);
         return net_status::QUEUED;
     }
     if (type == static_cast<uint8_t>(serial_msg_type::FX_SCHEMA))
@@ -685,7 +692,7 @@ static void push_changes()
         if ((c.subscribed & subscribe_library) &&
             ((c.push_now & subscribe_library) || c.library_rev_sent != library_rev))
         {
-            if (send_json(&c, net_reply_type::LIBRARY, frame))
+            if (send_json(&c, net_reply_type::LIBRARY, frame) && send_json(&c, net_reply_type::SCHEDULE, frame))
             {
                 c.library_rev_sent = library_rev;
                 c.push_now &= ~subscribe_library;

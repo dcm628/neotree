@@ -111,10 +111,21 @@ enum class serial_msg_type : uint8_t
     // time is a fallback, taken only if SNTP hasn't synced for 2 hours.
     TIME_SET,       // 47: [u64 LE Unix time, ms]
     TIME_ZONE,      // 48: [length][POSIX TZ rule, e.g. "PST8PDT,M3.2.0,M11.1.0"] - stored in flash; empty = back to the default (Los Angeles)
+    // The schedule (engine/include/neotree/schedule.hpp), stored with the
+    // library: lights on/off timers and events. An index equal to the count
+    // adds one. Times are seconds into the local day, days a mask (bit 0 =
+    // Sunday). Names are 20 bytes and targets 24, NUL-padded.
+    SCHEDULE_TIMER, // 49: [index][flags: bit 0 on][days][u32 LE on_s][u32 LE off_s]
+    SCHEDULE_EVENT, // 50: [index][flags: bit 0 on][repeat: 0 once, 1 yearly, 2 weekly][days][i16 LE year][month][day]
+                    //     [u32 LE time_s][action: 0 preset, 1 show, 2 mode][u32 LE duration_s, 0 = it stays][name][target]
+    SCHEDULE_DELETE,// 51: [0 = a timer, 1 = an event][index]
+    SCHEDULE_RUN,   // 52: [event index, 0xFF = end the running event] - try an event now
+    SCHEDULE,       // 53: -> [0x88][JSON]: the schedule (also sent after every LIBRARY frame)
 };
 
 // Number of defined command types - anything >= this is unknown.
-const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::TIME_ZONE) + 1;
+const uint8_t serial_msg_type_count = static_cast<uint8_t>(serial_msg_type::SCHEDULE) + 1;
+const size_t schedule_event_len = 62;
 const size_t protocol_time_zone_max = 63;
 
 const size_t entity_spawn_len = 20;

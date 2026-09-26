@@ -37,6 +37,13 @@ fun AppRoot(vm: TreeViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(TAB_HOME) }
     // The effect editor is a full page of its own, over the tabs.
     var editingEffect by rememberSaveable { mutableStateOf(false) }
+    var editingSchedule by rememberSaveable { mutableStateOf(false) }
+    if (editingSchedule) {
+        Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
+            ScheduleScreen(vm, padding, onClose = { editingSchedule = false })
+        }
+        return
+    }
     if (editingEffect) {
         Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
             EffectEditorScreen(vm, padding, onClose = {
@@ -89,7 +96,7 @@ fun AppRoot(vm: TreeViewModel) {
         },
     ) { padding ->
         when (tab) {
-            TAB_HOME -> HomeScreen(vm, padding, onOpenDebug = { tab = TAB_DEBUG })
+            TAB_HOME -> HomeScreen(vm, padding, onOpenDebug = { tab = TAB_DEBUG }, onOpenSchedule = { editingSchedule = true })
             TAB_MODES -> ModesScreen(vm, padding, onEditEffect = { editingEffect = true })
             TAB_PLAY -> PlayScreen(vm, padding)
             TAB_RENDERER -> RendererScreen(vm, padding)

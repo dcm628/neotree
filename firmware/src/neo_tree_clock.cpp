@@ -192,6 +192,13 @@ bool clock_local(neotree::CivilTime *out)
     return ok;
 }
 
+void clock_zone(neotree::TimeZone *out)
+{
+    const uint32_t irq = lock_irq();
+    *out = zone;
+    unlock_irq(irq);
+}
+
 bool clock_set_from_app(int64_t unix_ms)
 {
     if (unix_ms / 1000 < clock_floor_unix_s)

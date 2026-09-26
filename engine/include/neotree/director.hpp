@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "neotree/civil_time.hpp"
 #include "neotree/effect.hpp"
 #include "neotree/library.hpp"
 #include "neotree/modes.hpp"
@@ -115,6 +116,23 @@ public:
     // Called by the engine first thing each tick.
     void tick(Engine &engine, float dt);
 
+    // ---- the schedule (neotree/schedule.hpp) ----
+    // Called by the platform every frame with the wall clock, once it's
+    // known: the on/off timer (acting when its state changes, when the
+    // schedule changes, and the first time), and events whose moment passed
+    // since the last call (not ones skipped by the clock jumping).
+    void run_schedule(Engine &engine, int64_t unix_ms, const TimeZone &zone);
+    // Starts event `index` now (the app's "try it"); ends the running one.
+    bool start_event(Engine &engine, uint8_t index);
+    void end_event(Engine &engine);
+    // Lights on/off by hand (the master output); lasts until the timer's next change.
+    void set_lights(Engine &engine, bool on);
+    bool lights() const { return lights_on_; }
+    // The timer's state: 1 on, 0 off, -1 no timer, -2 not known yet (no clock).
+    int timer_state() const { return timer_level_; }
+    // The running event's index, or -1.
+    int running_event() const { return event_running_; }
+
     // ---- custom effects (neotree/effect.hpp, docs/RENDERER.md 12.1) ----
     // One draft effect is edited at a time. It runs as mode draft_mode in a
     // slot, and edits show there at once.
@@ -154,7 +172,8 @@ public:
 
     // Current state as JSON: {"rev":N,"scene":"holiday","slots":[{"mode":
     // "snow","state":"running",...}],"base":[...],"show":{...} or null,
-    // "fx":{"n":draft name,"rev":draft revision,"slot":its slot or -1}}.
+    // "fx":{"n":draft name,"rev":draft revision,"slot":its slot or -1},
+    // "lights":bool,"timer":timer_state(),"event":{"n":name,"left":s} or null}.
     // Returns the length written.
     size_t describe_state(char *out, size_t cap) const;
 
@@ -207,6 +226,19 @@ private:
     DirectorStats stats_{};
     Effect draft_{};
     uint32_t draft_revision_ = 0;
+
+    void apply_lights(Engine &engine, bool on);
+    bool lights_on_ = true;
+    int timer_level_ = -2;
+    uint32_t schedule_seen_ = 0;          // the library's schedule revision last applied
+    bool schedule_started_ = false;
+    int64_t prev_unix_ms_ = 0;
+    int64_t prev_local_ms_ = 0;
+    int event_running_ = -1;
+    float event_left_s_ = 0.0f;
+    SceneSpec event_before_{};            // what was playing, to go back to
+    char event_before_show_[name_size] = "";
+    bool event_before_lights_ = true;
 };
 
 }  // namespace neotree

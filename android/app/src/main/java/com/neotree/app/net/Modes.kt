@@ -147,6 +147,12 @@ data class SceneState(
     val revision: Long = -1,
     /** The custom effect being edited (null from older firmware). */
     val draft: DraftInfo? = null,
+    /** Lights on/off (null from older firmware). */
+    val lights: Boolean? = null,
+    /** What the on/off timer says: 1 on, 0 off, -1 no timer, -2 the tree doesn't know the time yet. */
+    val timer: Int = -1,
+    /** A scheduled event running now. */
+    val event: RunningEvent? = null,
 ) {
     companion object {
         /** Parses the scene JSON (pushed, or the status JSON's "scene"); null if there isn't one. */
@@ -155,7 +161,11 @@ data class SceneState(
             val slots = scene.optJSONArray("slots") ?: return null
             val show = scene.optJSONObject("show")
             val fx = scene.optJSONObject("fx")
+            val ev = scene.optJSONObject("event")
             return SceneState(
+                lights = if (scene.has("lights")) scene.optBoolean("lights") else null,
+                timer = scene.optInt("timer", -1),
+                event = ev?.let { RunningEvent(it.optString("n"), it.optInt("i", -1), it.optLong("left")) },
                 revision = scene.optLong("rev", -1),
                 draft = fx?.let { DraftInfo(it.optString("n"), it.optLong("rev"), it.optInt("slot", -1)) },
                 show = show?.let {

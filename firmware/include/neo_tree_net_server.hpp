@@ -26,6 +26,8 @@
 //   FX_SCHEMA [0x86][JSON]                     reply to FX_SCHEMA: a section of the effect schema
 //   FX     [0x87][JSON]                        reply to FX_GET: a section of the draft effect,
 //                                              a frame or so after that command's ACK
+//   SCHEDULE [0x88][JSON]                      the schedule: reply to SCHEDULE, and sent after
+//                                              every LIBRARY frame (reply or push)
 // ACK means "accepted onto the command queue", not "already applied".
 //
 // Stream channel: UDP port net_stream_port, for high-rate input where only
@@ -56,6 +58,7 @@ enum class net_reply_type : uint8_t
     LIBRARY = 0x85,  // [0x85][JSON] - reply to LIBRARY, and pushed (Library::describe)
     FX_SCHEMA = 0x86, // [0x86][JSON] - reply to FX_SCHEMA (effect_schema_json)
     FX = 0x87,       // [0x87][JSON] - reply to FX_GET (effect_section_json of the draft)
+    SCHEDULE = 0x88, // [0x88][JSON] - reply to SCHEDULE and after LIBRARY (Library::describe_schedule)
 };
 
 enum class net_status : uint8_t

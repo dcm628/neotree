@@ -29,6 +29,7 @@ REPLY_SCENE = 0x84
 REPLY_LIBRARY = 0x85
 REPLY_FX_SCHEMA = 0x86   # [0x86][JSON]: a section of the custom-effect schema
 REPLY_FX = 0x87          # [0x87][JSON]: a section of the draft effect (FX_GET)
+REPLY_SCHEDULE = 0x88    # [0x88][JSON]: the schedule (SCHEDULE, and after every LIBRARY frame)
 
 STATUS_REQUEST_MSG_TYPE = 18
 REBOOT_MSG_TYPE = 19
@@ -79,6 +80,14 @@ FX_ADD, FX_REMOVE, FX_DUPLICATE = 0, 1, 2
 # The clock (firmware neo_tree_clock.hpp): UTC from SNTP, the app's time as a fallback.
 TIME_SET_MSG_TYPE = 47
 TIME_ZONE_MSG_TYPE = 48
+# The schedule (engine/include/neotree/schedule.hpp): lights on/off timers and events.
+SCHEDULE_TIMER_MSG_TYPE = 49
+SCHEDULE_EVENT_MSG_TYPE = 50
+SCHEDULE_DELETE_MSG_TYPE = 51
+SCHEDULE_RUN_MSG_TYPE = 52
+SCHEDULE_MSG_TYPE = 53
+REPEATS = ["once", "yearly", "weekly"]
+EVENT_ACTIONS = ["preset", "show", "mode"]
 NAME_LEN = 20
 
 STATUS_NAMES = {
@@ -152,6 +161,9 @@ class NeotreeNet:
                 continue
             if frame and frame[0] in (REPLY_FX_SCHEMA, REPLY_FX):
                 self._keep_fx(frame)
+                continue
+            if frame and frame[0] == REPLY_SCHEDULE:
+                self.last_schedule = json.loads(frame[1:].decode("utf-8", errors="replace"))
                 continue
             if len(frame) != 3 or frame[0] != REPLY_ACK:
                 raise NeotreeNetError(f"expected ACK, got {frame!r}")
@@ -237,6 +249,41 @@ class NeotreeNet:
         """what: "base" (back to the default), "preset" or "show" (by library
         index), or "effect" (by its position, "k" in the library's "fx")."""
         self.write(bytes([LIBRARY_DELETE_MSG_TYPE, ["base", "preset", "show", "effect"].index(what), index]))
+
+    # ---- the schedule ----
+
+    def schedule(self):
+        """{"rev","timers":[{"on","d","a","b"}],"events":[{"on","n","r","y","m","day","d","t","w","x","len"}]}."""
+        self.last_schedule = None
+        self.write(bytes([SCHEDULE_MSG_TYPE]))
+        return self.last_schedule
+
+    def set_timer(self, index, on_s, off_s, days=0x7F, enabled=True):
+        """Lights on at on_s, off at off_s (seconds into the local day) on `days`
+        (bit 0 = Sunday). index = the count adds one."""
+        self.write(bytes([SCHEDULE_TIMER_MSG_TYPE, index, 1 if enabled else 0, days]) +
+                   struct.pack("<II", int(on_s), int(off_s)))
+
+    def set_event(self, index, name, time_s, action, target, duration_s=600, repeat="once", year=2026,
+                  month=12, day=31, days=0x7F, enabled=True):
+        """An event at time_s (local seconds into the day): action "preset" / "show" /
+        "mode" with target its name or mode id; duration_s 0 = it stays."""
+        raw_target = target.encode("utf-8")[:23]
+        self.write(bytes([SCHEDULE_EVENT_MSG_TYPE, index, 1 if enabled else 0, REPEATS.index(repeat), days]) +
+                   struct.pack("<hBBIBI", year, month, day, int(time_s), EVENT_ACTIONS.index(action),
+                               int(duration_s)) +
+                   self._name(name) + raw_target + bytes(24 - len(raw_target)))
+
+    def delete_schedule(self, what, index):
+        """what: "timer" or "event"."""
+        self.write(bytes([SCHEDULE_DELETE_MSG_TYPE, ["timer", "event"].index(what), index]))
+
+    def run_event(self, index=None):
+        """Starts event `index` now; None ends the running one."""
+        self.write(bytes([SCHEDULE_RUN_MSG_TYPE, 0xFF if index is None else index]))
+
+    def set_lights(self, on):
+        self.write(bytes([15, 1 if on else 0]))
 
     # ---- the clock ----
 

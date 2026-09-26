@@ -120,7 +120,9 @@ void build()
 //   show: str name, u8 flags (bit 0 loop, bit 1 shuffle), u8 n,
 //         (str preset, u16 seconds) x n
 //   str: u8 length (< name_size), then the bytes
-constexpr uint8_t format_version = 1;
+// 2: the schedule after the shows (1 still loads, with none).
+constexpr uint8_t format_version = 2;
+constexpr uint8_t effects_format_version = 1;
 constexpr uint8_t max_stored_params = 16;   // more than any mode has: room for later ones
 
 struct Writer
@@ -154,9 +156,14 @@ struct Writer
                               static_cast<uint8_t>(bits >> 16), static_cast<uint8_t>(bits >> 24)};
         bytes(b, 4);
     }
-    void str(const char *s)
+    void u32(uint32_t v)
     {
-        const size_t n = strnlen(s, name_size - 1);
+        u16(static_cast<uint16_t>(v));
+        u16(static_cast<uint16_t>(v >> 16));
+    }
+    void str(const char *s, size_t size = name_size)
+    {
+        const size_t n = strnlen(s, size - 1);
         u8(static_cast<uint8_t>(n));
         bytes(s, n);
     }
@@ -207,12 +214,20 @@ struct Reader
         }
         return v;
     }
-    void str(char (&dst)[name_size])
+    uint32_t u32()
+    {
+        const uint32_t lo = u16();
+        return lo | static_cast<uint32_t>(u16()) << 16;
+    }
+    template <size_t N>
+    void str(char (&dst)[N])
     {
         const uint8_t n = u8();
-        if (n >= name_size)
+        if (n >= N)
         {
             ok = false;
+            dst[0] = '\0';
+            return;
         }
         const uint8_t *p = take(n);
         if (p == nullptr)
@@ -357,6 +372,73 @@ void read_scene(Reader &r, SceneSpec &scene)
     }
 }
 
+void write_schedule(Writer &w, const Schedule &s)
+{
+    w.u8(s.timer_count);
+    for (uint8_t i = 0; i < s.timer_count; i++)
+    {
+        const TimerRule &r = s.timers[i];
+        w.u8(r.enabled ? 1 : 0);
+        w.u8(r.days);
+        w.u32(r.on_s);
+        w.u32(r.off_s);
+    }
+    w.u8(s.event_count);
+    for (uint8_t i = 0; i < s.event_count; i++)
+    {
+        const ScheduledEvent &e = s.events[i];
+        w.u8(e.enabled ? 1 : 0);
+        w.str(e.name);
+        w.u8(static_cast<uint8_t>(e.repeat));
+        w.u16(static_cast<uint16_t>(e.year));
+        w.u8(e.month);
+        w.u8(e.day);
+        w.u8(e.days);
+        w.u32(e.time_s);
+        w.u8(static_cast<uint8_t>(e.action));
+        w.str(e.target, sizeof(e.target));
+        w.u32(e.duration_s);
+    }
+}
+
+void read_schedule(Reader &r, Schedule &s)
+{
+    s.timer_count = r.u8();
+    r.check(s.timer_count <= max_timers);
+    for (uint8_t i = 0; i < s.timer_count && r.ok; i++)
+    {
+        TimerRule &t = s.timers[i];
+        t.enabled = r.u8() != 0;
+        t.days = r.u8();
+        t.on_s = r.u32();
+        t.off_s = r.u32();
+        r.check(valid_timer(t));
+    }
+    s.event_count = r.ok ? r.u8() : 0;
+    r.check(s.event_count <= max_scheduled_events);
+    for (uint8_t i = 0; i < s.event_count && r.ok; i++)
+    {
+        ScheduledEvent &e = s.events[i];
+        e.enabled = r.u8() != 0;
+        r.str(e.name);
+        e.repeat = static_cast<Repeat>(r.u8());
+        e.year = static_cast<int16_t>(r.u16());
+        e.month = r.u8();
+        e.day = r.u8();
+        e.days = r.u8();
+        e.time_s = r.u32();
+        e.action = static_cast<EventAction>(r.u8());
+        r.str(e.target);
+        e.duration_s = r.u32();
+        r.check(valid_event(e));
+    }
+    if (!r.ok)
+    {
+        s.timer_count = 0;
+        s.event_count = 0;
+    }
+}
+
 void write_show(Writer &w, const Show &show)
 {
     w.str(show.name);
@@ -476,6 +558,9 @@ void Library::reset()
     build();
     user_preset_count_ = 0;
     user_show_count_ = 0;
+    schedule_.timer_count = 0;
+    schedule_.event_count = 0;
+    schedule_revision_++;
     base_ = presets[0];
     base_custom_ = false;
     boot_show_[0] = '\0';
@@ -680,6 +765,7 @@ size_t Library::save(uint8_t *out, size_t cap) const
     {
         write_show(w, user_shows_[i]);
     }
+    write_schedule(w, schedule_);
     return w.ok ? w.len : 0;
 }
 
@@ -687,7 +773,8 @@ bool Library::load(const uint8_t *data, size_t len)
 {
     reset();
     Reader r{data, len};
-    r.check(r.u8() == format_version);
+    const uint8_t version = r.u8();
+    r.check(version == 1 || version == format_version);
     const uint8_t flags = r.u8();
     r.str(boot_show_);
     if (r.ok && (flags & 1) != 0)
@@ -709,6 +796,10 @@ bool Library::load(const uint8_t *data, size_t len)
         read_show(r, user_shows_[i]);
     }
     user_show_count_ = r.ok ? shows_n : 0;
+    if (version >= 2 && r.ok)
+    {
+        read_schedule(r, schedule_);
+    }
     r.check(r.pos == len);
     if (!r.ok)
     {
@@ -773,6 +864,72 @@ size_t Library::describe(char *out, size_t cap) const
     }
     j.raw("]}");
     return j.len;
+}
+
+// ---- the schedule ----
+
+bool Library::set_timer(uint8_t index, const TimerRule &rule)
+{
+    if (!valid_timer(rule) || index > schedule_.timer_count || index >= max_timers)
+    {
+        return false;
+    }
+    schedule_.timers[index] = rule;
+    schedule_.timer_count = static_cast<uint8_t>(index == schedule_.timer_count ? index + 1 : schedule_.timer_count);
+    schedule_revision_++;
+    revision_++;
+    return true;
+}
+
+bool Library::delete_timer(uint8_t index)
+{
+    if (index >= schedule_.timer_count)
+    {
+        return false;
+    }
+    for (uint8_t i = index; i + 1 < schedule_.timer_count; i++)
+    {
+        schedule_.timers[i] = schedule_.timers[i + 1];
+    }
+    schedule_.timer_count--;
+    schedule_revision_++;
+    revision_++;
+    return true;
+}
+
+bool Library::set_event(uint8_t index, const ScheduledEvent &event)
+{
+    ScheduledEvent e = event;
+    if (!valid_event(e) || index > schedule_.event_count || index >= max_scheduled_events)
+    {
+        return false;
+    }
+    schedule_.events[index] = e;
+    schedule_.event_count = static_cast<uint8_t>(index == schedule_.event_count ? index + 1 : schedule_.event_count);
+    schedule_revision_++;
+    revision_++;
+    return true;
+}
+
+bool Library::delete_event(uint8_t index)
+{
+    if (index >= schedule_.event_count)
+    {
+        return false;
+    }
+    for (uint8_t i = index; i + 1 < schedule_.event_count; i++)
+    {
+        schedule_.events[i] = schedule_.events[i + 1];
+    }
+    schedule_.event_count--;
+    schedule_revision_++;
+    revision_++;
+    return true;
+}
+
+size_t Library::describe_schedule(char *out, size_t cap) const
+{
+    return neotree::describe_schedule(schedule_, schedule_revision_, out, cap);
 }
 
 // ---- custom effects ----
@@ -858,7 +1015,7 @@ void Library::clear_effects()
 size_t Library::save_effects(uint8_t *out, size_t cap) const
 {
     Writer w{out, cap};
-    w.u8(format_version);
+    w.u8(effects_format_version);
     w.u8(max_effects);
     for (const StoredEffect &e : effects_)
     {
@@ -875,7 +1032,7 @@ bool Library::load_effects(const uint8_t *data, size_t len)
 {
     clear_effects();
     Reader r{data, len};
-    r.check(r.u8() == format_version);
+    r.check(r.u8() == effects_format_version);
     const uint8_t n = r.u8();
     r.check(n <= max_effects);
     Effect &check = effect_scratch();

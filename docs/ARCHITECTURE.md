@@ -433,6 +433,9 @@ decided). `firmware/src/neo_tree_clock.cpp`:
   and drifting ~2 ppm between syncs (2 ms in 15 minutes; ~0.2 s a day with no
   sync at all).
 
+The schedule built on it (lights on/off by day, events at set moments) is
+in RENDERER.md §15, "The schedule".
+
 ### 8.1 Goals
 
 The whole family uses it on the living-room tree at Christmas, from Android

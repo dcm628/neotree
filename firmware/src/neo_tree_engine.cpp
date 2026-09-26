@@ -9,6 +9,7 @@
 #include "pico/stdlib.h"
 
 #include "dcm_physics_math.hpp"
+#include "neo_tree_clock.hpp"
 #include "neo_tree_config.hpp"
 #include "neo_tree_event_log.hpp"
 #include "neo_tree_protocol.hpp"
@@ -44,6 +45,8 @@ char scene_json[scene_json_max] = "{}";
 uint32_t scene_revision = 0;
 constexpr size_t library_json_max = 3072;
 char library_json[library_json_max] = "{}";
+constexpr size_t schedule_json_max = 3072;
+char schedule_json[schedule_json_max] = "{}";
 uint32_t library_revision = 0;
 spin_lock_t *scene_lock = nullptr;
 uint64_t scene_published_us = 0;
@@ -176,6 +179,9 @@ void publish_library()
     lib.describe(next, sizeof(next));
     uint32_t irq = spin_lock_blocking(scene_lock);
     memcpy(library_json, next, sizeof(library_json));
+    // The schedule: built straight into its snapshot, under the lock (a
+    // few hundred microseconds, only when the library changes).
+    lib.describe_schedule(schedule_json, sizeof(schedule_json));
     library_revision = lib.revision();
     spin_unlock(scene_lock, irq);
 }
@@ -580,6 +586,64 @@ static bool apply_library_command(const uint8_t *msg)
     }
 }
 
+uint32_t read_u32(const uint8_t *p)
+{
+    return static_cast<uint32_t>(p[0]) | static_cast<uint32_t>(p[1]) << 8 | static_cast<uint32_t>(p[2]) << 16 |
+           static_cast<uint32_t>(p[3]) << 24;
+}
+
+// SCHEDULE_TIMER, SCHEDULE_EVENT, SCHEDULE_DELETE, SCHEDULE_RUN.
+static bool apply_schedule_command(const uint8_t *msg)
+{
+    using namespace neotree;
+    Director &d = engine.director();
+    Library &lib = d.library();
+    switch (static_cast<serial_msg_type>(msg[0]))
+    {
+    case serial_msg_type::SCHEDULE_TIMER:
+    {
+        TimerRule r;
+        r.enabled = (msg[2] & 1) != 0;
+        r.days = msg[3];
+        r.on_s = read_u32(msg + 4);
+        r.off_s = read_u32(msg + 8);
+        return lib.set_timer(msg[1], r);
+    }
+    case serial_msg_type::SCHEDULE_EVENT:
+    {
+        static ScheduledEvent e;   // static: keep it off core0's stack
+        e = ScheduledEvent{};
+        e.enabled = (msg[2] & 1) != 0;
+        e.repeat = static_cast<Repeat>(msg[3]);
+        e.days = msg[4];
+        e.year = static_cast<int16_t>(msg[5] | (msg[6] << 8));
+        e.month = msg[7];
+        e.day = msg[8];
+        e.time_s = read_u32(msg + 9);
+        e.action = static_cast<EventAction>(msg[13]);
+        e.duration_s = read_u32(msg + 14);
+        if (!copy_name(e.name, reinterpret_cast<const char *>(msg + 18), protocol_name_len))
+        {
+            return false;
+        }
+        memcpy(e.target, msg + 38, sizeof(e.target));
+        e.target[sizeof(e.target) - 1] = '\0';
+        return lib.set_event(msg[1], e);
+    }
+    case serial_msg_type::SCHEDULE_DELETE:
+        return msg[1] == 0 ? lib.delete_timer(msg[2]) : msg[1] == 1 && lib.delete_event(msg[2]);
+    case serial_msg_type::SCHEDULE_RUN:
+        if (msg[1] == 0xFF)
+        {
+            d.end_event(engine);
+            return true;
+        }
+        return d.start_event(engine, msg[1]);
+    default:
+        return false;
+    }
+}
+
 // FX_EDIT, FX_SET, FX_ITEM, FX_GET, FX_SAVE: the draft effect.
 static bool apply_effect_command(const uint8_t *msg, uint8_t owner)
 {
@@ -736,6 +800,12 @@ static bool apply_mode_command(const uint8_t *msg, size_t len, uint8_t owner)
     case serial_msg_type::FX_SAVE:
         ok = apply_effect_command(msg, owner);
         break;
+    case serial_msg_type::SCHEDULE_TIMER:
+    case serial_msg_type::SCHEDULE_EVENT:
+    case serial_msg_type::SCHEDULE_DELETE:
+    case serial_msg_type::SCHEDULE_RUN:
+        ok = apply_schedule_command(msg);
+        break;
     default:
         return false;
     }
@@ -836,7 +906,12 @@ size_t engine_host_take_fx_reply(char *out, size_t cap)
 
 void engine_host_set_output(bool enabled)
 {
-    engine.master().output_enabled = enabled;
+    engine.director().set_lights(engine, enabled);
+}
+
+size_t engine_host_schedule_json(char *out, size_t cap)
+{
+    return copy_snapshot(schedule_json, schedule_json_max, out, cap);
 }
 
 void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
@@ -853,6 +928,16 @@ void engine_host_frame(uint64_t now_us, uint32_t *words, size_t count)
     pending_count = 0;
     apply_stream();
     pump_fx_replies();
+
+    // The schedule, once the clock is known; the lights as it leaves them.
+    int64_t unix_us = 0;
+    if (clock_unix_us(&unix_us))
+    {
+        static neotree::TimeZone zone;   // static: keep it off core0's stack
+        clock_zone(&zone);
+        engine.director().run_schedule(engine, unix_us / 1000, zone);
+    }
+    tree_output_enabled = engine.director().lights();
 
     uint64_t t0 = time_us_64();
     engine.advance((int64_t)(now_us - last_frame_us));

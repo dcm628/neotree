@@ -1166,6 +1166,55 @@ snow, fireworks, chain and orbit run at 1.0-1.8 ms frames. Stack peaks
 new effect built entirely in the app - needs Dan with the phone**; the app is
 installed.
 
+### The schedule — done 2026-09-25
+
+Decided with Dan: the basic timer is lights on/off like a plug-in
+Christmas light timer, by day of the week; separately, events at set
+moments (a sequence at a minute to midnight on New Year's Eve). Switching the
+lights by hand lasts until the timer's **next change**; an event runs for a
+set time and then goes **back to what was playing before**; no countdown
+mode for now.
+
+- **Engine** (`engine/include/neotree/schedule.hpp`): up to 8 on/off timers
+  (on and off times, days of the week; an off at or before the on is the next
+  day) and 12 events (once on a date, every year, or on days of the week; a
+  time to the second; a scene, show or mode by name; a length, 0 = it stays).
+  Stored with the library (its stored form is now version 2; version 1 still
+  loads).
+- **Director::run_schedule** runs from the wall clock (the firmware's clock,
+  every frame):
+  - The timer sets the lights when what it says changes, when the schedule
+    is edited, and when the clock is first known. So after a power cut the
+    lights come up as the schedule says.
+  - Events fire as their local moment passes (a DST gap fires at the jump).
+    A clock that jumps more than 5 s skips what it jumped over.
+  - An event notes the scene or show and the lights, turns the lights on,
+    and after its length stops and restores them. The lights then go to
+    what the timer says now.
+  - The lights are the Director's (`set_lights`; TREE_OUTPUT goes through
+    it). The scene JSON has `lights`, `timer` (1 / 0 / -1 none / -2 no clock
+    yet) and the running `event` with its time left.
+- **Protocol:** SCHEDULE_TIMER 49, SCHEDULE_EVENT 50, SCHEDULE_DELETE 51,
+  SCHEDULE_RUN 52 (try an event now / stop it) and SCHEDULE 53. The SCHEDULE
+  frame `[0x88]` also follows every LIBRARY frame, so it's pushed with it.
+- **App:** a Timer card on Home (what the timer says and until when, "by
+  hand", the running event with Stop) and a Schedule page: on/off times with
+  time pickers and day chips, and events with date, time to the second, what
+  to play, length, "Try now". The Home lights switch follows the tree.
+- 124 engine tests (6 new: the timer's windows, New Year's Eve, a DST gap, a
+  jumping clock, storage), 44 app tests.
+
+**On the tree** (against its real clock):
+- A timer set to switch on 15 s later turned the lights off at once, then
+  on and off on the second.
+- The lights, turned on by hand, stayed on.
+- An event started a show on its second with the lights on. After its 20 s
+  the tree went back to "Snow on rainbow", with the lights off, as the timer
+  said.
+- Try-now and stop worked.
+- The schedule survived a reboot, and at power-up the lights were as the
+  schedule said.
+
 ## 16. Memory estimate
 
 | Item | Size |

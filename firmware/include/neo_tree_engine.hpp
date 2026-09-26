@@ -106,7 +106,12 @@ uint8_t engine_host_fx_reply_owner();
 size_t engine_host_take_fx_reply(char *out, size_t cap);
 
 // Lights on/off (TREE_OUTPUT) - the master stage; the scene is untouched.
+// By hand: it lasts until the schedule's on/off timer next changes.
 void engine_host_set_output(bool enabled);
+
+// The schedule as JSON (Library::describe_schedule), as last published by
+// core0. Safe from either core; changes with the library's revision.
+size_t engine_host_schedule_json(char *out, size_t cap);
 
 // Legacy color commands -> Canvas edits. Same semantics as the pre-engine
 // RGB_LED_3D handlers they replace: "paint" is the per-LED overlay,

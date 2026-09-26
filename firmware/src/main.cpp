@@ -233,6 +233,16 @@ bool protocol_msg_len_ok(const uint8_t *msg, size_t len)
         return len == 1 + protocol_name_len;
     case serial_msg_type::TIME_SET:
         return len == 9;
+    case serial_msg_type::SCHEDULE_TIMER:
+        return len == 12;
+    case serial_msg_type::SCHEDULE_EVENT:
+        return len == schedule_event_len;
+    case serial_msg_type::SCHEDULE_DELETE:
+        return len == 3;
+    case serial_msg_type::SCHEDULE_RUN:
+        return len == 2;
+    case serial_msg_type::SCHEDULE:
+        return len == 1;
     case serial_msg_type::TIME_ZONE:
         return len >= 2 && msg[1] <= protocol_time_zone_max && len == 2u + msg[1];
     case serial_msg_type::SLOT_SET:
@@ -533,6 +543,16 @@ void process_msg()
         new_msg = serial_msg_type::NOOP;
         msg_process_counter++;
         break;
+    case serial_msg_type::SCHEDULE:
+    {
+        // Over the network the server answers this on core1.
+        static char schedule_json[status_json_max];   // static: keep it off core0's stack
+        engine_host_schedule_json(schedule_json, sizeof(schedule_json));
+        printf("schedule: %s\n", schedule_json);
+        new_msg = serial_msg_type::NOOP;
+        msg_process_counter++;
+        break;
+    }
     case serial_msg_type::FX_SCHEMA:
     {
         // Over the network the server answers this on core1.
@@ -564,6 +584,10 @@ void process_msg()
     case serial_msg_type::FX_ITEM:
     case serial_msg_type::FX_GET:
     case serial_msg_type::FX_SAVE:
+    case serial_msg_type::SCHEDULE_TIMER:
+    case serial_msg_type::SCHEDULE_EVENT:
+    case serial_msg_type::SCHEDULE_DELETE:
+    case serial_msg_type::SCHEDULE_RUN:
         // Messages are zero-padded in the buffer, so the queue's maximum
         // length covers every one of them.
         if (!engine_host_mode_command(serial_buf_copy, engine_mode_command_max_len, serial_buf_owner))

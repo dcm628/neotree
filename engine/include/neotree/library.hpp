@@ -13,6 +13,7 @@
 #include <cstdint>
 
 #include "neotree/scene_spec.hpp"
+#include "neotree/schedule.hpp"
 
 namespace neotree {
 
@@ -95,6 +96,17 @@ public:
     uint8_t boot_show() const { return find_show(boot_show_); }
     bool set_boot_show(uint8_t index);
 
+    // The schedule (neotree/schedule.hpp): lights on/off timers and events.
+    // Setting index == the count adds one. False if it isn't valid, or full.
+    const Schedule &schedule() const { return schedule_; }
+    bool set_timer(uint8_t index, const TimerRule &rule);
+    bool delete_timer(uint8_t index);
+    bool set_event(uint8_t index, const ScheduledEvent &event);
+    bool delete_event(uint8_t index);
+    // Bumps when the schedule changes (the library's revision does too).
+    uint32_t schedule_revision() const { return schedule_revision_; }
+    size_t describe_schedule(char *out, size_t cap) const;
+
     // Custom effects, at fixed positions 0..max_effects-1 (an effect's mode
     // index follows its position, so it stays put while others come and go).
     // Kept in their stored form; effect() decodes one. reset() leaves them:
@@ -144,6 +156,8 @@ private:
     bool base_custom_ = false;
     char boot_show_[name_size] = "";
     uint32_t revision_ = 0;
+    Schedule schedule_{};
+    uint32_t schedule_revision_ = 0;
 
     struct StoredEffect
     {
