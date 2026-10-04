@@ -38,7 +38,6 @@ its view. Ctrl-C stops early; what's captured is kept.
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -53,19 +52,7 @@ STILL_PX = 0.8            # mean corner movement between polls that still counts
 NEW_POSE_PX = 60.0        # mean corner shift from every earlier capture that makes a pose new
 
 
-def camera_identity(camera_id):
-    """USB serial, model and port of /dev/video<id> (udevadm), for the manifest."""
-    info = {"id": camera_id, "serial": f"video{camera_id}", "model": "?", "usb_path": "?"}
-    try:
-        out = subprocess.run(["udevadm", "info", "-q", "property", "-n", f"/dev/video{camera_id}"],
-                             capture_output=True, text=True, timeout=5).stdout
-        props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
-        info["serial"] = props.get("ID_SERIAL_SHORT", info["serial"])
-        info["model"] = props.get("ID_V4L_PRODUCT", "?")
-        info["usb_path"] = props.get("ID_PATH", "?")
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return info
+camera_identity = neocam.camera_identity
 
 
 def detect(detector, frame):
@@ -135,7 +122,9 @@ class CameraState:
                     names.append(f"{vert} {horiz}")
         return names
 
-    def done(self, target):
+    def done(self, target, quick=False):
+        if quick:   # a station check: just enough poses
+            return len(self.captured) >= target
         spread = max(self.sizes) / min(self.sizes) if self.sizes else 0
         return len(self.captured) >= target and len(self.cells) == GRID * GRID and spread >= 1.5
 
@@ -190,10 +179,17 @@ def main():
                         help="a stereo pair by camera id; default A:0:2 and B:4:6 (as in the sweeps)")
     parser.add_argument('--width', type=int, default=1280)
     parser.add_argument('--height', type=int, default=720)
-    parser.add_argument('--focus', type=int, default=30, help="manual focus - must match the sweeps")
+    parser.add_argument('--focus', type=int, default=30, help="manual focus - must match the sweeps "
+                        "this calibrates (find it with board_check.py focus)")
+    parser.add_argument('--setup', default=None,
+                        help="the rig setup this session calibrates (e.g. phase1): each pylon's stereo is "
+                             "stored per setup, since re-aiming the cameras changes it")
     parser.add_argument('--exposure', default="auto", help="'auto' or a manual value (V4L2 100us units)")
     parser.add_argument('--gain', type=int, default=64)
     parser.add_argument('--target', type=int, default=30, help="new poses per camera")
+    parser.add_argument('--quick', action='store_true',
+                        help="stop at --target poses without requiring coverage of the whole view "
+                             "(for check_station.py)")
     parser.add_argument('--stable-polls', type=int, default=3)
     parser.add_argument('--max-minutes', type=float, default=40)
     parser.add_argument('--tree', default="192.168.0.213", help="the tree, for the status light ('' for none)")
@@ -225,7 +221,7 @@ def main():
 
     manifest_path = os.path.join(args.out_dir, "manifest.json")
     manifest = {
-        "resolution": [args.width, args.height], "focus": args.focus,
+        "resolution": [args.width, args.height], "focus": args.focus, "setup": args.setup,
         "cameras": infos,
         "pylons": [{"name": n, "top": by_id[int(t)]["serial"], "bottom": by_id[int(b)]["serial"]}
                    for n, t, b in (p.split(":") for p in pylons)],
@@ -264,7 +260,7 @@ def main():
                 summary = ", ".join(f"cam{s.info['id']} {len(s.captured)}" for s in states)
                 print(f"pose {pose}: saved {len(saved)} camera(s) - totals: {summary}", flush=True)
                 for s in states:
-                    if s.info["serial"] in new and not s.done(args.target):
+                    if s.info["serial"] in new and not s.done(args.target, args.quick):
                         gaps = s.missing_cells()
                         if gaps:
                             print(f"    cam{s.info['id']} still needs: {', '.join(gaps)}", flush=True)
@@ -273,7 +269,7 @@ def main():
                     s.still_polls = 0   # the next pose needs a fresh hold
                 continue
 
-            if all(s.done(args.target) for s in states):
+            if all(s.done(args.target, args.quick) for s in states):
                 light.show("done")
                 print("\nEvery camera has its poses. Done.")
                 time.sleep(2)

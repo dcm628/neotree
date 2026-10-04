@@ -97,23 +97,94 @@ Layout numbers come from a coverage simulation:
   - wiring consistency;
   - the tree's measured height.
 
-### What to build (in order)
+### Built and rehearsed (2026-10-03)
 
-1. **Intrinsics per camera and focus:** `intrinsics_<serial>_f<focus>.json`.
-   Plus:
-   - a focus finder: board sharpness vs focus at a set distance;
-   - a board-range check: how far it's detected with the real cameras.
-2. **Sweep records:** camera serials, focus, phase and station per sweep.
-   Calibrated cameras used in capture and re-triangulation, with the tilt
-   fit skipped.
-3. **A station check:** a short board capture compared with the pylon's
-   stereo calibration.
-4. **Bundle adjustment across stations,** tested on synthetic data first,
-   and anchor selection.
-5. **Phase 2:** the per-camera anchor pose fit, then the anchored bundle
-   adjustment.
-6. **The tree frame and output:** trunk axis and up direction, the wiring
-   outlier filter, then the firmware header.
+Everything up to the tree frame is built. It's tested on synthetic data
+through the real file and database plumbing; nothing has been run with the
+board yet.
+
+**The pieces:**
+- `bundle.py` — the joint fit: stations, LEDs, each pylon's stereo angle and
+  each camera's intrinsics (held near the board calibration). It also takes
+  anchors and wiring limits, uses a robust loss, and leaves out LEDs only one
+  camera saw.
+- `bundle.choose_anchors` — an LED becomes an anchor when it is:
+  - seen from two stations whose rays cross at 25° or more;
+  - fitting every sighting within 1.5 px;
+  - estimated under 3 mm;
+  - within the wiring limit of every neighbour.
+- `map_phases.py` — `phase1`, `phase2 --anchors-from`, `show`. It reads the
+  sweeps' raw observations and camera records, and stores the results in
+  `bundle_runs` / `bundle_points`.
+- **Calibrations:**
+  - intrinsics per camera and focus: `calibration/intrinsics_<serial>_f<focus>.json`;
+  - stereo per setup: `calibration/<setup>/stereo_<pylon>.json`.
+- `board_check.py focus` / `range` — the focus finder and the detection
+  range check.
+- `check_station.py` — the stereo-drift check after a short capture
+  (`capture_calibration_images.py ... --target 8 --quick`).
+- `capture_sweep.py --focus --setup --station-a --station-b`:
+  - records serials, focus, setup and station (table `sweep_cameras`);
+  - uses the calibrated cameras when they exist;
+  - `process_sweep.py` skips the tilt fit for them.
+
+**Rehearsals** (`test_bundle_synthetic.py`, `test_map_phases_synthetic.py`).
+The made-up tree has the real profile and the real wiring: lines of 300,
+300, 200 and 200 LEDs in 100-LED strands. The setup is 6 stations, branches
+hiding LEDs, 0.3 px noise, 2% bad blobs and realistic board-calibration
+errors. Results:
+- **Phase 1, top section:** 0.4–0.6 mm median, 95% within about 1 mm.
+- **Anchors:** 500–600 chosen, true error about 0.6–0.9 mm median, worst
+  3–4 mm. About 200–285 of them are below the top section: phase 1's
+  cameras see further down too.
+- **Phase 2, anchored, whole tree:** 1.0–1.5 mm median, 95% within about
+  2.5–3.3 mm. One station's own stereo at 2.3 m gets 4–9 mm.
+- **Without anchors,** phase 2 is worse than a single station (5–7 mm).
+
+**Lessons from the rehearsals:**
+- **Refine intrinsics in the anchored fit.** At 2.3 m the board's
+  0.2% focal and 1.5 px centre errors cost 2.5 mm median; refining them
+  brings it to 0.9 mm.
+- **Choose anchors strictly.** Loose anchors (any LED seen twice) let
+  badly placed low LEDs into phase 2.
+- **Leave out LEDs seen by only one camera.** They drift and drag their
+  wiring neighbours.
+
+**Still to build:** the tree frame (trunk axis and up direction, e.g. from
+the board laid flat on the floor in one station's view), then the firmware
+header from a run.
+
+### Session day — phase 1
+
+1. **Aim the rig for phase 1.** Pylons with cameras at about 1.30 m and
+   1.90 m, both tilted about 15° toward 1.6 m at the trunk. Room lights on.
+2. **Focus:** hold the board still about 1.1 m from the cameras and run
+   `python3 board_check.py focus --distance-mm 1100`. Use the suggested
+   setting F for everything in phase 1.
+3. **Range:** `python3 board_check.py range --focus F`. Walk back and
+   confirm every camera reads the board to at least 1.25 m.
+4. **Calibration capture** (intrinsics and stereo in one session, since the
+   rig is already aimed):
+   `python3 capture_calibration_images.py --out-dir calib_images/phase1 --focus F --setup phase1`
+   - Cover each camera's whole view.
+   - Often hold the board where both cameras of a pylon see it, at
+     0.7–1.25 m.
+5. **Fit:** `python3 calibrate_intrinsics.py --session calib_images/phase1`,
+   then `python3 calibrate_stereo.py --session calib_images/phase1`.
+   - Expect well under 1 px.
+   - The board check in mm is the real accuracy here.
+6. **For each sweep** (S1+S4, S2+S5, S3+S6, both pylons 1.1 m from the
+   trunk):
+   - Station check, lights on:
+     `capture_calibration_images.py --out-dir calib_images/check_S1 --focus F --setup phase1 --target 8 --quick`,
+     then `python3 check_station.py --session calib_images/check_S1`.
+   - Then lights off:
+     `capture_sweep.py --pylon-a-top 0 --pylon-a-bottom 2 --pylon-b-top 4 --pylon-b-bottom 6 --focus F --setup phase1 --station-a S1 --station-b S4`
+7. **Solve:** `python3 map_phases.py phase1 --sweeps <the three sweep ids>`.
+   Check the summary:
+   - reprojection RMS under 1 px;
+   - wiring breaks near zero;
+   - a few hundred anchors.
 
 ## Why calibrate
 

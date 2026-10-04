@@ -120,6 +120,44 @@ CREATE TABLE IF NOT EXISTS session_transforms (
 -- that solved the same LED. Regeneratable from session_solves +
 -- session_transforms; stored so downstream tools (generate_pos_config_
 -- header.py) don't need to redo the merge on every run.
+-- Phased mapping (docs/CALIBRATION.md): which physical cameras (by USB
+-- serial) a sweep's pylon used, at which focus, in which calibrated setup
+-- (each pylon's stereo is per setup), and the station it stood at.
+CREATE TABLE IF NOT EXISTS sweep_cameras (
+    sweep_id INTEGER NOT NULL,
+    pylon_id TEXT NOT NULL,
+    top_serial TEXT NOT NULL,
+    bottom_serial TEXT NOT NULL,
+    focus INTEGER NOT NULL,
+    setup TEXT,
+    station TEXT,
+    PRIMARY KEY (sweep_id, pylon_id)
+);
+
+-- Bundle adjustments over several sweeps (map_phases.py), and their LEDs.
+-- anchor = 1 for LEDs chosen as anchors for the next phase.
+CREATE TABLE IF NOT EXISTS bundle_runs (
+    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    sweeps TEXT NOT NULL,            -- JSON list of sweep ids
+    anchors_from INTEGER,            -- the run whose anchors it used
+    rms_px REAL NOT NULL,
+    dropped INTEGER NOT NULL,
+    details_json TEXT,               -- refined intrinsics, rig angle corrections, stations
+    notes TEXT
+);
+CREATE TABLE IF NOT EXISTS bundle_points (
+    run_id INTEGER NOT NULL REFERENCES bundle_runs(run_id),
+    led_position INTEGER NOT NULL,
+    x_mm REAL NOT NULL, y_mm REAL NOT NULL, z_mm REAL NOT NULL,
+    sigma_mm REAL NOT NULL,          -- sqrt of the covariance trace
+    n_stations INTEGER NOT NULL,
+    n_obs INTEGER NOT NULL,
+    anchor INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, led_position)
+);
+
 CREATE TABLE IF NOT EXISTS global_estimates (
     led_position INTEGER PRIMARY KEY,
     x_mm REAL NOT NULL,
@@ -161,6 +199,21 @@ def record_pylon_placement(conn, sweep_id, pylon_id, top_camera_id, bottom_camer
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (sweep_id, pylon_id, top_camera_id, bottom_camera_id, capture_width,
              capture_height, camera_spacing_mm, calibration_source))
+
+
+def record_sweep_cameras(conn, sweep_id, pylon_id, top_serial, bottom_serial, focus, setup=None, station=None):
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sweep_cameras "
+            "(sweep_id, pylon_id, top_serial, bottom_serial, focus, setup, station) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sweep_id, pylon_id, top_serial, bottom_serial, focus, setup, station))
+
+
+def get_sweep_cameras(conn, sweep_id, pylon_id):
+    """(top_serial, bottom_serial, focus, setup, station) or None for sweeps from before it was recorded."""
+    return conn.execute(
+        "SELECT top_serial, bottom_serial, focus, setup, station FROM sweep_cameras "
+        "WHERE sweep_id = ? AND pylon_id = ?", (sweep_id, pylon_id)).fetchone()
 
 
 def record_raw_observation(conn, sweep_id, pylon_id, camera_position, led_position,

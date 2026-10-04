@@ -98,11 +98,15 @@ def compute_min_dwell_s(exposure_v4l2_units, fps, num_cameras=1,
     return led_refresh_margin_s + max(exposure_s, frame_period_s) + frame_margin_s
 
 
-def build_pylon(pylon_id, top_id, bottom_id, width, height, spacing_mm, exposure, gain, fps):
+def build_pylon(pylon_id, top_id, bottom_id, width, height, spacing_mm, exposure, gain, fps,
+                focus=30, setup=None, calib_dir=geom.DEFAULT_CALIBRATION_DIR, station=None):
+    top_serial = neocam.camera_identity(top_id)["serial"]
+    bottom_serial = neocam.camera_identity(bottom_id)["serial"]
     captures = neocam.initialize_video_capture([top_id, bottom_id])
     if captures is None:
         raise RuntimeError(f"pylon {pylon_id}: could not open camera ids {top_id}/{bottom_id}")
-    neocam.set_camera_settings(captures, width=width, height=height, exposure=exposure, gain=gain, fps=fps)
+    neocam.set_camera_settings(captures, width=width, height=height, exposure=exposure, gain=gain, fps=fps,
+                               focus=focus)
     top_cap, bottom_cap = captures
     # The driver doesn't always honor the requested resolution (seen in
     # practice: 1208x680 requested, 1280x720 negotiated) - the geometry
@@ -120,9 +124,21 @@ def build_pylon(pylon_id, top_id, bottom_id, width, height, spacing_mm, exposure
     neocam.drain_for([top_cap, bottom_cap], 0.3)
     actual_exposure = top_cap.get(cv2.CAP_PROP_EXPOSURE)
     actual_fps = top_cap.get(cv2.CAP_PROP_FPS)
-    bottom_model, top_model = geom.make_pylon_cameras(actual_width, actual_height, spacing_mm=spacing_mm)
+    # The ChArUco calibration for these cameras, focus and setup, if there is one.
+    if geom.has_calibration(bottom_serial, top_serial, calib_dir, focus, setup):
+        bottom_model, top_model = geom.make_calibrated_pylon_cameras(
+            bottom_serial, top_serial, actual_width, actual_height, calib_dir, focus, setup)
+        source = f"charuco:{setup}" if setup else "charuco"
+        print(f"pylon {pylon_id}: calibrated cameras (focus {focus}, setup {setup})")
+    else:
+        bottom_model, top_model = geom.make_pylon_cameras(actual_width, actual_height, spacing_mm=spacing_mm)
+        source = "nominal"
+        print(f"pylon {pylon_id}: WARNING no calibration for cameras {bottom_serial}/{top_serial} at focus "
+              f"{focus}, setup {setup} - using the nominal model")
     return {
         "pylon_id": pylon_id,
+        "top_serial": top_serial, "bottom_serial": bottom_serial,
+        "focus": focus, "setup": setup, "station": station, "calibration_source": source,
         "top_id": top_id, "bottom_id": bottom_id,
         "top_cap": top_cap, "bottom_cap": bottom_cap,
         "top_model": top_model, "bottom_model": bottom_model,
@@ -404,6 +420,13 @@ def main():
                               "docstring). Watch dmesg on the Pi during the first run on any "
                               "hardware that's had connection trouble before trusting this.")
     parser.add_argument('--notes', default=None)
+    parser.add_argument('--focus', type=int, default=30,
+                        help="manual focus for every camera - must match their calibration (board_check.py focus)")
+    parser.add_argument('--setup', default=None,
+                        help="the calibrated rig setup (e.g. phase1): which stereo calibration applies")
+    parser.add_argument('--station-a', default=None, help="where pylon A stands, e.g. S1 (for the record)")
+    parser.add_argument('--station-b', default=None, help="where pylon B stands, e.g. S4")
+    parser.add_argument('--calib-dir', default=geom.DEFAULT_CALIBRATION_DIR)
     args = parser.parse_args()
 
     pylon_args = {
@@ -430,7 +453,9 @@ def main():
         for pid, (top_id, bottom_id) in requested.items():
             print(f"Opening pylon {pid}: top={top_id} bottom={bottom_id}")
             pylons.append(build_pylon(pid, top_id, bottom_id, args.width, args.height, args.spacing_mm,
-                                       args.exposure, args.gain, args.fps))
+                                       args.exposure, args.gain, args.fps, focus=args.focus, setup=args.setup,
+                                       calib_dir=args.calib_dir,
+                                       station=args.station_a if pid == "A" else args.station_b))
 
         # Safety caps for drain_until_live, not target dwell times - it
         # exits as soon as it directly observes each camera's live-frame
@@ -453,7 +478,11 @@ def main():
                 for pylon in pylons:
                     sweep_db.record_pylon_placement(
                         conn, sweep_id, pylon["pylon_id"], pylon["top_id"], pylon["bottom_id"],
-                        pylon["width"], pylon["height"], args.spacing_mm, calibration_source="nominal")
+                        pylon["width"], pylon["height"], args.spacing_mm,
+                        calibration_source=pylon["calibration_source"])
+                    sweep_db.record_sweep_cameras(
+                        conn, sweep_id, pylon["pylon_id"], pylon["top_serial"], pylon["bottom_serial"],
+                        pylon["focus"], pylon["setup"], pylon["station"])
 
                 led_positions = compute_led_positions(
                     conn, args.start_led, args.count, args.gap_fill, args.max_cov_trace)

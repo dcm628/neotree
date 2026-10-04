@@ -33,6 +33,23 @@ def disable_exposure_dynamic_framerate(camera_id):
         pass
 
 
+def camera_identity(camera_id):
+    """USB serial, model and port of /dev/video<id> (udevadm) - the serial
+    identifies the physical camera whatever video number it gets, so
+    calibrations are stored by it."""
+    info = {"id": camera_id, "serial": f"video{camera_id}", "model": "?", "usb_path": "?"}
+    try:
+        out = subprocess.run(["udevadm", "info", "-q", "property", "-n", f"/dev/video{camera_id}"],
+                             capture_output=True, text=True, timeout=5).stdout
+        props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        info["serial"] = props.get("ID_SERIAL_SHORT", info["serial"])
+        info["model"] = props.get("ID_V4L_PRODUCT", "?")
+        info["usb_path"] = props.get("ID_PATH", "?")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return info
+
+
 def initialize_video_capture(camera_ids):
     """
     Initialize the video capture objects for multiple cameras and check if each is available.

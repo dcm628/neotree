@@ -240,16 +240,19 @@ CV_TO_LOCAL = np.array([[0.0, 1.0, 0.0],
                         [1.0, 0.0, 0.0]])
 
 
-def load_intrinsics(serial, calib_dir=DEFAULT_CALIBRATION_DIR):
-    path = os.path.join(calib_dir, f"intrinsics_{serial}.json")
+def load_intrinsics(serial, calib_dir=DEFAULT_CALIBRATION_DIR, focus=None):
+    """A camera's intrinsics at a focus setting (calibrate_intrinsics.py); None if not calibrated."""
+    path = os.path.join(calib_dir, f"intrinsics_{serial}_f{focus}.json")
     if not os.path.exists(path):
         return None
     with open(path) as f:
         return json.load(f)
 
 
-def find_stereo(bottom_serial, top_serial, calib_dir=DEFAULT_CALIBRATION_DIR):
-    for path in sorted(glob.glob(os.path.join(calib_dir, "stereo_*.json"))):
+def find_stereo(bottom_serial, top_serial, calib_dir=DEFAULT_CALIBRATION_DIR, setup=None):
+    """A pylon's stereo fit for a setup (calibration/<setup>/stereo_*.json)."""
+    folder = os.path.join(calib_dir, setup) if setup else calib_dir
+    for path in sorted(glob.glob(os.path.join(folder, "stereo_*.json"))):
         with open(path) as f:
             d = json.load(f)
         if d.get("bottom_serial") == bottom_serial and d.get("top_serial") == top_serial:
@@ -257,14 +260,14 @@ def find_stereo(bottom_serial, top_serial, calib_dir=DEFAULT_CALIBRATION_DIR):
     return None
 
 
-def has_calibration(bottom_serial, top_serial, calib_dir=DEFAULT_CALIBRATION_DIR):
-    return (load_intrinsics(bottom_serial, calib_dir) is not None and
-            load_intrinsics(top_serial, calib_dir) is not None and
-            find_stereo(bottom_serial, top_serial, calib_dir) is not None)
+def has_calibration(bottom_serial, top_serial, calib_dir=DEFAULT_CALIBRATION_DIR, focus=None, setup=None):
+    return (load_intrinsics(bottom_serial, calib_dir, focus) is not None and
+            load_intrinsics(top_serial, calib_dir, focus) is not None and
+            find_stereo(bottom_serial, top_serial, calib_dir, setup) is not None)
 
 
 def make_calibrated_pylon_cameras(bottom_serial, top_serial, width_px, height_px,
-                                  calib_dir=DEFAULT_CALIBRATION_DIR):
+                                  calib_dir=DEFAULT_CALIBRATION_DIR, focus=None, setup=None):
     """
     The (bottom, top) CameraModel pair for one pylon from its ChArUco
     calibration: each camera's own intrinsics and distortion, and the top
@@ -273,9 +276,9 @@ def make_calibrated_pylon_cameras(bottom_serial, top_serial, width_px, height_px
     The pylon frame is still the bottom camera's. Raises ValueError if the
     calibration is missing or for another resolution.
     """
-    ib = load_intrinsics(bottom_serial, calib_dir)
-    it = load_intrinsics(top_serial, calib_dir)
-    stereo = find_stereo(bottom_serial, top_serial, calib_dir)
+    ib = load_intrinsics(bottom_serial, calib_dir, focus)
+    it = load_intrinsics(top_serial, calib_dir, focus)
+    stereo = find_stereo(bottom_serial, top_serial, calib_dir, setup)
     if ib is None or it is None or stereo is None:
         raise ValueError(f"no complete calibration for bottom {bottom_serial} / top {top_serial} in {calib_dir}")
     for d in (ib, it, stereo):

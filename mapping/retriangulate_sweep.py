@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--pylon-id', default='A')
     parser.add_argument('--spacing-mm', type=float, default=geom.PYLON_CAMERA_SPACING_MM)
     parser.add_argument('--pixel-sigma', type=float, default=1.0)
+    parser.add_argument('--calib-dir', default=geom.DEFAULT_CALIBRATION_DIR)
     args = parser.parse_args()
 
     conn = sweep_db.connect(args.db)
@@ -44,8 +45,14 @@ def main():
         raise SystemExit(f"no pylon_placements row for sweep {sweep_id} pylon {args.pylon_id}")
     width, height = placement
 
+    cams = sweep_db.get_sweep_cameras(conn, sweep_id, args.pylon_id)
     tilt_rvec = sweep_db.get_pylon_tilt_fit(conn, sweep_id, args.pylon_id)
-    if tilt_rvec is not None:
+    if cams is not None and geom.has_calibration(cams[1], cams[0], args.calib_dir, cams[2], cams[3]):
+        top_serial, bottom_serial, focus, setup, _station = cams
+        print(f"Using the ChArUco calibration (focus {focus}, setup {setup}) for sweep {sweep_id} pylon {args.pylon_id}")
+        bottom_model, top_model = geom.make_calibrated_pylon_cameras(
+            bottom_serial, top_serial, width, height, args.calib_dir, focus, setup)
+    elif tilt_rvec is not None:
         print(f"Using fitted tilt correction from pylon_tilt_fits for sweep {sweep_id} pylon {args.pylon_id}")
         bottom_model, top_model = geom.make_pylon_cameras(
             width, height, spacing_mm=args.spacing_mm, top_rotation_rvec=tilt_rvec)

@@ -79,6 +79,8 @@ class Result:
     dropped: int                         # observations rejected as outliers
     residual_px: np.ndarray = field(default=None)   # per used observation
     intrinsics: dict = field(default=None)          # (rig, cam) -> fx fy cx cy k1 k2 p1 p2 k3, as refined
+    ray_angle_deg: dict = field(default=None)       # led -> widest angle between the rays that saw it
+    worst_px: dict = field(default=None)            # led -> its largest remaining reprojection error
 
 
 def _rot(r):
@@ -150,6 +152,13 @@ class Bundle:
             D = np.concatenate([D, np.zeros(max(0, 5 - len(D)))])[:5]
             self.base_intr.append(np.array([K[0, 0], K[1, 1], K[0, 2], K[1, 2], D[0], D[1], D[2], D[3], D[4]]))
         self.base_intr = np.array(self.base_intr)
+
+        # A single sighting fixes a direction, not a distance: such LEDs can't be
+        # placed (and would drift, dragging their wiring neighbours) - leave them out.
+        counts = np.bincount(obs.led, minlength=int(obs.led.max()) + 1 if len(obs.led) else 0)
+        keep = (counts[obs.led] >= 2) | np.isin(obs.led, list(self.anchors))
+        self.single_sighting = sorted(set(obs.led[~keep].tolist()))
+        obs = Observations(obs.station[keep], obs.cam[keep], obs.led[keep], obs.uv[keep])
         self.obs_cam = self.cam_of_station[obs.station, obs.cam]
 
         # Observations, undistorted once into normalized coordinates.
@@ -424,11 +433,18 @@ class Bundle:
         intr = self._intrinsics(x)
         # Per-LED covariance, holding the poses: sigma^2 (J^T J)^-1 over its own sightings.
         Rc, tc = self._camera_transforms(R, t, deltas)
-        cov, n_obs, n_st, points = {}, {}, {}, {}
+        cov, n_obs, n_st, points, ray_angle, worst = {}, {}, {}, {}, {}, {}
         sigma = max(rms, 0.3)
+        centres = np.array([-Rc[c].T @ tc[c] for c in range(len(Rc))])   # camera centres, world
         for l in self.leds:
             k = self.led_index[l]
             m = np.nonzero(mask & (o.led == l))[0]
+            # Geometry: the widest angle between the rays that saw it (a pylon's own two
+            # cameras give only ~15-30 degrees; another station, far more).
+            rays = centres[np.unique(2 * o.station[m] + o.cam[m])] - X[k]
+            rays /= np.linalg.norm(rays, axis=1, keepdims=True) + 1e-12
+            ray_angle[l] = float(np.degrees(np.arccos(np.clip((rays @ rays.T).min(), -1, 1)))) if len(rays) > 1 else 0.0
+            worst[l] = float(err[m].max()) if len(m) else float("inf")
             JtJ = np.zeros((3, 3))
             for i in m:
                 ci = 2 * o.station[i] + o.cam[i]
@@ -444,7 +460,26 @@ class Bundle:
             cov[l] = sigma ** 2 * np.linalg.pinv(JtJ) if len(m) >= 2 or l in self.anchors else np.full((3, 3), np.inf)
         return Result(points=points, cov=cov, n_obs=n_obs, n_stations=n_st, station_R=R, station_t=t,
                       rig_delta=deltas, rms_px=rms, dropped=int((~mask).sum()), residual_px=used,
-                      intrinsics={k: intr[j] for j, k in enumerate(self.cam_keys)})
+                      intrinsics={k: intr[j] for j, k in enumerate(self.cam_keys)},
+                      ray_angle_deg=ray_angle, worst_px=worst)
+
+
+def choose_anchors(res, wiring, max_sigma_mm=3.0, min_angle_deg=25.0, max_px=1.5, slack_mm=10.0):
+    """The LEDs good enough to anchor the next phase: seen from two stations whose
+    rays cross at a real angle, fitting all their sightings, estimated precisely, and
+    within the wiring limit of every neighbour solved with them (one far from its
+    neighbours is a misidentified blob, however consistent it looks)."""
+    broken = set()
+    for i, j, L in wiring:
+        if i in res.points and j in res.points and np.linalg.norm(res.points[i] - res.points[j]) > L + slack_mm:
+            broken |= {i, j}
+    out = set()
+    for l in res.points:
+        sig = float(np.sqrt(np.trace(res.cov[l])))
+        if (res.n_stations[l] >= 2 and res.ray_angle_deg[l] >= min_angle_deg and res.worst_px[l] <= max_px
+                and sig < max_sigma_mm and l not in broken):
+            out.add(l)
+    return out
 
 
 def wiring_limits(leds, lines=((0, 300), (300, 600), (600, 800), (800, 1000)), pitch_mm=100.0, joint_mm=300.0,

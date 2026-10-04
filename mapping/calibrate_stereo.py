@@ -33,8 +33,8 @@ import numpy as np
 import calibration_board as calib
 
 
-def load_intrinsics(calib_dir, serial, resolution):
-    path = os.path.join(calib_dir, f"intrinsics_{serial}.json")
+def load_intrinsics(calib_dir, serial, resolution, focus):
+    path = os.path.join(calib_dir, f"intrinsics_{serial}_f{focus}.json")
     with open(path) as f:
         d = json.load(f)
     if [d["image_width"], d["image_height"]] != list(resolution):
@@ -65,8 +65,8 @@ def triangulate(K1, D1, K2, D2, R, T, pts1, pts2):
 def calibrate_pylon(session, manifest, pylon, calib_dir, min_common):
     resolution = manifest["resolution"]
     top, bottom = pylon["top"], pylon["bottom"]
-    K1, D1 = load_intrinsics(calib_dir, bottom, resolution)
-    K2, D2 = load_intrinsics(calib_dir, top, resolution)
+    K1, D1 = load_intrinsics(calib_dir, bottom, resolution, manifest["focus"])
+    K2, D2 = load_intrinsics(calib_dir, top, resolution, manifest["focus"])
     board = calib.make_board()
     detector = calib.make_detector()
     board_3d = board.getChessboardCorners() * 1000.0   # mm, by corner id
@@ -121,10 +121,14 @@ def calibrate_pylon(session, manifest, pylon, calib_dir, min_common):
     print(f"  overall: RMS {np.sqrt(np.mean(all_err ** 2)):.2f} mm over {len(all_err)} corner pairs "
           f"(100-{np.linalg.norm(board_3d.max(0) - board_3d.min(0)):.0f} mm apart)")
 
-    out = os.path.join(calib_dir, f"stereo_{pylon['name']}.json")
+    # Per setup: re-aiming the cameras changes it.
+    setup_dir = os.path.join(calib_dir, manifest["setup"]) if manifest.get("setup") else calib_dir
+    os.makedirs(setup_dir, exist_ok=True)
+    out = os.path.join(setup_dir, f"stereo_{pylon['name']}.json")
     with open(out, "w") as f:
         json.dump({
             "pylon": pylon["name"], "top_serial": top, "bottom_serial": bottom,
+            "focus": manifest["focus"], "setup": manifest.get("setup"),
             "image_width": resolution[0], "image_height": resolution[1],
             "rotation_matrix": R.tolist(), "translation_mm": (T.flatten() * 1000.0).tolist(),
             "top_center_in_bottom_frame_mm": top_center.tolist(),

@@ -116,7 +116,7 @@ print(subprocess.run([py, "calibrate_stereo.py", "--session", OUT, "--calib-dir"
 
 print("truth vs fit:")
 for serial, (K, dist) in cams.items():
-    d = json.load(open(os.path.join(CAL, f"intrinsics_{serial}.json")))
+    d = json.load(open(os.path.join(CAL, f"intrinsics_{serial}_f30.json")))
     Kf = np.array(d["camera_matrix"])
     print(f"  {serial}: fx {K[0,0]:.1f}/{Kf[0,0]:.1f} fy {K[1,1]:.1f}/{Kf[1,1]:.1f} "
           f"cx {K[0,2]:.1f}/{Kf[0,2]:.1f} cy {K[1,2]:.1f}/{Kf[1,2]:.1f} "
@@ -125,7 +125,7 @@ s = json.load(open(os.path.join(CAL, "stereo_A.json")))
 print(f"  top centre true {C_top.tolist()} fit {np.round(s['top_center_in_bottom_frame_mm'], 1).tolist()}")
 
 # pylon_geometry's calibrated cameras vs the true geometry: LEDs 1.5-3 m away.
-bottom, top = geom.make_calibrated_pylon_cameras("SYN_A_BOT", "SYN_A_TOP", W, H, calib_dir=CAL)
+bottom, top = geom.make_calibrated_pylon_cameras("SYN_A_BOT", "SYN_A_TOP", W, H, calib_dir=CAL, focus=30)
 print(f"  pylon frame: top camera at {np.round(top.origin, 1).tolist()} (true: 0 right, 0 forward, 592 up, "
       f"plus the offsets -> {np.round(geom.CV_TO_LOCAL @ C_top, 1).tolist()})")
 errs = []

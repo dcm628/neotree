@@ -13,6 +13,7 @@ import argparse
 import subprocess
 import sys
 
+import pylon_geometry as geom
 import sweep_db
 
 
@@ -39,7 +40,15 @@ def main():
             fit_cmd += ["--spacing-mm", str(args.spacing_mm)]
             retri_cmd += ["--spacing-mm", str(args.spacing_mm)]
 
-        subprocess.run(fit_cmd, check=True)
+        # Calibrated pylons (ChArUco) know their stereo geometry: no tilt fit.
+        conn = sweep_db.connect(args.db)
+        cams = sweep_db.get_sweep_cameras(conn, args.sweep_id, pylon_id)
+        conn.close()
+        calibrated = cams is not None and geom.has_calibration(cams[1], cams[0], focus=cams[2], setup=cams[3])
+        if calibrated:
+            print("calibrated cameras - skipping the tilt fit")
+        else:
+            subprocess.run(fit_cmd, check=True)
         subprocess.run(retri_cmd, check=True)
 
 

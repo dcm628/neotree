@@ -32,11 +32,15 @@ def radius_at(z):
     return float(np.interp(z, zs, rs))
 
 
-def make_tree(n_lines=4, per_line=250):
-    """LEDs along wire chains: each step 60-100 mm, mostly around the tree, drifting in
-    height, in and out along branches - inside the tree's profile."""
+LINES = (300, 300, 200, 200)      # the real tree: data lines of 100-LED strands
+
+
+def make_tree(lines=LINES):
+    """LEDs along wire chains: each step 60-100 mm (up to 280 mm across a strand joint),
+    mostly around the tree, drifting in height, in and out along branches - inside the
+    tree's profile."""
     leds = []
-    for line in range(n_lines):
+    for line, per_line in enumerate(lines):
         upward = line % 2 == 0                # each string climbs or descends the whole tree
         z = -80.0 if upward else 1990.0
         drift = 2050.0 / per_line * (1 if upward else -1)
@@ -45,8 +49,9 @@ def make_tree(n_lines=4, per_line=250):
         for k in range(per_line):
             r = radius_at(z) * frac
             p = np.array([r * np.cos(ang), r * np.sin(ang), z])
-            if k and np.linalg.norm(p - leds[-1]) > 98.0:     # the wire is at most 100 mm
-                p = leds[-1] + (p - leds[-1]) * (98.0 / np.linalg.norm(p - leds[-1]))
+            limit = 280.0 if k and k % 100 == 0 else 98.0      # the wire: 100 mm, 300 at a strand joint
+            if k and np.linalg.norm(p - leds[-1]) > limit:
+                p = leds[-1] + (p - leds[-1]) * (limit / np.linalg.norm(p - leds[-1]))
                 z, ang = p[2], np.arctan2(p[1], p[0])
                 frac = float(np.clip(np.hypot(p[0], p[1]) / radius_at(z), 0.25, 1.0))
             leds.append(p)
@@ -156,75 +161,82 @@ def summary(label, e):
           f"95% {np.percentile(e, 95):.1f} mm")
 
 
-leds = make_tree()
-top = set(np.nonzero(leds[:, 2] >= 1200)[0].tolist())
-steps = np.linalg.norm(np.diff(leds, axis=0), axis=1)[[k for k in range(len(leds) - 1) if (k + 1) % 250]]
-print(f"tree: {len(leds)} LEDs, {len(top)} in the top section (z >= 1200 mm); "
-      f"neighbours {steps.min():.0f}-{steps.max():.0f} mm apart")
-stations = [0, 180, 60, 240, 120, 300]    # sweeps: A+B opposite each other
+def main():
+    leds = make_tree()
+    top = set(np.nonzero(leds[:, 2] >= 1200)[0].tolist())
+    starts = np.cumsum((0,) + LINES)[:-1]
+    steps = np.linalg.norm(np.diff(leds, axis=0), axis=1)[[k for k in range(len(leds) - 1)
+                                                           if (k + 1) not in starts and (k + 1) % 100]]
+    print(f"tree: {len(leds)} LEDs, {len(top)} in the top section (z >= 1200 mm); "
+          f"neighbours {steps.min():.0f}-{steps.max():.0f} mm apart")
+    stations = [0, 180, 60, 240, 120, 300]    # sweeps: A+B opposite each other
 
-# ---- phase 1: the top section from 1.1 m ----
-cams1 = {n: (true_camera(), true_camera()) for n in "AB"}
-rigs1, st1, obs1, _tp1 = build_phase(leds, 1100, 1304, 1600, 592, cams1, stations)
-keep = np.isin(obs1.led, list(top)) | True
-print(f"\nphase 1: {len(obs1.led)} sightings from {len(st1)} stations")
+    # ---- phase 1: the top section from 1.1 m ----
+    cams1 = {n: (true_camera(), true_camera()) for n in "AB"}
+    rigs1, st1, obs1, _tp1 = build_phase(leds, 1100, 1304, 1600, 592, cams1, stations)
+    keep = np.isin(obs1.led, list(top)) | True
+    print(f"\nphase 1: {len(obs1.led)} sightings from {len(st1)} stations")
 
-# One station's own stereo, as before.
-b1 = bundle.Bundle(rigs1, st1, obs1)
-b1._layout()
-best = None
-for s in range(len(st1)):
-    sp = b1._stereo_points(s)
-    sp = {l: p for l, p in sp.items() if l in top}
-    if len(sp) > 30:
-        e, _ = errors_after_rigid(sp, leds)
-        if best is None or np.median(e) < np.median(best):
-            best = e
-summary("best single station, its own stereo", best)
+    # One station's own stereo, as before.
+    b1 = bundle.Bundle(rigs1, st1, obs1)
+    b1._layout()
+    best = None
+    for s in range(len(st1)):
+        sp = b1._stereo_points(s)
+        sp = {l: p for l, p in sp.items() if l in top}
+        if len(sp) > 30:
+            e, _ = errors_after_rigid(sp, leds)
+            if best is None or np.median(e) < np.median(best):
+                best = e
+    summary("best single station, its own stereo", best)
 
-res1 = bundle.Bundle(rigs1, st1, obs1, refine_rigs=True, refine_intrinsics=REFINE_INTRINSICS).solve()
-print(f"  bundle: rms {res1.rms_px:.2f} px, {res1.dropped} sightings rejected as bad blobs")
-e1, (R1, t1) = errors_after_rigid(res1.points, leds, top)
-summary("phase 1 bundle, top section", e1)
-sig = {l: np.sqrt(np.trace(res1.cov[l])) for l in res1.points}
-anchors = {l: (res1.points[l], max(sig[l], 0.5)) for l in res1.points
-           if l in top and res1.n_stations[l] >= 2 and sig[l] < 3.0}
-ea = np.array([np.linalg.norm(R1 @ res1.points[l] + t1 - leds[l]) for l in anchors])
-print(f"  anchors (2+ stations, estimated under 3 mm): {len(anchors)}; their true error median {np.median(ea):.1f} mm, "
-      f"max {ea.max():.1f} mm; estimated median {np.median([anchors[l][1] for l in anchors]):.1f} mm")
+    res1 = bundle.Bundle(rigs1, st1, obs1, refine_rigs=True, refine_intrinsics=REFINE_INTRINSICS).solve()
+    print(f"  bundle: rms {res1.rms_px:.2f} px, {res1.dropped} sightings rejected as bad blobs")
+    e1, (R1, t1) = errors_after_rigid(res1.points, leds, top)
+    summary("phase 1 bundle, top section", e1)
+    sig = {l: np.sqrt(np.trace(res1.cov[l])) for l in res1.points}
+    chosen = bundle.choose_anchors(res1, bundle.wiring_limits(res1.points))
+    anchors = {l: (res1.points[l], max(sig[l], 0.5)) for l in chosen}
+    ea = np.array([np.linalg.norm(R1 @ res1.points[l] + t1 - leds[l]) for l in anchors])
+    print(f"  anchors chosen: {len(anchors)}; their true error median {np.median(ea):.1f} mm, "
+          f"max {ea.max():.1f} mm; estimated median {np.median([anchors[l][1] for l in anchors]):.1f} mm")
 
-# ---- phase 2: the whole tree from 2.3 m ----
-cams2 = {n: (true_camera(), true_camera()) for n in "AB"}      # refocused: new intrinsics
-rigs2, st2, obs2, _tp2 = build_phase(leds, 2300, 644, 940, 592, cams2, stations)
-print(f"\nphase 2: {len(obs2.led)} sightings from {len(st2)} stations")
-b2 = bundle.Bundle(rigs2, st2, obs2)
-b2._layout()
-best = None
-for s in range(len(st2)):
-    sp = b2._stereo_points(s)
-    if len(sp) > 50:
-        e, _ = errors_after_rigid(sp, leds)
-        if best is None or np.median(e) < np.median(best):
-            best = e
-summary("best single station, its own stereo", best)
+    # ---- phase 2: the whole tree from 2.3 m ----
+    cams2 = {n: (true_camera(), true_camera()) for n in "AB"}      # refocused: new intrinsics
+    rigs2, st2, obs2, _tp2 = build_phase(leds, 2300, 644, 940, 592, cams2, stations)
+    print(f"\nphase 2: {len(obs2.led)} sightings from {len(st2)} stations")
+    b2 = bundle.Bundle(rigs2, st2, obs2)
+    b2._layout()
+    best = None
+    for s in range(len(st2)):
+        sp = b2._stereo_points(s)
+        if len(sp) > 50:
+            e, _ = errors_after_rigid(sp, leds)
+            if best is None or np.median(e) < np.median(best):
+                best = e
+    summary("best single station, its own stereo", best)
 
-res2 = bundle.Bundle(rigs2, st2, obs2, refine_rigs=True).solve()
-e2, _ = errors_after_rigid(res2.points, leds)
-summary("phase 2 bundle without anchors", e2)
+    res2 = bundle.Bundle(rigs2, st2, obs2, refine_rigs=True).solve()
+    e2, _ = errors_after_rigid(res2.points, leds)
+    summary("phase 2 bundle without anchors", e2)
 
-wiring = bundle.wiring_limits(range(len(leds)), lines=((0, 250), (250, 500), (500, 750), (750, 1000)), strand=1000)
-res3 = bundle.Bundle(rigs2, st2, obs2, refine_rigs=True, anchors=anchors, wiring=wiring,
-                     refine_intrinsics=REFINE_INTRINSICS).solve()
-print(f"  anchored bundle: rms {res3.rms_px:.2f} px, {res3.dropped} rejected")
-# Anchored results are in phase 1's frame: map to the truth with phase 1's alignment (no refit).
-e3 = np.array([np.linalg.norm(R1 @ res3.points[l] + t1 - leds[l]) for l in res3.points])
-summary("phase 2 anchored on phase 1, whole tree (in phase 1's frame, no refit)", e3)
-lower = [l for l in res3.points if l not in top]
-e3l = np.array([np.linalg.norm(R1 @ res3.points[l] + t1 - leds[l]) for l in lower])
-summary("  of which below the top section", e3l)
-n2 = np.array([res3.n_stations[l] for l in res3.points])
-print(f"  LEDs seen by 1 station: {(n2 == 1).sum()}, 2: {(n2 == 2).sum()}, 3+: {(n2 >= 3).sum()}, "
-      f"none: {len(leds) - len(res3.points)}")
-broken = sum(1 for i, j, L in wiring if i in res3.points and j in res3.points
-             and np.linalg.norm(res3.points[i] - res3.points[j]) > L + 10)
-print(f"  wiring limits broken by more than 10 mm: {broken}")
+    wiring = bundle.wiring_limits(range(len(leds)))
+    res3 = bundle.Bundle(rigs2, st2, obs2, refine_rigs=True, anchors=anchors, wiring=wiring,
+                         refine_intrinsics=REFINE_INTRINSICS).solve()
+    print(f"  anchored bundle: rms {res3.rms_px:.2f} px, {res3.dropped} rejected")
+    # Anchored results are in phase 1's frame: map to the truth with phase 1's alignment (no refit).
+    e3 = np.array([np.linalg.norm(R1 @ res3.points[l] + t1 - leds[l]) for l in res3.points])
+    summary("phase 2 anchored on phase 1, whole tree (in phase 1's frame, no refit)", e3)
+    lower = [l for l in res3.points if l not in top]
+    e3l = np.array([np.linalg.norm(R1 @ res3.points[l] + t1 - leds[l]) for l in lower])
+    summary("  of which below the top section", e3l)
+    n2 = np.array([res3.n_stations[l] for l in res3.points])
+    print(f"  LEDs seen by 1 station: {(n2 == 1).sum()}, 2: {(n2 == 2).sum()}, 3+: {(n2 >= 3).sum()}, "
+          f"none: {len(leds) - len(res3.points)}")
+    broken = sum(1 for i, j, L in wiring if i in res3.points and j in res3.points
+                 and np.linalg.norm(res3.points[i] - res3.points[j]) > L + 10)
+    print(f"  wiring limits broken by more than 10 mm: {broken}")
+
+
+if __name__ == "__main__":
+    main()

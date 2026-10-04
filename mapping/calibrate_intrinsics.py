@@ -14,9 +14,9 @@ misdetected frame) and fits again. Reprojection error is a real accuracy
 measure here - it's against the board's true geometry. Well under 1px RMS
 is normal for a good set.
 
-Writes calibration/intrinsics_<serial>.json per camera, recording the
-resolution and focus the images were taken at (the fit is only valid for
-those).
+Writes calibration/intrinsics_<serial>_f<focus>.json per camera, recording
+the resolution and focus the images were taken at (the fit is only valid
+for those - a camera has one calibration per focus setting).
 
 Usage (venv active, from mapping/):
     python3 calibrate_intrinsics.py --session calib_images/session1
@@ -94,7 +94,7 @@ def calibrate_camera(session, manifest, cam, out_dir):
     print(f"  distortion k1,k2,p1,p2,k3 = {np.round(dist.flatten(), 4).tolist()}")
 
     os.makedirs(out_dir, exist_ok=True)
-    out = os.path.join(out_dir, f"intrinsics_{serial}.json")
+    out = os.path.join(out_dir, f"intrinsics_{serial}_f{manifest['focus']}.json")
     with open(out, "w") as f:
         json.dump({
             "serial": serial, "model": cam["model"],
