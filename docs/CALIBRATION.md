@@ -1,10 +1,119 @@
 # Mapping camera calibration — plan and notes
 
-**Status (2026-09-25): waiting for a replacement board.** The ChArUco board
-arrived severely bent, and a bent board can't be used: flatness is the one
-error a calibration can't compensate for. Everything else is ready. The
-tooling is built and checked end to end on synthetic images (commit
-8332c4b). When the replacement arrives, start at "Session day" below.
+**Status (2026-10-03): the replacement board has arrived. The plan is now
+phased mapping** (next section). The earlier single-distance plan below is
+kept for its background: the board's limits, why the board alone isn't
+enough, and the tooling built so far (commit 8332c4b).
+
+## Phased mapping (agreed approach, 2026-10-03)
+
+The board can't be detected beyond about 1.2 m, but the top section of the
+tree is small enough to map from closer than that.
+- **Phase 1:** map the top section from all angles at close range, at high
+  accuracy.
+- **Phase 2:** map the whole tree from further back, using the best phase-1
+  LEDs as anchors.
+
+Layout numbers come from a coverage simulation:
+- tree surface radius = the current map's 85th percentile by height, about
+  300–340 mm above 1.2 m;
+- the tree's top at about 2.0 m;
+- portrait cameras: 68.5° vertical by 41.9° horizontal field of view, focal
+  length about 940 px.
+
+```
+        Phase 1 (top, 1.1 m)                Phase 2 (whole tree, 2.3 m)
+                 S1                                     S1
+           S6          S2                     S6                   S2
+                (tree)                                 (tree)
+           S5          S3                     S5                   S3
+                 S4                                     S4
+   6 stations, 60 degrees apart. Each sweep runs both pylons at
+   opposite stations: S1+S4, then S2+S5, then S3+S6.
+```
+
+### Phase 1 — the top section (z ≈ 1.2–2.0 m), close range
+
+- **Stand-off:** 1.1 m, trunk to cameras, measured horizontally.
+  - Both cameras see 100% of the near half of the section.
+  - Every LED is 0.69–1.24 m away, inside the board's detection range, so
+    the stereo calibration is fitted across the volume it's used in.
+  - At 1.0 m, 93% of the near half is seen; at 0.9 m, 79%.
+- **Each pylon:**
+  - bottom camera at about 1.30 m, top at about 1.90 m (592 mm apart);
+  - both tilted about 15° toward the section's centre (1.6 m high at the
+    trunk): the bottom one up, the top one down.
+- **Stations:** 6, 60° apart; 3 sweeps with the two pylons at opposite
+  stations. Each LED is then seen by 2–3 stations.
+- **Expected accuracy:**
+  - about 0.7 mm from pixel noise at 1.1 m, plus about 1.0 mm per 0.5 mrad
+    of stereo angle error;
+  - about 1 mm once the stations are joined in a bundle adjustment.
+- **Focus:** set it for about 1 m. Focus 30 was chosen for 2.5 m, and the
+  intrinsics depend on focus. Pick the value by board sharpness at 1.1 m,
+  and calibrate each camera's intrinsics at that focus.
+- **Calibration:**
+  - intrinsics any time, at the phase-1 focus;
+  - stereo per pylon after aiming;
+  - moving a whole pylon between stations keeps the stereo calibration
+    valid, but check it at each station with a 2-minute board capture
+    compared against the calibration, to catch a bumped camera.
+- **Anchor selection.** An LED becomes an anchor when it is:
+  - seen by 2 or more stations;
+  - low in bundle-adjustment residual;
+  - within the wiring limits of its mapped neighbours (100 mm, or 300 mm at
+    a strand joint);
+  - estimated to about 2 mm or better.
+- **Optional:** the board laid flat on the floor in one station's view, to
+  give the true horizontal.
+
+### Phase 2 — the whole tree, 2.3 m, anchored
+
+- **Stand-off:** 2.3 m.
+  - Cameras at about 0.65 m and 1.25 m, tilted about 7° toward the middle
+    of the tree's height (0.94 m).
+  - Both cameras see 100% of the near half, 1.7–2.45 m away (at 2.0 m: 98%).
+- **Stations:** 6, 60° apart, 3 sweeps.
+- **Focus:** the far focus, with intrinsics calibrated at it. Re-fit the
+  stereo at near range as a starting value.
+- **Anchors fix each station.** Solve each camera's pose from the anchors
+  it sees (perspective-n-point), directly in the anchor frame.
+  - This replaces the stereo angle the board can't measure at 2.3 m with
+    known geometry at the working distance.
+  - At 2.4 m a 0.5 mrad angle error would cost about 5 mm of depth; this
+    removes it.
+- **Then a bundle adjustment** over all phase-2 stations:
+  - anchors held to their phase-1 uncertainty;
+  - wiring limits as soft constraints;
+  - a robust loss for bad blobs.
+- **Expected accuracy:**
+  - LEDs seen from 2+ stations are triangulated across stations: 60°
+    apart, 2.3 m baselines, about 0.9 mm from pixel noise;
+  - LEDs seen from one station fall back to that pylon's anchor-corrected
+    stereo: about 3–5 mm.
+- **Checks:**
+  - anchors re-observed in phase 2 vs phase 1;
+  - the board-corner check at near range;
+  - wiring consistency;
+  - the tree's measured height.
+
+### What to build (in order)
+
+1. **Intrinsics per camera and focus:** `intrinsics_<serial>_f<focus>.json`.
+   Plus:
+   - a focus finder: board sharpness vs focus at a set distance;
+   - a board-range check: how far it's detected with the real cameras.
+2. **Sweep records:** camera serials, focus, phase and station per sweep.
+   Calibrated cameras used in capture and re-triangulation, with the tilt
+   fit skipped.
+3. **A station check:** a short board capture compared with the pylon's
+   stereo calibration.
+4. **Bundle adjustment across stations,** tested on synthetic data first,
+   and anchor selection.
+5. **Phase 2:** the per-camera anchor pose fit, then the anchored bundle
+   adjustment.
+6. **The tree frame and output:** trunk axis and up direction, the wiring
+   outlier filter, then the firmware header.
 
 ## Why calibrate
 
